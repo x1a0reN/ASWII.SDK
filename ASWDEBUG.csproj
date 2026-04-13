@@ -1,0 +1,111 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{762C7A21-4560-4A19-951B-A0B3590F2454}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>ASWDEBUG</RootNamespace>
+    <AssemblyName>ASWDEBUG</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>Lib\0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="Assembly-CSharp.deobf">
+      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\Assembly-CSharp.deobf.dll</HintPath>
+    </Reference>
+    <Reference Include="BouncyCastle.Crypto">
+      <HintPath>Lib\BouncyCastle.Crypto.dll</HintPath>
+    </Reference>
+    <Reference Include="Mono.Cecil, Version=0.9.6.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>Lib\Mono.Cecil.dll</HintPath>
+    </Reference>
+    <Reference Include="RAIN, Version=2.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\RAIN.dll</HintPath>
+    </Reference>
+    <Reference Include="RAINMetaform">
+      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\RAINMetaform.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core">
+      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\System.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\UnityEngine.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <AppDesigner Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Cheats\AimTrack\AimTrack.cs" />
+    <Compile Include="Cheats\AutoAim\AutoAim.cs" />
+    <Compile Include="Cheats\ESP\ESP.cs" />
+    <Compile Include="Cheats\Other\AutoInterface.cs" />
+    <Compile Include="Cheats\Other\AutoKick.cs" />
+    <Compile Include="Cheats\Other\HookMsgbox.cs" />
+    <Compile Include="Cheats\Other\OtherC.cs" />
+    <Compile Include="Cheats\Other\PlayerAutoNavRAIN.cs" />
+    <Compile Include="Cheats\Player\Aike.cs" />
+    <Compile Include="Cheats\Player\AutoFire.cs" />
+    <Compile Include="Cheats\Player\AutoLockHP.cs" />
+    <Compile Include="Cheats\Player\BulletNoRecoil.cs" />
+    <Compile Include="Cheats\Player\GrenadeHalfHurt.cs" />
+    <Compile Include="Cheats\Player\GrenadeNotHurt.cs" />
+    <Compile Include="Cheats\Player\HealthBarDisplay.cs" />
+    <Compile Include="Cheats\Player\NotKick.cs" />
+    <Compile Include="Cheats\Player\SpinTop.cs" />
+    <Compile Include="Cheats\Player\WeaponNotCD.cs" />
+    <Compile Include="Dump\CecilRepacker.cs" />
+    <Compile Include="Loader\ConsoleManager.cs" />
+    <Compile Include="Logger\FileLogger.cs" />
+    <Compile Include="Main\CheatMain.cs" />
+    <Compile Include="Patch\GamePatches.cs" />
+    <Compile Include="Patch\HarmonyLoader.cs" />
+    <Compile Include="Patch\LuaIntrospector.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Dump\RuntimeILDump.cs" />
+    <Compile Include="Global\Settings.cs" />
+    <Compile Include="UI\AuctionItemDrawer.cs" />
+    <Compile Include="UI\AuctionMonitor.cs" />
+    <Compile Include="UI\AuctionWatchList.cs" />
+    <Compile Include="UI\LuaLabUI.cs" />
+    <Compile Include="UI\RpcLabUI.cs" />
+    <Compile Include="UI\SearchPanel.cs" />
+    <Compile Include="UI\SpriteListDrawer.cs" />
+    <Compile Include="UI\UIHelper.cs" />
+    <Compile Include="UI\CheatUIManager.cs" />
+    <Compile Include="Verify\EyAuthManager.cs" />
+    <Compile Include="Verify\OperateIniFile.cs" />
+  </ItemGroup>
+  <ItemGroup />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PostBuildEvent>xcopy "$(ProjectDir)bin\Debug\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" /Y</PostBuildEvent>
+  </PropertyGroup>
+</Project>
