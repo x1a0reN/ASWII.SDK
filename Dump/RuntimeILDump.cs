@@ -7,6 +7,7 @@ using System.Text;
 using System.Reflection;
 using System.Collections.Generic;
 using System.Threading;
+using UnityEngine;
 
 public static class StructuredILDump
 {
@@ -26,6 +27,7 @@ public static class StructuredILDump
     static void Worker()
     {
         string baseDir = SafeBaseDir();
+        string persistentDir = SafePersistentDir();
         string tempRoot = Path.Combine(Path.GetTempPath(), "IL_Dump");
         SafeMkDir(tempRoot);
 
@@ -47,7 +49,12 @@ public static class StructuredILDump
         SafeMkDir(outTemp);
 
         string outGame = null;
-        if (!string.IsNullOrEmpty(baseDir))
+        if (!string.IsNullOrEmpty(persistentDir))
+        {
+            outGame = Path.Combine(Path.Combine(persistentDir, "IL_Dump"), "STRUCTURED_" + packName);
+            SafeMkDir(outGame);
+        }
+        else if (!string.IsNullOrEmpty(baseDir))
         {
             outGame = Path.Combine(Path.Combine(baseDir, "IL_Dump"), "STRUCTURED_" + packName);
             SafeMkDir(outGame);
@@ -247,6 +254,11 @@ public static class StructuredILDump
     static string SafeLocation(Assembly a)
     {
         try { return a.Location; } catch { return null; }
+    }
+    static string SafePersistentDir()
+    {
+        try { return Application.persistentDataPath; }
+        catch { return null; }
     }
     static void SafeMkDir(string d)
     {

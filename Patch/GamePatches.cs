@@ -39,6 +39,15 @@ using System.Runtime.CompilerServices;
 
 namespace ASWDEBUG
 {
+    /// <summary>
+    /// 全局开关：设为 false 时所有 GamePatches 的 TargetMethod 返回 null（不 patch 任何方法）
+    /// 用于排查哪个补丁导致断连
+    /// </summary>
+    public static class PatchToggle
+    {
+        public static bool EnableAllPatches = false;
+    }
+
     static class Win32
     {
         public const uint PROCESS_VM_READ = 0x0010;

@@ -11,6 +11,7 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using MethodAttributes = Mono.Cecil.MethodAttributes;
@@ -27,7 +28,16 @@ public static class CecilRepacker
         if (string.IsNullOrEmpty(outputDllPath)) throw new ArgumentNullException("outputDllPath");
 
         FileLogger.Log("MARK", "Repack ENTER");
-        var rp = new ReaderParameters { ReadingMode = ReadingMode.Immediate };
+        var resolver = new DefaultAssemblyResolver();
+        AddSearchDirectoryIfExists(resolver, Path.GetDirectoryName(templateDllPath));
+        AddSearchDirectoryIfExists(resolver, AppDomain.CurrentDomain.BaseDirectory);
+        try { AddSearchDirectoryIfExists(resolver, Path.GetDirectoryName(liveAsm.Location)); } catch { }
+
+        var rp = new ReaderParameters
+        {
+            ReadingMode = ReadingMode.Immediate,
+            AssemblyResolver = resolver
+        };
         var wp = new WriterParameters { WriteSymbols = false };
 
         ModuleDefinition module = ModuleDefinition.ReadModule(templateDllPath, rp);
@@ -99,6 +109,14 @@ public static class CecilRepacker
         // 触发 Cecil 解析所有方法体，并记录解析失败（不会抛出）
         ForceResolveAllBodies(module);
 
+        // dnSpy 旧版 ILSpy 对 Unity 的 MethodSpec GetComponent<T>() 很脆；
+        // 写盘前改成 GetComponent(typeof(T)) + castclass T，语义等价但 IL 更朴素。
+        int getComponentRewritten = RewriteGenericGetComponentCalls(module);
+        FileLogger.Log("MARK", "Generic GetComponent<T> rewrite=" + getComponentRewritten);
+
+        int knownCctorsFixed = RepairKnownStaticConstructors(module);
+        FileLogger.Log("MARK", "Known static ctor repair=" + knownCctorsFixed);
+
         // 模块级兜底体检：只修分支、清理无效 EH + Sanitize 或 Stub
         PreflightValidateModule(module);
 
@@ -106,9 +124,30 @@ public static class CecilRepacker
         int implFixed = SanitizeAllMethodImplFlags(module);
         FileLogger.Log("MARK", "Impl sanitize fixed=" + implFixed);
 
+        int selfRefsRemoved = RemoveSelfAssemblyReferences(module);
+        int badImplRemain = CountInvalidMethodImplEntries(module);
+        int selfRefsRemain = CountSelfAssemblyReferences(module);
+        int badGetComponentRefs = CountBadGenericGetComponentReferences(module);
+        FileLogger.Log("MARK", "SelfRef sanitize removed=" + selfRefsRemoved + " remain=" + selfRefsRemain);
+        FileLogger.Log("MARK", "Impl sanitize remain=" + badImplRemain);
+        FileLogger.Log("MARK", "Generic GetComponent<object> refs=" + badGetComponentRefs);
+
+        if (badImplRemain != 0 || selfRefsRemain != 0 || badGetComponentRefs != 0)
+            throw new InvalidOperationException(
+                "Direct-replace validation failed: badImplRemain=" + badImplRemain +
+                ", selfRefsRemain=" + selfRefsRemain +
+                ", badGetComponentRefs=" + badGetComponentRefs);
+
         Directory.CreateDirectory(Path.GetDirectoryName(outputDllPath));
         module.Write(outputDllPath, wp);
         FileLogger.Log("INFO", "WRITE DONE -> " + outputDllPath);
+    }
+
+    static void AddSearchDirectoryIfExists(DefaultAssemblyResolver resolver, string dir)
+    {
+        if (resolver == null || string.IsNullOrEmpty(dir)) return;
+        if (!Directory.Exists(dir)) return;
+        try { resolver.AddSearchDirectory(dir); } catch { }
     }
 
     static void IndexType(TypeDefinition td, Dictionary<int, MethodDefinition> map)
@@ -231,6 +270,346 @@ public static class CecilRepacker
         }
 
         return changed;
+    }
+
+    static int CountInvalidMethodImplEntries(ModuleDefinition module)
+    {
+        if (module == null) return 0;
+        int count = 0;
+        for (int i = 0; i < module.Types.Count; i++)
+            count += CountInvalidMethodImplEntries(module.Types[i]);
+        return count;
+    }
+
+    static int CountInvalidMethodImplEntries(TypeDefinition td)
+    {
+        if (td == null) return 0;
+        int count = 0;
+
+        for (int i = 0; i < td.Methods.Count; i++)
+        {
+            MethodDefinition md = td.Methods[i];
+            if (md == null || !md.HasBody) continue;
+
+            if (HasBadMethodImplBits((int)md.ImplAttributes)) count++;
+
+            if (md.HasCustomAttributes)
+            {
+                for (int j = 0; j < md.CustomAttributes.Count; j++)
+                {
+                    CustomAttribute ca = md.CustomAttributes[j];
+                    if (ca == null || ca.AttributeType == null) continue;
+                    if (ca.AttributeType.FullName != "System.Runtime.CompilerServices.MethodImplAttribute") continue;
+                    if (ca.ConstructorArguments == null || ca.ConstructorArguments.Count == 0) { count++; break; }
+
+                    object arg = ca.ConstructorArguments[0].Value;
+                    int v = 0;
+                    if (arg is int) v = (int)arg;
+                    else if (arg is short) v = (short)arg;
+                    else if (arg is byte) v = (byte)arg;
+                    else { count++; break; }
+
+                    if (HasBadMethodImplBits(v)) { count++; break; }
+                }
+            }
+        }
+
+        for (int i = 0; i < td.NestedTypes.Count; i++)
+            count += CountInvalidMethodImplEntries(td.NestedTypes[i]);
+
+        return count;
+    }
+
+    static bool HasBadMethodImplBits(int v)
+    {
+        return (v & ~KnownMethodImplOptionMask) != 0;
+    }
+
+    const int KnownMethodImplOptionMask =
+        0x0004 | // Unmanaged
+        0x0008 | // NoInlining
+        0x0010 | // ForwardRef
+        0x0020 | // Synchronized
+        0x0040 | // NoOptimization
+        0x0080 | // PreserveSig
+        0x0100 | // AggressiveInlining
+        0x0200 | // AggressiveOptimization
+        0x0400;  // SecurityMitigations
+
+    static int CountSelfAssemblyReferences(ModuleDefinition module)
+    {
+        if (module == null || module.Assembly == null || module.AssemblyReferences == null) return 0;
+        int count = 0;
+        string selfName = module.Assembly.Name.Name;
+        for (int i = 0; i < module.AssemblyReferences.Count; i++)
+        {
+            AssemblyNameReference ar = module.AssemblyReferences[i];
+            if (ar != null && ar.Name == selfName) count++;
+        }
+        return count;
+    }
+
+    static int RemoveSelfAssemblyReferences(ModuleDefinition module)
+    {
+        if (module == null || module.Assembly == null || module.AssemblyReferences == null) return 0;
+        int removed = 0;
+        string selfName = module.Assembly.Name.Name;
+        for (int i = module.AssemblyReferences.Count - 1; i >= 0; i--)
+        {
+            AssemblyNameReference ar = module.AssemblyReferences[i];
+            if (ar == null) continue;
+            if (ar.Name != selfName) continue;
+            module.AssemblyReferences.RemoveAt(i);
+            removed++;
+        }
+        return removed;
+    }
+
+    static int CountBadGenericGetComponentReferences(ModuleDefinition module)
+    {
+        if (module == null) return 0;
+        int count = 0;
+        for (int i = 0; i < module.Types.Count; i++)
+            count += CountBadGenericGetComponentReferences(module.Types[i]);
+        return count;
+    }
+
+    static int CountBadGenericGetComponentReferences(TypeDefinition td)
+    {
+        if (td == null) return 0;
+        int count = 0;
+
+        for (int i = 0; i < td.Methods.Count; i++)
+        {
+            MethodDefinition md = td.Methods[i];
+            if (md == null || !md.HasBody || md.Body == null || md.Body.Instructions == null) continue;
+
+            for (int j = 0; j < md.Body.Instructions.Count; j++)
+            {
+                GenericInstanceMethod gim = md.Body.Instructions[j].Operand as GenericInstanceMethod;
+                if (gim == null) continue;
+                if (gim.Name != "GetComponent") continue;
+                if (gim.DeclaringType == null || gim.DeclaringType.FullName != "UnityEngine.Component") continue;
+                if (gim.ReturnType != null && gim.ReturnType.FullName == "System.Object")
+                    count++;
+            }
+        }
+
+        for (int i = 0; i < td.NestedTypes.Count; i++)
+            count += CountBadGenericGetComponentReferences(td.NestedTypes[i]);
+
+        return count;
+    }
+
+    static int RewriteGenericGetComponentCalls(ModuleDefinition module)
+    {
+        if (module == null) return 0;
+
+        MethodInfo getTypeFromHandleInfo = typeof(Type).GetMethod(
+            "GetTypeFromHandle",
+            BindingFlags.Public | BindingFlags.Static,
+            null,
+            new Type[] { typeof(RuntimeTypeHandle) },
+            null);
+        if (getTypeFromHandleInfo == null) return 0;
+
+        Type componentType = ResolveUnityComponentType();
+        if (componentType == null) return 0;
+
+        MethodInfo getComponentByTypeInfo = componentType.GetMethod(
+            "GetComponent",
+            BindingFlags.Public | BindingFlags.Instance,
+            null,
+            new Type[] { typeof(Type) },
+            null);
+        if (getComponentByTypeInfo == null) return 0;
+
+        MethodReference getTypeFromHandleRef = ImportMethodCtxCore(module, getTypeFromHandleInfo, null);
+        MethodReference getComponentByTypeRef = ImportMethodCtxCore(module, getComponentByTypeInfo, null);
+
+        int count = 0;
+        for (int i = 0; i < module.Types.Count; i++)
+            count += RewriteGenericGetComponentCalls(module.Types[i], getTypeFromHandleRef, getComponentByTypeRef);
+        return count;
+    }
+
+    static Type ResolveUnityComponentType()
+    {
+        Type t = Type.GetType("UnityEngine.Component, UnityEngine");
+        if (t != null) return t;
+
+        Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        for (int i = 0; i < assemblies.Length; i++)
+        {
+            try
+            {
+                t = assemblies[i].GetType("UnityEngine.Component", false);
+                if (t != null) return t;
+            }
+            catch { }
+        }
+
+        return null;
+    }
+
+    static int RewriteGenericGetComponentCalls(TypeDefinition td, MethodReference getTypeFromHandleRef, MethodReference getComponentByTypeRef)
+    {
+        if (td == null) return 0;
+        int count = 0;
+
+        for (int i = 0; i < td.Methods.Count; i++)
+        {
+            MethodDefinition md = td.Methods[i];
+            if (md == null || !md.HasBody || md.Body == null || md.Body.Instructions == null) continue;
+
+            ILProcessor il = md.Body.GetILProcessor();
+            for (int j = 0; j < md.Body.Instructions.Count; j++)
+            {
+                Instruction ins = md.Body.Instructions[j];
+                GenericInstanceMethod gim = ins.Operand as GenericInstanceMethod;
+                if (!IsUnityGenericGetComponent(gim)) continue;
+                if (gim.GenericArguments.Count != 1) continue;
+
+                TypeReference componentType = gim.GenericArguments[0];
+                if (componentType == null || componentType.IsGenericParameter) continue;
+
+                ins.OpCode = OpCodes.Ldtoken;
+                ins.Operand = componentType;
+
+                Instruction callGetType = il.Create(OpCodes.Call, getTypeFromHandleRef);
+                Instruction callGetComponent = il.Create(OpCodes.Callvirt, getComponentByTypeRef);
+                Instruction castComponent = il.Create(OpCodes.Castclass, componentType);
+
+                il.InsertAfter(ins, callGetType);
+                il.InsertAfter(callGetType, callGetComponent);
+                il.InsertAfter(callGetComponent, castComponent);
+
+                md.Body.MaxStackSize = Math.Max(md.Body.MaxStackSize, 8);
+                count++;
+                j += 3;
+            }
+        }
+
+        for (int i = 0; i < td.NestedTypes.Count; i++)
+            count += RewriteGenericGetComponentCalls(td.NestedTypes[i], getTypeFromHandleRef, getComponentByTypeRef);
+
+        return count;
+    }
+
+    static bool IsUnityGenericGetComponent(GenericInstanceMethod gim)
+    {
+        if (gim == null) return false;
+        if (gim.Name != "GetComponent") return false;
+        if (gim.DeclaringType == null || gim.DeclaringType.FullName != "UnityEngine.Component") return false;
+        if (gim.Parameters != null && gim.Parameters.Count != 0) return false;
+        return true;
+    }
+
+    static int RepairKnownStaticConstructors(ModuleDefinition module)
+    {
+        if (module == null) return 0;
+
+        TypeDefinition deadSpace = FindTypeDefinitionByFullName(module, "DeadSpace");
+        if (deadSpace == null) return 0;
+
+        MethodDefinition cctor = FindMethodByName(deadSpace, ".cctor");
+        if (cctor == null || !MethodHasInvalidArgumentAccess(cctor)) return 0;
+
+        FieldDefinition aabbDic = FindFieldByName(deadSpace, "aabbDic");
+        if (aabbDic == null || aabbDic.FieldType == null) return 0;
+
+        cctor.Body = new MethodBody(cctor);
+        cctor.Body.InitLocals = false;
+        cctor.Body.MaxStackSize = 8;
+
+        ILProcessor il = cctor.Body.GetILProcessor();
+        il.Emit(OpCodes.Newobj, CreateDefaultCtorReference(module, aabbDic.FieldType));
+        il.Emit(OpCodes.Stsfld, aabbDic);
+        il.Emit(OpCodes.Ret);
+
+        cctor.ImplAttributes = MethodImplAttributes.IL | MethodImplAttributes.Managed;
+        return 1;
+    }
+
+    static TypeDefinition FindTypeDefinitionByFullName(ModuleDefinition module, string fullName)
+    {
+        if (module == null || string.IsNullOrEmpty(fullName)) return null;
+        for (int i = 0; i < module.Types.Count; i++)
+        {
+            TypeDefinition hit = FindTypeDefinitionByFullName(module.Types[i], fullName);
+            if (hit != null) return hit;
+        }
+        return null;
+    }
+
+    static MethodDefinition FindMethodByName(TypeDefinition td, string name)
+    {
+        if (td == null || string.IsNullOrEmpty(name)) return null;
+        for (int i = 0; i < td.Methods.Count; i++)
+        {
+            MethodDefinition md = td.Methods[i];
+            if (md != null && md.Name == name) return md;
+        }
+        return null;
+    }
+
+    static FieldDefinition FindFieldByName(TypeDefinition td, string name)
+    {
+        if (td == null || string.IsNullOrEmpty(name)) return null;
+        for (int i = 0; i < td.Fields.Count; i++)
+        {
+            FieldDefinition fd = td.Fields[i];
+            if (fd != null && fd.Name == name) return fd;
+        }
+        return null;
+    }
+
+    static MethodReference CreateDefaultCtorReference(ModuleDefinition module, TypeReference declaringType)
+    {
+        MethodReference ctor = new MethodReference(".ctor", module.TypeSystem.Void, declaringType);
+        ctor.HasThis = true;
+        ctor.ExplicitThis = false;
+        ctor.CallingConvention = MethodCallingConvention.Default;
+        return ctor;
+    }
+
+    static bool MethodHasInvalidArgumentAccess(MethodDefinition md)
+    {
+        if (md == null || !md.HasBody || md.Body == null || md.Body.Instructions == null) return false;
+
+        int argCount = md.Parameters.Count + (md.HasThis ? 1 : 0);
+        for (int i = 0; i < md.Body.Instructions.Count; i++)
+        {
+            int idx = GetArgumentInstructionIndex(md, md.Body.Instructions[i]);
+            if (idx >= argCount) return true;
+        }
+
+        return false;
+    }
+
+    static int GetArgumentInstructionIndex(MethodDefinition md, Instruction ins)
+    {
+        if (ins == null) return -1;
+
+        switch (ins.OpCode.Code)
+        {
+            case Code.Ldarg_0: return 0;
+            case Code.Ldarg_1: return 1;
+            case Code.Ldarg_2: return 2;
+            case Code.Ldarg_3: return 3;
+            case Code.Ldarg:
+            case Code.Ldarg_S:
+            case Code.Ldarga:
+            case Code.Ldarga_S:
+            case Code.Starg:
+            case Code.Starg_S:
+                {
+                    ParameterDefinition pd = ins.Operand as ParameterDefinition;
+                    return pd != null ? pd.Index + (md != null && md.HasThis ? 1 : 0) : -1;
+                }
+            default:
+                return -1;
+        }
     }
 
     static IEnumerable<Type> SafeGetTypes(Assembly a)
@@ -555,7 +934,7 @@ public static class CecilRepacker
             if (eh.Flags == ExceptionHandlingClauseOptions.Filter)
                 ch.FilterStart = FindByOffsetOrNext(offset2Inst, eh.FilterOffset);
             if (eh.Flags == ExceptionHandlingClauseOptions.Clause && eh.CatchType != null)
-                ch.CatchType = targetModule.Import(eh.CatchType);
+                ch.CatchType = ImportTypeCtx(targetModule, eh.CatchType, md);
             body.ExceptionHandlers.Add(ch);
         }
 
@@ -576,7 +955,7 @@ public static class CecilRepacker
 
 
     // 运行期 System.Type -> Cecil.TypeReference（带泛型上下文）
-    static TypeReference ImportTypeCtx(ModuleDefinition target, Type t, MethodDefinition md)
+    internal static TypeReference ImportTypeCtx(ModuleDefinition target, Type t, MethodDefinition md)
     {
         if (t == null) return target.TypeSystem.Object;
 
@@ -602,10 +981,10 @@ public static class CecilRepacker
             return rank == 1 ? new ArrayType(et) : new ArrayType(et, rank);
         }
 
-        if (t.IsGenericType && t.ContainsGenericParameters)
+        if (t.IsGenericType && !t.IsGenericTypeDefinition)
         {
             Type def = t.GetGenericTypeDefinition();
-            TypeReference defRef = target.Import(def);
+            TypeReference defRef = ImportTypeCtx(target, def, md);
             GenericInstanceType git = new GenericInstanceType(defRef);
             Type[] args = t.GetGenericArguments();
             for (int i = 0; i < args.Length; i++)
@@ -613,12 +992,23 @@ public static class CecilRepacker
             return git;
         }
 
+        TypeDefinition selfTd = FindSelfTypeDefinition(target, t);
+        if (selfTd != null) return selfTd;
+
+        TypeReference existingRef = TryImportViaExistingAssemblyReference(target, t, md);
+        if (existingRef != null) return existingRef;
+
         return target.Import(t);
     }
 
     // 运行期 FieldInfo -> Cecil.FieldReference（带泛型上下文）
     static FieldReference ImportFieldCtx(ModuleDefinition target, FieldInfo fi, MethodDefinition md)
     {
+        if (fi == null) return null;
+
+        FieldDefinition selfFd = FindSelfFieldDefinition(target, fi);
+        if (selfFd != null) return selfFd;
+
         TypeReference decl = ImportTypeCtx(target, fi.DeclaringType, md);
         TypeReference fty = ImportTypeCtx(target, fi.FieldType, md);
         return new FieldReference(fi.Name, fty, decl);
@@ -646,17 +1036,14 @@ public static class CecilRepacker
 
     static MethodReference ImportMethodCtxCore(ModuleDefinition target, MethodBase mb, MethodDefinition md)
     {
+        MethodDefinition selfMd = FindSelfMethodDefinition(target, mb);
+        if (selfMd != null) return selfMd;
+
         TypeReference decl = ImportTypeCtx(target, mb.DeclaringType, md);
-        TypeReference ret = (mb is MethodInfo) ? ImportTypeCtx(target, ((MethodInfo)mb).ReturnType, md)
-                                                : target.TypeSystem.Void;
-        MethodReference mr = new MethodReference(mb.Name, ret, decl);
+        MethodReference mr = new MethodReference(mb.Name, target.TypeSystem.Void, decl);
         mr.HasThis = !mb.IsStatic;
         mr.ExplicitThis = false;
         mr.CallingConvention = MethodCallingConvention.Default;
-
-        ParameterInfo[] pars = mb.GetParameters();
-        for (int i = 0; i < pars.Length; i++)
-            mr.Parameters.Add(new ParameterDefinition(ImportTypeCtx(target, pars[i].ParameterType, md)));
 
         MethodInfo mi = mb as MethodInfo;
         if (mi != null && mi.IsGenericMethodDefinition)
@@ -666,7 +1053,306 @@ public static class CecilRepacker
                 mr.GenericParameters.Add(new GenericParameter(gps[i].Name, mr));
         }
 
+        mr.ReturnType = (mb is MethodInfo)
+            ? ImportTypeForImportedMethod(target, ((MethodInfo)mb).ReturnType, md, mr, decl)
+            : target.TypeSystem.Void;
+
+        ParameterInfo[] pars = mb.GetParameters();
+        for (int i = 0; i < pars.Length; i++)
+            mr.Parameters.Add(new ParameterDefinition(ImportTypeForImportedMethod(target, pars[i].ParameterType, md, mr, decl)));
+
         return mr;
+    }
+
+    static TypeReference ImportTypeForImportedMethod(ModuleDefinition target, Type t, MethodDefinition caller, MethodReference importedMethod, TypeReference importedDeclaringType)
+    {
+        if (t == null) return target.TypeSystem.Object;
+
+        if (t.IsGenericParameter)
+        {
+            int pos = t.GenericParameterPosition;
+            if (t.DeclaringMethod != null && importedMethod != null)
+            {
+                if (pos >= 0 && pos < importedMethod.GenericParameters.Count)
+                    return importedMethod.GenericParameters[pos];
+                return target.TypeSystem.Object;
+            }
+
+            if (t.DeclaringType != null && importedDeclaringType != null)
+            {
+                TypeReference owner = importedDeclaringType;
+                GenericInstanceType gitOwner = owner as GenericInstanceType;
+                if (gitOwner != null && pos >= 0 && pos < gitOwner.GenericArguments.Count)
+                    return gitOwner.GenericArguments[pos];
+                if (pos >= 0 && pos < owner.GenericParameters.Count)
+                    return owner.GenericParameters[pos];
+                return target.TypeSystem.Object;
+            }
+
+            return ImportTypeCtx(target, t, caller);
+        }
+
+        if (t.IsByRef) return new ByReferenceType(ImportTypeForImportedMethod(target, t.GetElementType(), caller, importedMethod, importedDeclaringType));
+        if (t.IsPointer) return new PointerType(ImportTypeForImportedMethod(target, t.GetElementType(), caller, importedMethod, importedDeclaringType));
+        if (t.IsArray)
+        {
+            TypeReference et = ImportTypeForImportedMethod(target, t.GetElementType(), caller, importedMethod, importedDeclaringType);
+            int rank = t.GetArrayRank();
+            return rank == 1 ? new ArrayType(et) : new ArrayType(et, rank);
+        }
+
+        if (t.IsGenericType && !t.IsGenericTypeDefinition)
+        {
+            TypeReference defRef = ImportTypeCtx(target, t.GetGenericTypeDefinition(), caller);
+            GenericInstanceType git = new GenericInstanceType(defRef);
+            Type[] args = t.GetGenericArguments();
+            for (int i = 0; i < args.Length; i++)
+                git.GenericArguments.Add(ImportTypeForImportedMethod(target, args[i], caller, importedMethod, importedDeclaringType));
+            return git;
+        }
+
+        return ImportTypeCtx(target, t, caller);
+    }
+
+    static TypeReference TryImportViaExistingAssemblyReference(ModuleDefinition target, Type t, MethodDefinition md)
+    {
+        if (target == null || t == null || t.Assembly == null) return null;
+
+        AssemblyName an = t.Assembly.GetName();
+        if (an == null || string.IsNullOrEmpty(an.Name)) return null;
+
+        AssemblyNameReference scope = FindAssemblyReferenceByName(target, an.Name);
+        if (scope == null) return null;
+
+        return BuildExternalTypeReference(target, t, scope, md);
+    }
+
+    static AssemblyNameReference FindAssemblyReferenceByName(ModuleDefinition target, string name)
+    {
+        if (target == null || string.IsNullOrEmpty(name) || target.AssemblyReferences == null) return null;
+        for (int i = 0; i < target.AssemblyReferences.Count; i++)
+        {
+            AssemblyNameReference ar = target.AssemblyReferences[i];
+            if (ar != null && ar.Name == name) return ar;
+        }
+        return null;
+    }
+
+    static TypeReference BuildExternalTypeReference(ModuleDefinition target, Type t, AssemblyNameReference scope, MethodDefinition md)
+    {
+        if (target == null || t == null || scope == null) return null;
+
+        if (t.IsGenericType && !t.IsGenericTypeDefinition)
+        {
+            TypeReference defRef = BuildExternalTypeReference(target, t.GetGenericTypeDefinition(), scope, md);
+            GenericInstanceType git = new GenericInstanceType(defRef);
+            Type[] args = t.GetGenericArguments();
+            for (int i = 0; i < args.Length; i++)
+                git.GenericArguments.Add(ImportTypeCtx(target, args[i], md));
+            return git;
+        }
+
+        TypeReference tr;
+        if (t.IsNested && t.DeclaringType != null)
+        {
+            TypeReference decl = ImportTypeCtx(target, t.DeclaringType, md);
+            tr = new TypeReference(t.Namespace ?? "", t.Name, target, decl.Scope, t.IsValueType);
+            tr.DeclaringType = decl;
+        }
+        else
+        {
+            tr = new TypeReference(t.Namespace ?? "", t.Name, target, scope, t.IsValueType);
+        }
+
+        if (t.IsGenericTypeDefinition)
+        {
+            Type[] gps = t.GetGenericArguments();
+            for (int i = 0; i < gps.Length; i++)
+                tr.GenericParameters.Add(new GenericParameter(gps[i].Name, tr));
+        }
+
+        return tr;
+    }
+
+    static TypeDefinition FindSelfTypeDefinition(ModuleDefinition target, Type t)
+    {
+        if (target == null || t == null || target.Assembly == null) return null;
+
+        Type lookup = t;
+        if (lookup.IsByRef || lookup.IsPointer || lookup.IsArray)
+            lookup = lookup.GetElementType();
+        if (lookup != null && lookup.IsGenericType && !lookup.IsGenericTypeDefinition)
+            lookup = lookup.GetGenericTypeDefinition();
+        if (lookup == null || lookup.Assembly == null) return null;
+
+        AssemblyName an = lookup.Assembly.GetName();
+        if (an == null || !string.Equals(an.Name, target.Assembly.Name.Name, StringComparison.Ordinal))
+            return null;
+
+        string full = (lookup.FullName ?? lookup.Name).Replace('+', '/');
+        for (int i = 0; i < target.Types.Count; i++)
+        {
+            TypeDefinition hit = FindTypeDefinitionByFullName(target.Types[i], full);
+            if (hit != null) return hit;
+        }
+
+        return null;
+    }
+
+    static TypeDefinition FindTypeDefinitionByFullName(TypeDefinition td, string fullName)
+    {
+        if (td == null) return null;
+        if (td.FullName == fullName) return td;
+
+        for (int i = 0; i < td.NestedTypes.Count; i++)
+        {
+            TypeDefinition hit = FindTypeDefinitionByFullName(td.NestedTypes[i], fullName);
+            if (hit != null) return hit;
+        }
+
+        return null;
+    }
+
+    static FieldDefinition FindSelfFieldDefinition(ModuleDefinition target, FieldInfo fi)
+    {
+        if (target == null || fi == null) return null;
+        TypeDefinition td = FindSelfTypeDefinition(target, fi.DeclaringType);
+        if (td == null) return null;
+
+        int token = 0;
+        try { token = fi.MetadataToken; } catch { token = 0; }
+
+        for (int i = 0; i < td.Fields.Count; i++)
+        {
+            FieldDefinition fd = td.Fields[i];
+            if (token != 0 && fd.MetadataToken.ToInt32() == token) return fd;
+        }
+
+        for (int i = 0; i < td.Fields.Count; i++)
+        {
+            FieldDefinition fd = td.Fields[i];
+            if (fd.Name == fi.Name) return fd;
+        }
+
+        return null;
+    }
+
+    static MethodDefinition FindSelfMethodDefinition(ModuleDefinition target, MethodBase mb)
+    {
+        if (target == null || mb == null) return null;
+
+        MethodBase lookup = mb;
+        MethodInfo mi = mb as MethodInfo;
+        if (mi != null && mi.IsGenericMethod && !mi.IsGenericMethodDefinition)
+            lookup = mi.GetGenericMethodDefinition();
+
+        TypeDefinition td = FindSelfTypeDefinition(target, lookup.DeclaringType);
+        if (td == null) return null;
+
+        int token = 0;
+        try { token = lookup.MetadataToken; } catch { token = 0; }
+
+        for (int i = 0; i < td.Methods.Count; i++)
+        {
+            MethodDefinition md2 = td.Methods[i];
+            if (token != 0 && md2.MetadataToken.ToInt32() == token) return md2;
+        }
+
+        for (int i = 0; i < td.Methods.Count; i++)
+        {
+            MethodDefinition md2 = td.Methods[i];
+            if (MethodLooselyMatches(lookup, md2)) return md2;
+        }
+
+        return null;
+    }
+
+    static bool MethodLooselyMatches(MethodBase mb, MethodDefinition md)
+    {
+        if (mb == null || md == null) return false;
+        if (mb.Name != md.Name) return false;
+        if (mb.IsStatic != md.IsStatic) return false;
+
+        int genA = 0;
+        try { genA = mb.IsGenericMethodDefinition ? mb.GetGenericArguments().Length : 0; } catch { genA = 0; }
+        int genB = md.GenericParameters != null ? md.GenericParameters.Count : 0;
+        if (genA != genB) return false;
+
+        ParameterInfo[] pa = mb.GetParameters();
+        if (pa.Length != md.Parameters.Count) return false;
+
+        for (int i = 0; i < pa.Length; i++)
+        {
+            string a = NormalizeReflectionTypeName(pa[i].ParameterType);
+            string b = NormalizeCecilTypeName(md.Parameters[i].ParameterType);
+            if (a != b) return false;
+        }
+
+        return true;
+    }
+
+    static string NormalizeReflectionTypeName(Type t)
+    {
+        if (t == null) return "";
+        if (t.IsByRef) return NormalizeReflectionTypeName(t.GetElementType()) + "&";
+        if (t.IsPointer) return NormalizeReflectionTypeName(t.GetElementType()) + "*";
+        if (t.IsArray)
+        {
+            int rank = t.GetArrayRank();
+            if (rank <= 1) return NormalizeReflectionTypeName(t.GetElementType()) + "[]";
+            return NormalizeReflectionTypeName(t.GetElementType()) + "[" + new string(',', rank - 1) + "]";
+        }
+        if (t.IsGenericParameter) return "!" + t.GenericParameterPosition;
+
+        if (t.IsGenericType && !t.IsGenericTypeDefinition)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append(NormalizeReflectionTypeName(t.GetGenericTypeDefinition()));
+            sb.Append("<");
+            Type[] args = t.GetGenericArguments();
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (i != 0) sb.Append(",");
+                sb.Append(NormalizeReflectionTypeName(args[i]));
+            }
+            sb.Append(">");
+            return sb.ToString();
+        }
+
+        return ((t.FullName ?? t.Name) ?? "").Replace('+', '/');
+    }
+
+    static string NormalizeCecilTypeName(TypeReference tr)
+    {
+        if (tr == null) return "";
+        if (tr.IsByReference) return NormalizeCecilTypeName(((ByReferenceType)tr).ElementType) + "&";
+        if (tr.IsPointer) return NormalizeCecilTypeName(((PointerType)tr).ElementType) + "*";
+        if (tr.IsArray)
+        {
+            ArrayType at = (ArrayType)tr;
+            if (at.Rank <= 1) return NormalizeCecilTypeName(at.ElementType) + "[]";
+            return NormalizeCecilTypeName(at.ElementType) + "[" + new string(',', at.Rank - 1) + "]";
+        }
+        if (tr.IsGenericParameter)
+        {
+            GenericParameter gp = (GenericParameter)tr;
+            return "!" + gp.Position;
+        }
+        if (tr is GenericInstanceType)
+        {
+            GenericInstanceType git = (GenericInstanceType)tr;
+            StringBuilder sb = new StringBuilder();
+            sb.Append(NormalizeCecilTypeName(git.ElementType));
+            sb.Append("<");
+            for (int i = 0; i < git.GenericArguments.Count; i++)
+            {
+                if (i != 0) sb.Append(",");
+                sb.Append(NormalizeCecilTypeName(git.GenericArguments[i]));
+            }
+            sb.Append(">");
+            return sb.ToString();
+        }
+        return tr.FullName ?? tr.Name ?? "";
     }
 
     static readonly Type[] EmptyTypes = new Type[0];
@@ -2010,14 +2696,14 @@ internal static class SigUtil
                 {
                     int mdToken = DecodeTypeDefOrRefOrSpec(ref r, liveMod);
                     var rt = liveMod.ResolveType(mdToken);
-                    return target.Import(rt);
+                    return CecilRepacker.ImportTypeCtx(target, rt, null);
                 }
 
             case ELEMENT_TYPE_GENERICINST:
                 {
                     byte next = r.ReadU1(); // class/valuetype
                     int mdToken = DecodeTypeDefOrRefOrSpec(ref r, liveMod);
-                    var rawType = target.Import(liveMod.ResolveType(mdToken));
+                    var rawType = CecilRepacker.ImportTypeCtx(target, liveMod.ResolveType(mdToken), null);
                     var git = new GenericInstanceType(rawType);
                     uint argc = ReadCompressedUInt(ref r);
                     for (uint i = 0; i < argc; i++)

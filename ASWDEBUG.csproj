@@ -86,7 +86,7 @@
     <Compile Include="Loader\DoorstopEntrypoint.cs" />
     <Compile Include="Logger\FileLogger.cs" />
     <Compile Include="Main\CheatMain.cs" />
-    <Compile Include="Patch\GamePatches.cs" />
+    <!-- <Compile Include="Patch\GamePatches.cs" /> -->
     <Compile Include="Patch\HarmonyLoader.cs" />
     <Compile Include="Patch\LuaIntrospector.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

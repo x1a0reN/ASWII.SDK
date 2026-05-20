@@ -23,9 +23,6 @@ D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\ASWDEBUG.pdb
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\0Harmony.dll
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\BouncyCastle.Crypto.dll
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\Mono.Cecil.dll
-D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\RAIN.dll
-D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\RAINMetaform.dll
-D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\UnityEngine.dll
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\Pathfinding.JsonFx.dll
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\Pathfinding.Ionic.Zip.Reduced.dll
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\Pathfinding.ClipperLib.dll
@@ -37,3 +34,6 @@ D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\obj\Debug\ASWDEBUG.csproj.Co
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\obj\Debug\ASWDEBUG.csproj.Up2Date
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\obj\Debug\ASWDEBUG.dll
 D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\obj\Debug\ASWDEBUG.pdb
+d:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\RAIN.dll
+d:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\RAINMetaform.dll
+d:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\bin\Debug\UnityEngine.dll
