@@ -72,13 +72,13 @@ public class ConsoleManager : MonoBehaviour
 
         //捕获 Unity 日志
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
-        // [暂时禁用] 整个 Harmony 补丁系统，排查断连问题
-        //HarmonyLoader.Install(TelemetryOnlyMode);
+        // [排查] 只开 TelemetryOnly 模式（手动 TryPatch 日志补丁，不走 PatchAll）
+        HarmonyLoader.Install(true);
         BootCheatMain();
         // [暂时禁用] DeobfRepack 和 StructuredDump 可能触发反作弊文件监控
         //StartCoroutine(DeobfRepackRoutine());
         //StartStructuredDump();
-        FileLogger.Log("MARK", "Minimal mode: no Harmony, no dump.");
+        FileLogger.Log("MARK", "TelemetryOnly mode: manual patches only, no PatchAll.");
 
         //return;
         //确保 EyAuthManager 存在
