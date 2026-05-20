@@ -122,13 +122,13 @@ namespace ASWDEBUG.Patch
                 PatchType(harmony, asm, "Patch_LobbyConnection_rpcCallBack");
 
                 // === 第二批（战斗/射击相关） ===
-                //PatchType(harmony, asm, "Patch_Character_UpdateSyncData");
-                //PatchType(harmony, asm, "Patch_Character_Shoot_Prefix");
-                //PatchType(harmony, asm, "Patch_ChannelConnection_Shoot_Prefix");
-                //PatchType(harmony, asm, "Patch_ChannelConnection_GrenadeHurt_Prefix");
-                //PatchType(harmony, asm, "Patch_GunBaseController_FireCheck_Transpiler");
-                //PatchType(harmony, asm, "Patch_SniperGunController_FireCheck_Transpiler");
-                //PatchType(harmony, asm, "Patch_WeaponBase_Ready");
+                PatchType(harmony, asm, "Patch_Character_UpdateSyncData");
+                PatchType(harmony, asm, "Patch_Character_Shoot_Prefix");
+                PatchType(harmony, asm, "Patch_ChannelConnection_Shoot_Prefix");
+                PatchType(harmony, asm, "Patch_ChannelConnection_GrenadeHurt_Prefix");
+                PatchType(harmony, asm, "Patch_GunBaseController_FireCheck_Transpiler");
+                PatchType(harmony, asm, "Patch_SniperGunController_FireCheck_Transpiler");
+                PatchType(harmony, asm, "Patch_WeaponBase_Ready");
 
                 // === 第三批（其他） ===
                 //PatchType(harmony, asm, "Patch_Character_SetLookDir_Prefix");
