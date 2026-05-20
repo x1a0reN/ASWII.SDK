@@ -138,6 +138,26 @@ namespace ASWDEBUG.Patch
                 PatchType(harmony, asm, "Patch_BaseController_InputUpdate_Transpile");
                 PatchType(harmony, asm, "Patch_LoginState_Login_LocalRedirect");
 
+                // === 第四批（之前遗漏的） ===
+                PatchType(harmony, asm, "Patch_KnifeBaseController_Ready");
+                PatchType(harmony, asm, "BNR_IL2");
+                PatchType(harmony, asm, "BNR_IL");
+                PatchType(harmony, asm, "Patch_Input_GetKey_KeyCode_Prefix");
+                PatchType(harmony, asm, "Patch_ChannelConnection_SyncPlayerData_SpinLocal");
+                PatchType(harmony, asm, "Patch_Boss1_Prefix");
+                PatchType(harmony, asm, "Patch_Boss2_Prefix");
+                PatchType(harmony, asm, "Patch_Boss3_Prefix");
+                PatchType(harmony, asm, "Patch_Boss4_Prefix");
+                PatchType(harmony, asm, "Patch_Boss5_Prefix");
+                PatchType(harmony, asm, "Patch_ParseSyncCharacterData_Prefix");
+                PatchType(harmony, asm, "Patch_UICreateCharacter_DealRoleList_Prefix");
+                PatchType(harmony, asm, "Patch_LuaGod_DoString_FilterInfiniteWhile");
+                PatchType(harmony, asm, "Patch_LuaState_L_DoString_FilterInfiniteWhile");
+                PatchType(harmony, asm, "Patch_ParseChannelInfo_AlwaysBypass");
+                PatchType(harmony, asm, "Patch_UICreateCharacter_FinishBtn_Prefix");
+                PatchType(harmony, asm, "Patch_AvatarLuaParse_SkinInit_Prefix");
+                PatchType(harmony, asm, "Patch_UIRankingListItem_ParseLuaString_Prefix");
+
                 FileLogger.Log("ASWDEBUG", "[BisectPatch] Batch 1 applied.");
             }
             catch (Exception e)
