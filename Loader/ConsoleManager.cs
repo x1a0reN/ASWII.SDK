@@ -72,12 +72,12 @@ public class ConsoleManager : MonoBehaviour
 
         //捕获 Unity 日志
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
-        // [确认] 和之前不断连的版本完全一致：TelemetryOnly
-        HarmonyLoader.Install(true);
+        // [排查] 走 else 分支，用 BisectPatchGameClasses 逐批测试
+        HarmonyLoader.Install(false);
         BootCheatMain();
         //StartCoroutine(DeobfRepackRoutine());
         //StartStructuredDump();
-        FileLogger.Log("MARK", "TelemetryOnly mode (confirmed safe).");
+        FileLogger.Log("MARK", "Bisect mode: batch 1 enabled.");
 
         //return;
         //确保 EyAuthManager 存在

@@ -105,6 +105,88 @@ namespace ASWDEBUG.Patch
             }
         }
 
+        /// <summary>
+        /// 二分法排查：手动逐批 patch GamePatches 里的类。
+        /// 每次测试时注释/取消注释不同的行来定位问题补丁。
+        /// </summary>
+        private static void BisectPatchGameClasses(HarmonyInstance harmony)
+        {
+            try
+            {
+                var asm = Assembly.GetExecutingAssembly();
+                // === 第一批（基础/UI 相关） ===
+                PatchType(harmony, asm, "Patch_MessageBox_show_Prefix");
+                PatchType(harmony, asm, "Patch_Character_UpdateBloodBar_Prefix");
+                PatchType(harmony, asm, "FightState_Update_Patch");
+                PatchType(harmony, asm, "Patch_LobbyConnection_AddTextRpc");
+                PatchType(harmony, asm, "Patch_LobbyConnection_rpcCallBack");
+
+                // === 第二批（战斗/射击相关） ===
+                //PatchType(harmony, asm, "Patch_Character_UpdateSyncData");
+                //PatchType(harmony, asm, "Patch_Character_Shoot_Prefix");
+                //PatchType(harmony, asm, "Patch_ChannelConnection_Shoot_Prefix");
+                //PatchType(harmony, asm, "Patch_ChannelConnection_GrenadeHurt_Prefix");
+                //PatchType(harmony, asm, "Patch_GunBaseController_FireCheck_Transpiler");
+                //PatchType(harmony, asm, "Patch_SniperGunController_FireCheck_Transpiler");
+                //PatchType(harmony, asm, "Patch_WeaponBase_Ready");
+
+                // === 第三批（其他） ===
+                //PatchType(harmony, asm, "Patch_Character_SetLookDir_Prefix");
+                //PatchType(harmony, asm, "Patch_UITakeCardManager_ref_Prefix");
+                //PatchType(harmony, asm, "Patch_Input_GetKey_String_Prefix");
+                //PatchType(harmony, asm, "Patch_distance_Prefix");
+                //PatchType(harmony, asm, "Patch_BaseController_InputUpdate_Transpile");
+                //PatchType(harmony, asm, "Patch_LoginState_Login_LocalRedirect");
+
+                FileLogger.Log("ASWDEBUG", "[BisectPatch] Batch 1 applied.");
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("ASWDEBUG", "[BisectPatch] Error: " + e);
+            }
+        }
+
+        private static void PatchType(HarmonyInstance harmony, Assembly asm, string typeName)
+        {
+            try
+            {
+                Type t = asm.GetTypes().FirstOrDefault(x => x.Name == typeName);
+                if (t == null)
+                {
+                    FileLogger.Log("ASWDEBUG", "[BisectPatch] Type not found: " + typeName);
+                    return;
+                }
+                // Harmony 1.x: 手动获取 TargetMethod + Prefix/Postfix/Transpiler 并 patch
+                var targetMethodInfo = AccessTools.Method(t, "TargetMethod");
+                if (targetMethodInfo == null)
+                {
+                    FileLogger.Log("ASWDEBUG", "[BisectPatch] No TargetMethod in: " + typeName);
+                    return;
+                }
+                var original = targetMethodInfo.Invoke(null, null) as MethodBase;
+                if (original == null)
+                {
+                    FileLogger.Log("ASWDEBUG", "[BisectPatch] TargetMethod returned null: " + typeName);
+                    return;
+                }
+
+                var prefix = AccessTools.Method(t, "Prefix");
+                var postfix = AccessTools.Method(t, "Postfix");
+                var transpiler = AccessTools.Method(t, "Transpiler");
+
+                harmony.Patch(original,
+                    prefix != null ? new HarmonyMethod(prefix) : null,
+                    postfix != null ? new HarmonyMethod(postfix) : null,
+                    transpiler != null ? new HarmonyMethod(transpiler) : null);
+
+                FileLogger.Log("ASWDEBUG", "[BisectPatch] OK: " + typeName + " -> " + original.DeclaringType.Name + "." + original.Name);
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("ASWDEBUG", "[BisectPatch] FAIL " + typeName + ": " + e.Message);
+            }
+        }
+
         private static void ApplyTelemetryPatches(HarmonyInstance harmony)
         {
             Assembly asm = AppDomain.CurrentDomain.GetAssemblies()
