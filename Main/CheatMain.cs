@@ -20,6 +20,7 @@ namespace ASWDEBUG.Main
 {
     public class CheatMain : MonoBehaviour
     {
+        private static readonly bool EnableDebugUi = true;
         public static CheatMain Instance;
 
         public static Camera CameraMain;
@@ -48,7 +49,11 @@ namespace ASWDEBUG.Main
         private void Start()
         {
             FileLogger.Log("CHEAT", "Start");
-
+            CheatUIManager.MenuVisible = EnableDebugUi;
+            CheatUIManager.SpriteMenuVisible = false;
+            RpcLabUI.Visible = EnableDebugUi;
+            LuaDoStringLabUI.Visible = EnableDebugUi;
+            FileLogger.Log("CHEAT", EnableDebugUi ? "Audit UI enabled." : "Audit UI hidden.");
         }
 
         private void OnGUI()
@@ -59,17 +64,21 @@ namespace ASWDEBUG.Main
                 UIHelper.InitializeStyles();
             }
 
-            CheatUIManager.Display();
+            float margin = 10f;
+            float width = Mathf.Min(900f, Mathf.Max(420f, Screen.width - margin * 2f));
+            float height = Mathf.Min(820f, Mathf.Max(360f, Screen.height - margin * 2f));
+            float posX = Mathf.Max(margin, Screen.width - width - margin);
 
-            //SearchPanel.Display();
-
-            RpcLabUI.Display(
-                775f,  // 右移一点
-                10f,
-                400f + 280f,     // 比左侧更宽
-                300f + 220f + 135f // 叠加黑名单高度再加点余量
-            );
-            LuaDoStringLabUI.Display(10f, 300f, 750f, 800f);
+            if (EnableDebugUi)
+            {
+                CheatUIManager.Display();
+                RpcLabUI.Display(
+                    posX,
+                    margin,
+                    width,
+                    height
+                );
+            }
         }
 
         private void SlowUpdate()
@@ -106,70 +115,24 @@ namespace ASWDEBUG.Main
             if (CameraMain == null) CameraMain = Camera.main ?? null;
             if (channel_connection == null) channel_connection = GameApp.Instance.channel_connection ?? null;
 
-            if (Input.GetKeyDown(KeyCode.Delete))
+            if (EnableDebugUi && Input.GetKeyDown(KeyCode.Delete))
             {
                 CheatUIManager.MenuVisible = !CheatUIManager.MenuVisible;
+                FileLogger.Log("CHEAT", "Audit UI toggled: " + CheatUIManager.MenuVisible);
             }
-            if (Input.GetKeyDown(KeyCode.Home))
-            {
-                CheatUIManager.SpriteMenuVisible = !CheatUIManager.SpriteMenuVisible;
-                //DumpUIToolsTable();
-            }
-            if (Input.GetKeyDown(KeyCode.F1))
-            {
-                channel_connection.Use(0);
-                channel_connection.Use(1);
-                channel_connection.Use(255);
-                //DumpUIToolsTable();
-                //OtherC.RunStormVulnerable();
-                //RpcScripts.FetchBoxPrizeDisplays("1");
-                //RpcScripts.FetchBoxPrizeDisplays("2");
-                //RpcScripts.FetchBoxPrizeDisplays("3");
-                //RpcScripts.FetchBoxPrizeDisplays("5");
-                //RpcScripts.FetchBoxPrizeDisplays("6");
-                //RpcScripts.FetchBoxPrizeDisplays("7");
-                //RpcScripts.FetchBoxPrizeDisplays("8");
-                //RpcScripts.FetchBoxPrizeDisplays("9");
-            }
-            // 自瞄
-            if (AutoAim.Enabled) { AutoAim.Enable(); } else { AutoAim.Disable(); }
-            // 子弹追踪
-            if (AimTrack.Enabled) { AimTrack.Enable(); } else { AimTrack.Disable(); }
-            // 自动扳机
-            if (AutoFire.Enabled) { AutoFire.Enable(); }
-            // 取消验证码
-            OtherC.Update();
-            // 自动防踢
-            AutoKick.Update();
-            // 自动拉频道
-            AutoInterface.Update();
-            AutoInterface.BlackListUpdate();
-            // 大陀螺维持速度
-            if (SpinTop.Enabled && Level.Instance.GetPlayer().motor1.move_info.run_speed != 24f) { Level.Instance.GetPlayer().SetSpeed(24f); }
-
-            // 自动锁血
-            //AutoLockHP.Update();
-
-            if (GameApp.Instance.lobby_connection != null && GameApp.Instance.lobby_connection.state == LobbyConnection.State.kInGame)
-            {
-                if (OtherC.KnifeEnabled)
-                {
-                    foreach (var boss in Level.Instance.boss_manager.GetBosses())
-                    {
-                        boss.getTransfrom().position = Level.Instance.GetPlayer().transform.position + new Vector3(0f, 0f, -4f);
-
-                        var obj = Traverse.Create(boss).Field("bossGameObject").GetValue<GameObject>();
-                        obj.transform.position = Level.Instance.GetPlayer().transform.position + new Vector3(0f, 0f, -4f);
-                    }
-                }
-            }
-
         }
 
         void OnDestroy()
         {
             if (Instance == this) Instance = null;
-            EyAuthManager.Instance.TryLogoutIfNeeded(EyAuthManager.Instance.Token, EyAuthManager.Instance.SingleCode);
+            try
+            {
+                EyAuthManager.Instance.TryLogoutIfNeeded(EyAuthManager.Instance.Token, EyAuthManager.Instance.SingleCode);
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("CHEAT", "OnDestroy logout skipped: " + e.Message);
+            }
             //FileLogger.Log("CHEAT", "OnDestroy");
         }
     }

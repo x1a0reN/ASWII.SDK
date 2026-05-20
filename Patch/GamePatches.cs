@@ -4066,4 +4066,98 @@ namespace ASWDEBUG
     //        return null;
     //    }
     //}
+
+    [HarmonyPatch]
+    [Obfuscation(
+        Exclude = true,
+        ApplyToMembers = true,
+        Feature = "-rename",
+        StripAfterObfuscation = false
+    )]
+    public static class Patch_LoginState_Login_LocalRedirect
+    {
+        private const string RedirectHost = "127.0.0.1";
+        private const int RedirectPort = 3100;
+
+        [Obfuscation(Exclude = true, Feature = "-rename")]
+        static MethodBase TargetMethod()
+        {
+            // [已禁用] 不再劫持登录到本地服务器，直接返回 null 跳过此补丁
+            return null;
+            /*
+            try
+            {
+                var asm = GetAsm("Assembly-CSharp");
+                if (asm == null) { FileLogger.Log("PATCH", "Assembly-CSharp not found"); return null; }
+
+                var t = asm.GetType("LoginState");
+                if (t == null) { FileLogger.Log("PATCH", "Type LoginState not found"); return null; }
+
+                var m = AccessTools.Method(t, "Login", new Type[] { typeof(string), typeof(string) });
+                if (m == null) FileLogger.Log("PATCH", "Method LoginState.Login not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(LoginState.Login) error: " + e);
+                return null;
+            }
+            */
+        }
+
+        [Obfuscation(Exclude = true, Feature = "-rename")]
+        static bool Prefix(string name, string password)
+        {
+            try
+            {
+                if (global::GameApp.Instance == null)
+                {
+                    FileLogger.Log("PATCH", "[LoginRedirect] GameApp.Instance == null");
+                    return true;
+                }
+
+                try
+                {
+                    if (global::GameApp.Instance.lobby_connection != null)
+                    {
+                        global::GameApp.Instance.lobby_connection.Disconnect();
+                    }
+                }
+                catch (Exception disconnectEx)
+                {
+                    FileLogger.Log("PATCH", "[LoginRedirect] disconnect skipped: " + disconnectEx.Message);
+                }
+
+                global::StartConfig.platform = 0;
+                global::GameApp.Instance.lobby_connection = new global::LobbyConnection();
+                global::GameApp.Instance.lobby_connection.login_name = name ?? string.Empty;
+                global::GameApp.Instance.lobby_connection.login_pass = password ?? string.Empty;
+                global::GameApp.Instance.lobby_connection.real_login_ip = RedirectHost;
+
+                FileLogger.Log("PATCH",
+                    "[LoginRedirect] force connect " + RedirectHost + ":" + RedirectPort +
+                    " user=" + (name ?? string.Empty));
+
+                global::GameApp.Instance.lobby_connection.Connect(RedirectHost, RedirectPort);
+                global::GameApp.Instance.error_message = "connect_failed";
+                return false;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[LoginRedirect] prefix error: " + e);
+                return true;
+            }
+        }
+
+        [Obfuscation(Exclude = true, Feature = "-rename")]
+        static Assembly GetAsm(string name)
+        {
+            var asms = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < asms.Length; i++)
+            {
+                try { if (asms[i].GetName().Name == name) return asms[i]; } catch { }
+            }
+            return null;
+        }
+    }
 }
