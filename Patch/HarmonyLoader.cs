@@ -95,7 +95,7 @@ namespace ASWDEBUG.Patch
                 else
                 {
                     // PatchAll 扫描“当前程序集”（也就是你的 ASWDEBUG.dll）里带 [HarmonyPatch] 的类
-                    harmony.PatchAll(Assembly.GetExecutingAssembly());
+                    // harmony.PatchAll(Assembly.GetExecutingAssembly());
                     FileLogger.Log("ASWDEBUG", "[HarmonyLoader] PatchAll applied (all TargetMethods return null for bisect).");
                 }
             }
