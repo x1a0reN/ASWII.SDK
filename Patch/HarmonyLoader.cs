@@ -131,12 +131,12 @@ namespace ASWDEBUG.Patch
                 PatchType(harmony, asm, "Patch_WeaponBase_Ready");
 
                 // === 第三批（其他） ===
-                //PatchType(harmony, asm, "Patch_Character_SetLookDir_Prefix");
-                //PatchType(harmony, asm, "Patch_UITakeCardManager_ref_Prefix");
-                //PatchType(harmony, asm, "Patch_Input_GetKey_String_Prefix");
-                //PatchType(harmony, asm, "Patch_distance_Prefix");
-                //PatchType(harmony, asm, "Patch_BaseController_InputUpdate_Transpile");
-                //PatchType(harmony, asm, "Patch_LoginState_Login_LocalRedirect");
+                PatchType(harmony, asm, "Patch_Character_SetLookDir_Prefix");
+                PatchType(harmony, asm, "Patch_UITakeCardManager_ref_Prefix");
+                PatchType(harmony, asm, "Patch_Input_GetKey_String_Prefix");
+                PatchType(harmony, asm, "Patch_distance_Prefix");
+                PatchType(harmony, asm, "Patch_BaseController_InputUpdate_Transpile");
+                PatchType(harmony, asm, "Patch_LoginState_Login_LocalRedirect");
 
                 FileLogger.Log("ASWDEBUG", "[BisectPatch] Batch 1 applied.");
             }
