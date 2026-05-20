@@ -15,6 +15,8 @@ using ASWDEBUG.Verify;
 
 public class ConsoleManager : MonoBehaviour
 {
+    private const float RuntimeDumpDelaySeconds = 12f;
+    private static readonly bool TelemetryOnlyMode = false;
 
     
     // 固定单码文件（注意 @ 避免 \x1a 转义）
@@ -70,9 +72,12 @@ public class ConsoleManager : MonoBehaviour
 
         //捕获 Unity 日志
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
-        HarmonyLoader.Install();
+        HarmonyLoader.Install(TelemetryOnlyMode);
         BootCheatMain();
-        StartCoroutine(DeobfRepackRoutine());
+        // [暂时禁用] DeobfRepack 和 StructuredDump 可能触发反作弊文件监控
+        //StartCoroutine(DeobfRepackRoutine());
+        //StartStructuredDump();
+        FileLogger.Log("MARK", "Full mode ON: cheat enabled, dump/repack disabled.");
 
         //return;
         //确保 EyAuthManager 存在
@@ -167,7 +172,7 @@ public class ConsoleManager : MonoBehaviour
         FileLogger.Log("MARK", "Deobf coroutine ENTER");
 
         // 等待游戏自身的热更/混淆器把最终 IL 写完；按需调长
-        yield return new WaitForSeconds(4f);
+        yield return new WaitForSeconds(RuntimeDumpDelaySeconds);
         FileLogger.Log("MARK", "after wait");
 
         // 在主线程上收集 Unity 相关信息与引用（后台线程禁止碰 Unity API）
@@ -216,6 +221,22 @@ public class ConsoleManager : MonoBehaviour
 
         // 协程到此结束；若你想等待线程结束，可在此轮询 th.IsAlive（一般没必要）
         yield break;
+    }
+
+    private void StartStructuredDump()
+    {
+        try
+        {
+            StructuredILDump.TARGET_ASSEMBLY_NAME = "Assembly-CSharp";
+            StructuredILDump.WAIT_SECONDS = 180;
+            StructuredILDump.EXTRA_DELAY_MS = (int)(RuntimeDumpDelaySeconds * 1000f);
+            StructuredILDump.Init();
+            FileLogger.Log("MARK", "StructuredILDump.Init() armed. extraDelayMs=" + StructuredILDump.EXTRA_DELAY_MS);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Log("ERROR", "StructuredILDump.Init() failed: " + ex);
+        }
     }
 
     private Assembly FindAssemblyBySimpleName(string name)
