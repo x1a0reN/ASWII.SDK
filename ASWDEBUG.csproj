@@ -35,7 +35,7 @@
       <HintPath>Lib\0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="Assembly-CSharp.deobf">
-      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\Assembly-CSharp.deobf.dll</HintPath>
+      <HintPath>bin\Debug\Assembly-CSharp.deobf.dll</HintPath>
     </Reference>
     <Reference Include="BouncyCastle.Crypto">
       <HintPath>Lib\BouncyCastle.Crypto.dll</HintPath>
@@ -83,6 +83,7 @@
     <Compile Include="Cheats\Player\WeaponNotCD.cs" />
     <Compile Include="Dump\CecilRepacker.cs" />
     <Compile Include="Loader\ConsoleManager.cs" />
+    <Compile Include="Loader\DoorstopEntrypoint.cs" />
     <Compile Include="Logger\FileLogger.cs" />
     <Compile Include="Main\CheatMain.cs" />
     <Compile Include="Patch\GamePatches.cs" />
@@ -106,6 +107,6 @@
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
-    <PostBuildEvent>xcopy "$(ProjectDir)bin\Debug\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" /Y</PostBuildEvent>
+    <PostBuildEvent>copy /Y "$(ProjectDir)bin\$(Configuration)\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>
   </PropertyGroup>
 </Project>
