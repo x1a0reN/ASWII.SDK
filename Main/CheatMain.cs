@@ -51,7 +51,7 @@ namespace ASWDEBUG.Main
             FileLogger.Log("CHEAT", "Start");
             CheatUIManager.MenuVisible = EnableDebugUi;
             CheatUIManager.SpriteMenuVisible = false;
-            RpcLabUI.Visible = EnableDebugUi;
+            RpcLabUI.Visible = false;
             LuaDoStringLabUI.Visible = EnableDebugUi;
             FileLogger.Log("CHEAT", EnableDebugUi ? "Audit UI enabled." : "Audit UI hidden.");
         }
