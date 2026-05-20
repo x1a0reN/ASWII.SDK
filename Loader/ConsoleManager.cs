@@ -72,12 +72,13 @@ public class ConsoleManager : MonoBehaviour
 
         //捕获 Unity 日志
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
-        HarmonyLoader.Install(TelemetryOnlyMode);
+        // [暂时禁用] 整个 Harmony 补丁系统，排查断连问题
+        //HarmonyLoader.Install(TelemetryOnlyMode);
         BootCheatMain();
         // [暂时禁用] DeobfRepack 和 StructuredDump 可能触发反作弊文件监控
         //StartCoroutine(DeobfRepackRoutine());
         //StartStructuredDump();
-        FileLogger.Log("MARK", "Full mode ON: cheat enabled, dump/repack disabled.");
+        FileLogger.Log("MARK", "Minimal mode: no Harmony, no dump.");
 
         //return;
         //确保 EyAuthManager 存在
