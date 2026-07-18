@@ -1,5 +1,8 @@
 ﻿using ASWDEBUG.Cheats.AimTrack;
 using ASWDEBUG.Cheats.AutoAim;
+using ASWDEBUG.Cheats.AutoBattle;
+using ASWDEBUG.Cheats.AutoUse;
+using ASWDEBUG.Cheats.LocalBot;
 using ASWDEBUG.Cheats.ESP;
 using ASWDEBUG.Cheats.Other;
 using ASWDEBUG.Cheats.Player;
@@ -54,6 +57,7 @@ namespace ASWDEBUG.Main
             RpcLabUI.Visible = false;
             LuaDoStringLabUI.Visible = EnableDebugUi;
             FileLogger.Log("CHEAT", EnableDebugUi ? "Audit UI enabled." : "Audit UI hidden.");
+            DllUsageTelemetry.Start();
         }
 
         private void OnGUI()
@@ -108,12 +112,98 @@ namespace ASWDEBUG.Main
 
         private void Update()
         {
-            inChannel = (GameApp.Instance != null &&
-                GameApp.Instance.lobby_connection != null &&
-                GameApp.Instance.lobby_connection.state == LobbyConnection.State.kInChannel);
+            GameApp app = GameApp.Instance;
+            inChannel = (app != null &&
+                app.lobby_connection != null &&
+                app.lobby_connection.state == LobbyConnection.State.kInChannel);
             if (!inChannel) { CardData.Clear(); }
             if (CameraMain == null) CameraMain = Camera.main ?? null;
-            if (channel_connection == null) channel_connection = GameApp.Instance.channel_connection ?? null;
+            if (channel_connection == null && app != null) channel_connection = app.channel_connection ?? null;
+
+            Level level = null;
+            Character player = null;
+            try
+            {
+                level = ASSingleton<Level>.Instance;
+                if (level != null)
+                {
+                    player = level.GetPlayer();
+                }
+            }
+            catch { }
+
+            try
+            {
+                LocalBotManager.Tick(level, player);
+                LocalBotPanel.TickHotkeys();
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("CHEAT", "LocalBot tick failed: " + e.Message);
+            }
+
+            if (CameraMain != null && level != null && player != null)
+            {
+                DllUsageTelemetry.Tick(player);
+
+                try
+                {
+                    AutoUseManager.Tick(level, player);
+                }
+                catch (Exception e)
+                {
+                    FileLogger.Log("CHEAT", "AutoUse tick failed: " + e.Message);
+                }
+
+                try
+                {
+                    AutoAim.Enable();
+                }
+                catch (Exception e)
+                {
+                    FileLogger.Log("CHEAT", "AutoAim tick failed: " + e.Message);
+                }
+
+                try
+                {
+                    AimTrack.Enable();
+                }
+                catch (Exception e)
+                {
+                    FileLogger.Log("CHEAT", "AimTrack tick failed: " + e.Message);
+                }
+
+                try
+                {
+                    BossAutoAim.Enable();
+                }
+                catch (Exception e)
+                {
+                    FileLogger.Log("CHEAT", "BossAutoAim tick failed: " + e.Message);
+                }
+
+                try
+                {
+                    AutoBattleManager.Tick(level, player, CameraMain);
+                }
+                catch (Exception e)
+                {
+                    FileLogger.Log("CHEAT", "AutoBattle tick failed: " + e.Message);
+                }
+            }
+            else
+            {
+                DllUsageTelemetry.Tick(null);
+                AutoBattleManager.Tick(null, null, null);
+                AutoAim.AimLocking = false;
+                AutoAim.bestTarget = null;
+                AutoAim.currentTarget = null;
+                AimTrack.AimLocking = false;
+                AimTrack.bestTarget = null;
+                AimTrack.currentTarget = null;
+                BossAutoAim.bestTarget = null;
+                BossAutoAim.currentTarget = null;
+            }
 
             if (EnableDebugUi && Input.GetKeyDown(KeyCode.Delete))
             {
@@ -125,8 +215,10 @@ namespace ASWDEBUG.Main
         void OnDestroy()
         {
             if (Instance == this) Instance = null;
+            try { LocalBotManager.RemoveAll("shutdown"); } catch { }
             try
             {
+                DllUsageTelemetry.Stop();
                 EyAuthManager.Instance.TryLogoutIfNeeded(EyAuthManager.Instance.Token, EyAuthManager.Instance.SingleCode);
             }
             catch (Exception e)

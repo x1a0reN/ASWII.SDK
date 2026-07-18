@@ -5,6 +5,8 @@ using Harmony;
 using ASWDEBUG.Logger;
 using PluginTool;
 using UnityEngine;
+using ASWDEBUG.Cheats.AutoBattle;
+using ASWDEBUG.Cheats.LocalBot;
 using ASWDEBUG.Cheats.Player;
 using ASWDEBUG.Cheats.AutoAim;
 using Pathfinding.Util;
@@ -125,6 +127,324 @@ namespace ASWDEBUG
                 try { if (asms[i].GetName().Name == name) return asms[i]; } catch { }
             }
             return null;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Level_LoadMap_ForceNavMesh
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                Assembly asm = GetAsm("Assembly-CSharp");
+                Type levelType = asm == null ? null : asm.GetType("Level");
+                MethodBase method = levelType == null
+                    ? null
+                    : AccessTools.Method(levelType, "LoadMap", new Type[] { typeof(string), typeof(ObscuredULong), typeof(bool) });
+                if (method == null) FileLogger.Log("PATCH", "Level.LoadMap(string, ObscuredULong, bool) not found");
+                return method;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Level.LoadMap) error: " + ex);
+                return null;
+            }
+        }
+
+        static void Prefix(string name, ref bool load_navmesh)
+        {
+            try
+            {
+                AutoBattleRoutePlanner.PrepareNavigationLoad(name, ref load_navmesh);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("AUTO-BATTLE][NAVMESH", "prefix_failed=" + ex.GetType().Name + ":" + ex.Message);
+            }
+        }
+
+        private static Assembly GetAsm(string name)
+        {
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < assemblies.Length; i++)
+            {
+                try
+                {
+                    if (assemblies[i].GetName().Name == name) return assemblies[i];
+                }
+                catch
+                {
+                }
+            }
+            return null;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_GetAxis_String_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetAxis", new Type[] { typeof(string) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetAxis(string) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetAxis string) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(string axisName, ref float __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryGetAxis(axisName, ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_GetAxisRaw_String_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetAxisRaw", new Type[] { typeof(string) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetAxisRaw(string) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetAxisRaw string) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(string axisName, ref float __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryGetAxis(axisName, ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_GetButton_String_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetButton", new Type[] { typeof(string) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetButton(string) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetButton string) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(string buttonName, ref bool __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryGetButton(buttonName, ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_GetButtonDown_String_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetButtonDown", new Type[] { typeof(string) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetButtonDown(string) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetButtonDown string) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(string buttonName, ref bool __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryGetButtonDown(buttonName, ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_GetMouseButton_Int_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetMouseButton", new Type[] { typeof(int) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetMouseButton(int) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetMouseButton int) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(int button, ref bool __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryGetMouseButton(button, ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_GetMouseButtonDown_Int_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetMouseButtonDown", new Type[] { typeof(int) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetMouseButtonDown(int) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetMouseButtonDown int) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(int button, ref bool __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryGetMouseButtonDown(button, ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_AnyKey_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var p = typeof(UnityEngine.Input).GetProperty("anyKey", BindingFlags.Static | BindingFlags.Public);
+                var m = p == null ? null : p.GetGetMethod();
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.anyKey getter not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.anyKey) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(ref bool __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryAnyKey(ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_Input_AnyKeyDown_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var p = typeof(UnityEngine.Input).GetProperty("anyKeyDown", BindingFlags.Static | BindingFlags.Public);
+                var m = p == null ? null : p.GetGetMethod();
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.anyKeyDown getter not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.anyKeyDown) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(ref bool __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryAnyKeyDown(ref __result))
+                    return false;
+            }
+            catch
+            {
+            }
+            return true;
         }
     }
 
@@ -273,6 +593,151 @@ namespace ASWDEBUG
 
     [HarmonyPatch]
     [Obfuscation(
+        Exclude = true,
+        ApplyToMembers = true,
+        Feature = "-rename",
+        StripAfterObfuscation = false
+    )]
+    public static class Patch_ChannelConnection_ShootBoss_Prefix
+    {
+        private static int _rewriteLogCount;
+
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var asm = GetAsm("Assembly-CSharp");
+                if (asm == null) { FileLogger.Log("PATCH", "Assembly-CSharp not found"); return null; }
+
+                var t = asm.GetType("ChannelConnection");
+                if (t == null) { FileLogger.Log("PATCH", "Type ChannelConnection not found"); return null; }
+
+                Type[] argTypes = new Type[]
+                {
+                    typeof(Vector3), typeof(Vector3),
+                    typeof(global::HitBossMessage), typeof(byte),
+                    typeof(bool)
+                };
+
+                var m = AccessTools.Method(t, "ShootBoss", argTypes);
+                if (m == null)
+                {
+                    FileLogger.Log("PATCH", "Method ShootBoss(...) not found - dumping overloads:");
+                    DumpOverloads(t, "ShootBoss");
+                }
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(ChannelConnection.ShootBoss) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(
+            ref Vector3 position,
+            ref Vector3 direction,
+            global::HitBossMessage hit_message,
+            byte slot,
+            bool do_effect)
+        {
+            try
+            {
+                if (!AimTrack.Enabled || hit_message == null) return true;
+
+                Character player = null;
+                try { player = global::ASSingleton<global::Level>.Instance.GetPlayer(); } catch { player = null; }
+                if (player == null) return true;
+
+                int spreadIndex = player.currentSpreadIndex;
+                int encodedUid = hit_message.uid;
+                int decodedUid = encodedUid != 0 ? (encodedUid ^ spreadIndex) : 0;
+
+                int bossUid;
+                Vector3 bestPoint;
+                BossColliderData bestData;
+                short bestDistance;
+                int bestDamageLevel;
+                if (!BossAutoAim.TryResolveBossTrackShot(decodedUid, position, direction,
+                    out bossUid, out bestPoint, out bestData, out bestDistance, out bestDamageLevel))
+                    return true;
+
+                Vector3 correctedDirection = bestPoint - position;
+                if (correctedDirection.sqrMagnitude > 0.0001f)
+                    direction = correctedDirection.normalized;
+
+                hit_message.uid = bossUid ^ spreadIndex;
+                hit_message.distance = bestDistance;
+                hit_message.position = bestPoint;
+                hit_message.part = (byte)Mathf.Clamp(bestData != null ? bestData.id : 255, 0, 255);
+                hit_message.damage_level = (byte)Mathf.Clamp(bestDamageLevel, 0, 255);
+
+                if (_rewriteLogCount < 20 || (_rewriteLogCount % 100) == 0)
+                {
+                    FileLogger.Log("BOSS-TRACK",
+                        "ShootBoss rewrite slot=" + slot +
+                        " bossUid=" + bossUid +
+                        " part=" + hit_message.part +
+                        " damage=" + hit_message.damage_level +
+                        " dist=" + hit_message.distance +
+                        " encodedFrom=" + encodedUid +
+                        " encodedTo=" + hit_message.uid);
+                }
+                _rewriteLogCount++;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[ChannelConnection.ShootBoss] boss track prefix error: " + e);
+            }
+
+            return true;
+        }
+
+        static Assembly GetAsm(string name)
+        {
+            var asms = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < asms.Length; i++)
+            {
+                try { if (asms[i].GetName().Name == name) return asms[i]; } catch { }
+            }
+            return null;
+        }
+
+        static void DumpOverloads(Type t, string name)
+        {
+            try
+            {
+                const BindingFlags BF = BindingFlags.Instance | BindingFlags.Static |
+                                        BindingFlags.Public | BindingFlags.NonPublic |
+                                        BindingFlags.FlattenHierarchy;
+                var ms = t.GetMethods(BF);
+                for (int i = 0; i < ms.Length; i++)
+                {
+                    var mi = ms[i];
+                    if (mi.Name != name) continue;
+                    var ps = mi.GetParameters();
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append((mi.IsStatic ? "static " : "") + mi.ReturnType.Name + " " + mi.Name + "(");
+                    for (int k = 0; k < ps.Length; k++)
+                    {
+                        if (k > 0) sb.Append(", ");
+                        var pt = ps[k].ParameterType;
+                        sb.Append(pt.IsByRef ? (pt.GetElementType().Name + "&") : pt.Name);
+                    }
+                    sb.Append(")");
+                    FileLogger.Log("PATCH", "  overload -> " + (mi.DeclaringType != null ? mi.DeclaringType.FullName : "<null>") + "::" + sb.ToString());
+                }
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "DumpOverloads error: " + e);
+            }
+        }
+    }
+
+
+    [HarmonyPatch]
+    [Obfuscation(
         Exclude = true,                 // 排除本类型
         ApplyToMembers = true,          // 并排除所有成员
         Feature = "-rename",            // 重点：不要重命名（有的混淆器也接受 "rename(false)" 或 "renaming")
@@ -356,130 +821,27 @@ namespace ASWDEBUG
             }
         }
         [Obfuscation(Exclude = true, Feature = "-rename")]
-        // 当 Plugin.ForceHPAlwaysOn == false 时，返回 true 放行原方法；否则强制绘制并拦截（return false）
+        // 只抬高原版血条透明度，绘制仍交给游戏自己的 UpdateBloodBar。
         static bool Prefix(object __instance)
         {
             try
             {
-                // 关掉开关 => 遵循默认规则
                 if (!HealthBarDisplay.Enabled) return true;
 
-                // 强制显示逻辑（方法B的“复刻绘制”，Alpha 固定为 1）
                 global::Character ch = __instance as global::Character;
-                if (ch == null) return true; // 类型不符，放行原函数
+                if (ch == null) return true;
 
-                // 与原逻辑一致的早退：玩家自己/已死亡/特殊地图（id=16）不绘制
-                if (ch.IsPlayer) return false;
-                if (ch.IsDied) return false;
                 var levelSingleton = Level.Instance;
-                if (levelSingleton != null && levelSingleton.map_id == 16UL) return false;
+                if (ch.IsPlayer || ch.IsDied) return true;
+                if (levelSingleton != null && levelSingleton.map_id == 16UL) return true;
+                if (ch.character_info.max_health <= 0 || ch.hp <= 0) return true;
 
-                // 取私有字段
-                Traverse tv = Traverse.Create(ch);
-
-                int uid = ch.uid;
-
-                // 名称缓存（与原逻辑一致）
-                if (uid != 0 && ch.baseName == null)
-                {
-                    ch.baseName = "BaseBody" + uid;
-                    ch.hpName = "BaseBodyHP" + uid;
-                    ch.hpBGName = "BaseBodyHPBG" + uid;
-                    ch.hpLabelName = "BaseBodyHPLabel" + uid;
-
-                    ch.gameObject.name = ch.baseName;
-                }
-
-                // 生命/护盾百分比
-
-                if (ch.character_info.max_health <= 0) return false;
-
-                float hpPct = Mathf.Clamp01((float)ch.hp / (float)ch.character_info.max_health);
-                if (hpPct <= 0f) return false; // 没血不画（保持和原逻辑一致）
-
-                float shieldPct = (ch.max_shield > 0) ? Mathf.Clamp01((float)ch.shield / (float)ch.max_shield) : 0f;
-
-                // 颜色（尽量复刻原逻辑，但不再隐藏）
-                global::Character player = (levelSingleton != null) ? levelSingleton.GetPlayer() : null;
-                bool sameTeam = true;
-                if (player != null)
-                {
-                    if (player.Is_Viewer && player.Is_GP)
-                    {
-                        if (global::InGameUIManager.getInstane().Player != null)
-                            sameTeam = (ch.GetTeam() == global::InGameUIManager.getInstane().Player.GetTeam());
-                    }
-                    else
-                    {
-                        sameTeam = (ch.GetTeam() == player.GetTeam());
-                    }
-                }
-
-                Color color = sameTeam ? Color.green : Color.red;
-                if (player != null && player.Is_Viewer && !player.Is_GP)
-                {
-                    // 观战但非 GP：沿用原配色（蓝/红），仅不再隐藏
-                    color = (ch.GetTeam() != 0)
-                        ? new Color(0.23529412f, 0.78431374f, 1f, 1f)
-                        : Color.red;
-                }
-                if (levelSingleton != null &&
-                    levelSingleton.game_type == global::RoomInfo.GameType.kGameTypeChiji &&
-                    player != null)
-                {
-                    color = (uid != player.uid) ? Color.red : Color.green;
-                }
-
-                // 屏幕位置
-                Vector3 sp = Camera.main.WorldToScreenPoint(ch.transform.position + new Vector3(0f, 1.6f, 0f));
-                if (sp.z <= 0f) return false;
-
-                // 强制 Alpha = 1
-                const float ALPHA = 1f;
-                color.a = ALPHA;
-
-                // 绘制（与原逻辑一致）
-                CodeUISys.CodeUI.Layer = global::InGameUIManager.HPLayer;
-                CodeUISys.CodeUI.atlasName = "ingameF";
-                CodeUISys.CodeUI.pivot = CodeUISys.Pivot.Center;
-                CodeUISys.CodeUI.Aplha = ALPHA;
-                CodeUISys.CodeUI.drawColor = color;
-                CodeUISys.CodeUI.drawType = CodeUISys.DrawType.FillH;
-                CodeUISys.CodeUI.fillAmount = hpPct;
-
-                CodeUISys.CodeUI.drawSprtie("skin_ingame_BG05_row", new Rect(sp.x, sp.y, 99f, 8f), ch.hpName, -sp.z + 2f);
-                CodeUISys.CodeUI.drawSprtie("skin_ingame_BG05", new Rect(sp.x, sp.y, 111f, 16f), ch.hpBGName, -sp.z + 1f);
-
-                int dy = 20;
-                if (shieldPct > 0f)
-                {
-                    CodeUISys.CodeUI.Layer = global::InGameUIManager.HPLayer;
-                    CodeUISys.CodeUI.atlasName = "ingameF";
-                    CodeUISys.CodeUI.Aplha = ALPHA;
-
-                    CodeUISys.CodeUI.drawSprtie("skin_ingame_BG05", new Rect(sp.x, sp.y + (float)dy * CodeUISys.CodeUI.uiScale, 111f, 16f), ch.hpBGName + "_shield", -sp.z + 1f);
-                    CodeUISys.CodeUI.drawColor = Color.yellow;
-                    CodeUISys.CodeUI.drawType = CodeUISys.DrawType.FillH;
-                    CodeUISys.CodeUI.fillAmount = shieldPct;
-                    CodeUISys.CodeUI.drawSprtie("skin_ingame_BG05_row", new Rect(sp.x, sp.y + (float)dy * CodeUISys.CodeUI.uiScale, 99f, 8f), ch.hpName + "_shield", -sp.z + 2f);
-                    dy += 20;
-                }
-
-                CodeUISys.CodeUI.fontAlignment = CodeUISys.FontAlignment.Center;
-                CodeUISys.CodeUI.drawColor = color;
-                CodeUISys.CodeUI.Aplha = ALPHA;
-                CodeUISys.CodeUI.drawLabel(ch.GetName(), 16, new Vector2(sp.x, sp.y + (float)dy * CodeUISys.CodeUI.uiScale), ch.hpLabelName, -sp.z + 2f);
-
-                // 同步把实例字段维持为 1，避免被其他逻辑读为 0
-                tv.Field("hpAplha").SetValue(1f);
-
-                // 我们已绘制，拦截原方法
-                return false;
+                Traverse.Create(ch).Field("hpAplha").SetValue(1f);
+                return true;
             }
             catch (Exception e)
             {
-                FileLogger.Log("GamePatches", "[Character.UpdateBloodBar] prefix(force) error: " + e);
-                // 出错时走原函数，避免影响游戏
+                FileLogger.Log("GamePatches", "[Character.UpdateBloodBar] prefix alpha error: " + e);
                 return true;
             }
         }
@@ -540,6 +902,16 @@ namespace ASWDEBUG
         [Obfuscation(Exclude = true, Feature = "-rename")]
         static bool Prefix(object __instance, Character c, int uid, byte slot, Vector3 pos, bool half_damage, int owner_type = 0)
         {
+
+            if (LocalBotManager.IsLocalCharacterUid(slot))
+            {
+                LocalBotManager.TryApplyExplosionHit(c, slot, half_damage, pos);
+                return false;
+            }
+            if (LocalBotManager.Contains(c))
+            {
+                return false;
+            }
 
             global::ChannelConnection ch = __instance as ChannelConnection;
 
@@ -667,7 +1039,8 @@ namespace ASWDEBUG
         // —— 前缀：在进入原方法之前把 staticTime / time_out_tip 设成“安全值” —— //
         static void Prefix(object __instance /*, float frameTime*/)
         {
-            if (!NotKick.Enabled || __instance == null) return;
+            // Auto battle must count as active play even when Unity's native Input hooks cannot be patched.
+            if ((!NotKick.Enabled && !Settings.AutoBattleEnabled) || __instance == null) return;
 
             try
             {
@@ -837,23 +1210,10 @@ namespace ASWDEBUG
         // Prefix：如需强制 Ready 成功，在这里返回 false 并设置 __result=true
         static bool Prefix(object __instance, ref bool __result)
         {
-            if (!WeaponNotCD.Enabled) return true;
-            var weapon = __instance as WeaponBase;
-            try
-            {
-                // 让 Attack 的 Time.time >= next_fire_time 始终成立
-                TrySetField(__instance, "next_fire_time", Time.time - 0.1f);
-
-                // 让 Ready() 里的 cool_down_ready 判定为真
-                TrySetField(__instance, "cool_down_ready", true);
-                __result = true;
-                return false;
-            }
-            catch (Exception e)
-            {
-                FileLogger.Log("Ready", "[WeaponBase.Ready] prefix error: " + e);
-            }
-            return true; // 继续执行原方法
+            // 网络安全：不要篡改 next_fire_time / cool_down_ready。
+            // 原版 Attack() 会在 Ready() 后继续校验 next_fire_time；这里强行返回 true
+            // 会导致客户端每帧 FireCheck，但服务端仍按真实射速/加密弹道校验，表现就是本地速射且无效。
+            return true;
         }
 
         // Postfix：这里仅记录最终结果（不改结果）
@@ -992,24 +1352,8 @@ namespace ASWDEBUG
 
         static bool Prefix(object __instance, ref bool __result)
         {
-            if (!WeaponNotCD.Enabled) return true;
-            var weapon = __instance as WeaponBase;
-            try
-            {
-                // 让 Attack 的 Time.time >= next_fire_time 始终成立
-                TrySetField(__instance, "next_fire_time", Time.time - 0.1f);
-
-                // 让 Ready() 里的 cool_down_ready 判定为真
-                TrySetField(__instance, "cool_down_ready", true);
-
-                __result = true;
-                return false;
-            }
-            catch (Exception e)
-            {
-                FileLogger.Log("Ready", "[WeaponBase.Ready] prefix error: " + e);
-            }
-            return true; // 继续执行原方法
+            // 同 WeaponBase.Ready：刀类也不能强制跳过原始冷却/状态判断。
+            return true;
         }
 
         static void Postfix(object __instance, ref bool __result)
@@ -1189,6 +1533,333 @@ namespace ASWDEBUG
     }
 
     [Obfuscation(
+        Exclude = true,
+        ApplyToMembers = true,
+        Feature = "-rename",
+        StripAfterObfuscation = false
+    )]
+    public static class ShotDiagnostics
+    {
+        internal static readonly bool HighFrequencyLoggingEnabled = false;
+
+        private struct BnrSnapshot
+        {
+            public bool Valid;
+            public int Frame;
+            public string WeaponPath;
+            public Ray PreBnrRay;
+            public bool PreBnrHit;
+            public Vector3 PreBnrHitPoint;
+            public Vector3 RawSpreadDirection;
+            public Ray CameraRay;
+            public Ray FinalRay;
+            public bool CameraHit;
+            public bool FinalHit;
+        }
+
+        private static BnrSnapshot _pendingBnr;
+        private static int _shotSequence;
+        private static int _lastShotSequence;
+        private static float _lastShotTime;
+        private static string _lastCombo = "-";
+        private static string _lastWeapon = "-";
+
+        public static void CaptureBnr(
+            string weaponPath,
+            Ray preBnrRay,
+            bool preBnrHit,
+            Vector3 preBnrHitPoint,
+            Vector3 rawSpreadDirection,
+            Ray cameraRay,
+            Ray finalRay,
+            bool cameraHit,
+            bool finalHit)
+        {
+            if (!HighFrequencyLoggingEnabled) return;
+
+            _pendingBnr = new BnrSnapshot
+            {
+                Valid = true,
+                Frame = Time.frameCount,
+                WeaponPath = weaponPath ?? "-",
+                PreBnrRay = preBnrRay,
+                PreBnrHit = preBnrHit,
+                PreBnrHitPoint = preBnrHitPoint,
+                RawSpreadDirection = rawSpreadDirection,
+                CameraRay = cameraRay,
+                FinalRay = finalRay,
+                CameraHit = cameraHit,
+                FinalHit = finalHit
+            };
+        }
+
+        public static void LogShoot(
+            Vector3 position,
+            Vector3 direction,
+            object hitMessage,
+            byte slot,
+            bool doEffect,
+            Vector3 velocity)
+        {
+            if (!HighFrequencyLoggingEnabled) return;
+
+            try
+            {
+                int sequence = ++_shotSequence;
+                int frame = Time.frameCount;
+                bool autoAim = AutoAim.Enabled;
+                bool bnr = BulletNoRecoil.Enabled;
+                bool aimTrack = AimTrack.Enabled;
+                bool bossAim = BossAutoAim.Enabled;
+                bool aimKeyHeld = false;
+                try { aimKeyHeld = Input.GetKey(GlobalHotkeys.PlayerKey); } catch { }
+
+                Character player = null;
+                try
+                {
+                    Level level = ASSingleton<Level>.Instance;
+                    if (level != null) player = level.GetPlayer();
+                }
+                catch { }
+
+                int spreadIndex = -1;
+                string weapon = "-";
+                if (player != null)
+                {
+                    try { spreadIndex = player.currentSpreadIndex; } catch { }
+                    try
+                    {
+                        if (player.mWeapon != null) weapon = player.mWeapon.GetType().Name;
+                    }
+                    catch { }
+                }
+
+                CameraObj cameraObj = null;
+                try { cameraObj = CameraObj.Instance; } catch { }
+                Vector3 cameraPosition = cameraObj != null ? cameraObj.shootPos : Vector3.zero;
+                Vector3 cameraDirection = cameraObj != null ? cameraObj.shootForward : Vector3.zero;
+
+                bool hasBnrSnapshot = _pendingBnr.Valid && Math.Abs(frame - _pendingBnr.Frame) <= 1;
+                if (_pendingBnr.Valid && !hasBnrSnapshot && frame - _pendingBnr.Frame > 1)
+                {
+                    _pendingBnr.Valid = false;
+                }
+
+                int enc = ReadInt(hitMessage, "enc", 0);
+                int encHigh = (enc >> 16) & 0xFFFF;
+                int encLow = enc & 0xFFFF;
+                string combo = ResolveCombo(autoAim, bnr, aimTrack, bossAim);
+
+                var sb = new StringBuilder(1024);
+                sb.Append("stage=shoot")
+                  .Append(" seq=").Append(sequence)
+                  .Append(" frame=").Append(frame)
+                  .Append(" time=").Append(FormatFloat(Time.time))
+                  .Append(" combo=").Append(combo)
+                  .Append(" autoAim=").Append(autoAim)
+                  .Append(" autoAimLocking=").Append(AutoAim.AimLocking)
+                  .Append(" aimKeyHeld=").Append(aimKeyHeld)
+                  .Append(" bnr=").Append(bnr)
+                  .Append(" aimTrack=").Append(aimTrack)
+                  .Append(" aimTrackLocking=").Append(AimTrack.AimLocking)
+                  .Append(" bossAim=").Append(bossAim)
+                  .Append(" weapon=").Append(weapon)
+                  .Append(" spreadIndex=").Append(spreadIndex)
+                  .Append(" slot=").Append(slot)
+                  .Append(" doEffect=").Append(doEffect)
+                  .Append(" cameraPos=").Append(FormatVector(cameraPosition))
+                  .Append(" cameraDir=").Append(FormatVector(cameraDirection))
+                  .Append(" sentPos=").Append(FormatVector(position))
+                  .Append(" sentDir=").Append(FormatVector(direction))
+                  .Append(" velocity=").Append(FormatVector(velocity))
+                  .Append(" cameraSentAngle=").Append(FormatAngle(cameraDirection, direction))
+                  .Append(" uid=").Append(ReadInt(hitMessage, "uid", 0))
+                  .Append(" part=").Append(ReadInt(hitMessage, "part", 0))
+                  .Append(" distance=").Append(ReadInt(hitMessage, "distance", 0))
+                  .Append(" spread=").Append(FormatFloat(ReadFloat(hitMessage, "spread", 0f)))
+                  .Append(" enc=").Append(enc)
+                  .Append(" encHigh=").Append(encHigh)
+                  .Append(" encLow=").Append(encLow)
+                  .Append(" bnrCapture=").Append(hasBnrSnapshot);
+
+                if (hasBnrSnapshot)
+                {
+                    BnrSnapshot snapshot = _pendingBnr;
+                    sb.Append(" bnrPath=").Append(snapshot.WeaponPath)
+                      .Append(" preBnrOrigin=").Append(FormatVector(snapshot.PreBnrRay.origin))
+                      .Append(" preBnrDir=").Append(FormatVector(snapshot.PreBnrRay.direction))
+                      .Append(" preBnrHit=").Append(snapshot.PreBnrHit)
+                      .Append(" preBnrHitPoint=").Append(FormatVector(snapshot.PreBnrHitPoint))
+                      .Append(" rawSpreadDir=").Append(FormatVector(snapshot.RawSpreadDirection))
+                      .Append(" cameraRayOrigin=").Append(FormatVector(snapshot.CameraRay.origin))
+                      .Append(" cameraRayDir=").Append(FormatVector(snapshot.CameraRay.direction))
+                      .Append(" bnrFinalOrigin=").Append(FormatVector(snapshot.FinalRay.origin))
+                      .Append(" bnrFinalDir=").Append(FormatVector(snapshot.FinalRay.direction))
+                      .Append(" cameraHit=").Append(snapshot.CameraHit)
+                      .Append(" finalHit=").Append(snapshot.FinalHit)
+                      .Append(" rawCameraAngle=").Append(FormatAngle(snapshot.RawSpreadDirection, snapshot.CameraRay.direction))
+                      .Append(" preFinalAngle=").Append(FormatAngle(snapshot.PreBnrRay.direction, snapshot.FinalRay.direction))
+                      .Append(" rawFinalAngle=").Append(FormatAngle(snapshot.RawSpreadDirection, snapshot.FinalRay.direction));
+                    _pendingBnr.Valid = false;
+                }
+
+                FileLogger.Log("SHOT-DIAG", sb.ToString());
+                _lastShotSequence = sequence;
+                _lastShotTime = Time.time;
+                _lastCombo = combo;
+                _lastWeapon = weapon;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("SHOT-DIAG", "stage=shoot error=" + ex.Message);
+            }
+        }
+
+        public static void LogAimPayload(object hitMessage, int currentSpreadIndex, int adjustedCount, string source)
+        {
+            if (!HighFrequencyLoggingEnabled) return;
+
+            try
+            {
+                int version = ReadInt(hitMessage, "aim_report_version", 0);
+                FileLogger.Log("SHOT-DIAG",
+                    "stage=payload" +
+                    " seq=" + _lastShotSequence +
+                    " frame=" + Time.frameCount +
+                    " combo=" + _lastCombo +
+                    " weapon=" + _lastWeapon +
+                    " source=" + source +
+                    " spreadIndex=" + currentSpreadIndex +
+                    " version=" + version +
+                    " captured=" + ((version & 0x80) != 0) +
+                    " target=" + ReadInt(hitMessage, "aim_target_uid", 0) +
+                    " shotCode=" + ReadInt(hitMessage, "aim_shot_precision_code", -1) +
+                    " samples=" + ReadArrayLength(hitMessage, "aim_precision_samples") +
+                    " adjusted=" + adjustedCount +
+                    " uid=" + ReadInt(hitMessage, "uid", 0) +
+                    " spread=" + FormatFloat(ReadFloat(hitMessage, "spread", 0f)) +
+                    " enc=" + ReadInt(hitMessage, "enc", 0));
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("SHOT-DIAG", "stage=payload error=" + ex.Message);
+            }
+        }
+
+        public static void LogKick(string source, int mode)
+        {
+            float elapsed = _lastShotSequence > 0 ? Time.time - _lastShotTime : -1f;
+            FileLogger.Log("SHOT-DIAG",
+                "stage=kick source=" + source +
+                " mode=" + mode +
+                " lastSeq=" + _lastShotSequence +
+                " sinceLastShot=" + FormatFloat(elapsed) +
+                " combo=" + _lastCombo +
+                " weapon=" + _lastWeapon);
+        }
+
+        private static string ResolveCombo(bool autoAim, bool bnr, bool aimTrack, bool bossAim)
+        {
+            if (aimTrack || bossAim) return "OTHER";
+            if (!autoAim && !bnr) return "BASELINE";
+            if (autoAim && !bnr) return "AUTOAIM_ONLY";
+            if (!autoAim && bnr) return "BNR_ONLY";
+            return "AUTOAIM_BNR";
+        }
+
+        private static object ReadField(object instance, string fieldName)
+        {
+            if (instance == null) return null;
+            FieldInfo field = instance.GetType().GetField(
+                fieldName,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return field == null ? null : field.GetValue(instance);
+        }
+
+        private static int ReadInt(object instance, string fieldName, int fallback)
+        {
+            try
+            {
+                if (instance == null) return fallback;
+                FieldInfo field = instance.GetType().GetField(
+                    fieldName,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field == null) return fallback;
+
+                object value = field.GetValue(instance);
+                if (value == null) return fallback;
+                try { return Convert.ToInt32(value); } catch { }
+
+                MethodInfo implicitMethod = field.FieldType.GetMethod(
+                    "op_Implicit",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new Type[] { field.FieldType },
+                    null);
+                if (implicitMethod == null) return fallback;
+
+                object plainValue = implicitMethod.Invoke(null, new object[] { value });
+                return plainValue == null ? fallback : Convert.ToInt32(plainValue);
+            }
+            catch { return fallback; }
+        }
+
+        private static float ReadFloat(object instance, string fieldName, float fallback)
+        {
+            try
+            {
+                if (instance == null) return fallback;
+                FieldInfo field = instance.GetType().GetField(
+                    fieldName,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field == null) return fallback;
+
+                object value = field.GetValue(instance);
+                if (value == null) return fallback;
+                try { return Convert.ToSingle(value); } catch { }
+
+                MethodInfo implicitMethod = field.FieldType.GetMethod(
+                    "op_Implicit",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new Type[] { field.FieldType },
+                    null);
+                if (implicitMethod == null) return fallback;
+
+                object plainValue = implicitMethod.Invoke(null, new object[] { value });
+                return plainValue == null ? fallback : Convert.ToSingle(plainValue);
+            }
+            catch { return fallback; }
+        }
+
+        private static int ReadArrayLength(object instance, string fieldName)
+        {
+            try
+            {
+                Array array = ReadField(instance, fieldName) as Array;
+                return array == null ? 0 : array.Length;
+            }
+            catch { return 0; }
+        }
+
+        private static string FormatAngle(Vector3 from, Vector3 to)
+        {
+            if (from.sqrMagnitude <= 0.000001f || to.sqrMagnitude <= 0.000001f) return "-1";
+            return FormatFloat(Vector3.Angle(from, to));
+        }
+
+        private static string FormatVector(Vector3 value)
+        {
+            return "(" + FormatFloat(value.x) + "," + FormatFloat(value.y) + "," + FormatFloat(value.z) + ")";
+        }
+
+        private static string FormatFloat(float value)
+        {
+            return value.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    [Obfuscation(
     Exclude = true,                 // 排除本类型
     ApplyToMembers = true,          // 并排除所有成员
     Feature = "-rename",            // 重点：不要重命名（有的混淆器也接受 "rename(false)" 或 "renaming")
@@ -1207,18 +1878,31 @@ namespace ASWDEBUG
             var inst = self as GunBaseController; // __instance
             if (inst == null || inst.owner == null) return false;
 
-            // —— 第一段：从相机位置 + 纯 forward 发射（GunBase 原版第一段用的是 CameraObj.Instance.shootForward，
-            //    这里我们明确要“无扩散”，所以直接用 Camera.main.forward）
-            Vector3 pos = Camera.main.transform.position;
-            Vector3 fwd = Camera.main.transform.forward; fwd.Normalize();
+            Ray preBnrRay = ray;
+            bool preBnrHit = hit.collider != null;
+            Vector3 preBnrHitPoint = hit.point;
+
+            // 与 AimAssistDetector 使用同一套相机射线，避免命中与 aim_report 脱节。
+            CameraObj cameraObj = CameraObj.Instance;
+            Camera mainCamera = Camera.main;
+            Vector3 pos = mainCamera != null ? mainCamera.transform.position : (cameraObj != null ? cameraObj.shootPos : ray.origin);
+            Vector3 fwd = cameraObj != null ? cameraObj.shootForward : (mainCamera != null ? mainCamera.transform.forward : ray.direction);
+            if (fwd.sqrMagnitude <= 0.0001f) return false;
+            fwd.Normalize();
+
+            Vector3 rawSpreadDirection = preBnrHit
+                ? (preBnrHitPoint - pos).normalized
+                : preBnrRay.direction.normalized;
 
             ray.origin = pos;
             ray.direction = fwd;
+            Ray cameraRay = ray;
 
             int mask = LayerMask.GetMask("Terrarin") | LayerMask.GetMask("kController") | LayerMask.GetMask("Weapon");
             float distance = 500f; // GunBase 原码里就是 500
 
-            bool flag = Physics.Raycast(ray, out hit, distance, mask);
+            bool cameraHit = Physics.Raycast(ray, out hit, distance, mask);
+            bool flag = cameraHit;
 
             // —— 第二段：与原版一致，从“角色身上+Vector3.up”朝第一段命中点
             if (flag)
@@ -1230,6 +1914,17 @@ namespace ASWDEBUG
                 // GunBase 原码第二段也用同样的 distance（500f），而不是 info.range
                 flag = Physics.Raycast(ray, out hit, distance, mask);
             }
+
+            ShotDiagnostics.CaptureBnr(
+                "GunBaseController",
+                preBnrRay,
+                preBnrHit,
+                preBnrHitPoint,
+                rawSpreadDirection,
+                cameraRay,
+                ray,
+                cameraHit,
+                flag);
 
             return flag;
         }
@@ -1449,16 +2144,29 @@ namespace ASWDEBUG
             if (!BulletNoRecoil.Enabled)
                 return false;
 
-            FileLogger.Log("BNR", $"before inject ray={ray.origin}->{ray.direction}  hit={hit.point}");
+            Ray preBnrRay = ray;
+            bool preBnrHit = hit.collider != null;
+            Vector3 preBnrHitPoint = hit.point;
 
-            Vector3 pos = Camera.main.transform.position;
-            Vector3 fwd = Camera.main.transform.forward; fwd.Normalize();
+            // 与 AimAssistDetector 使用同一套相机射线，避免命中与 aim_report 脱节。
+            CameraObj cameraObj = CameraObj.Instance;
+            Camera mainCamera = Camera.main;
+            Vector3 pos = mainCamera != null ? mainCamera.transform.position : (cameraObj != null ? cameraObj.shootPos : ray.origin);
+            Vector3 fwd = cameraObj != null ? cameraObj.shootForward : (mainCamera != null ? mainCamera.transform.forward : ray.direction);
+            if (fwd.sqrMagnitude <= 0.0001f) return false;
+            fwd.Normalize();
+
+            Vector3 rawSpreadDirection = preBnrHit
+                ? (preBnrHitPoint - pos).normalized
+                : preBnrRay.direction.normalized;
 
             ray.origin = pos;
             ray.direction = fwd;
+            Ray cameraRay = ray;
 
             int mask = LayerMask.GetMask("Terrarin") | LayerMask.GetMask("kController") | LayerMask.GetMask("Weapon");
-            bool flag = Physics.Raycast(ray, out hit, 1200f, mask);
+            bool cameraHit = Physics.Raycast(ray, out hit, 1200f, mask);
+            bool flag = cameraHit;
 
             if (flag)
             {
@@ -1482,7 +2190,16 @@ namespace ASWDEBUG
                 }
             }
 
-            FileLogger.Log("BNR", $"after  inject ray={ray.origin}->{ray.direction}  hit={hit.point}  flag={flag}");
+            ShotDiagnostics.CaptureBnr(
+                "SniperGunController",
+                preBnrRay,
+                preBnrHit,
+                preBnrHitPoint,
+                rawSpreadDirection,
+                cameraRay,
+                ray,
+                cameraHit,
+                flag);
             return flag;
         }
     }
@@ -1534,90 +2251,187 @@ namespace ASWDEBUG
             object __instance,
             Vector3 position,
             Vector3 direction,
-            global::HitMessage hit_message,
+            object hit_message,
             byte slot,
             bool do_effect,
             Vector3 velocity)
         {
             try
             {
-                //FileLogger.Log("PATCH", "[ChannelConnection.Shoot] 挥刀 ");
-                var ch = __instance as global::ChannelConnection;
-                if (ch == null) return false;
-
-                // if (this.state != State.kInGame) return;
-                // if (this.game_state == GameState.kGameLeaving) return;
-                if (ch.state != global::ChannelConnection.State.kInGame)
-                    return false;
-                if (ch.game_state == global::ChannelConnection.GameState.kGameLeaving)
-                    return false;
-
-                ch.BeginWrite();
-                ch.WriteByte(106);
-                ch.WriteByte(hit_message.is_real_man);
-                ch.WriteInt(hit_message.robot_uid);
-
-                // WriteFloat(Time.time - this.game_server_sync_local_time + this.game_server_time);
-                var tr = Traverse.Create(ch);
-                float gsSyncLocal = 0f, gsServerTime = 0f;
-                try { gsSyncLocal = tr.Field("game_server_sync_local_time").GetValue<float>(); } catch { }
-                try { gsServerTime = tr.Field("game_server_time").GetValue<float>(); } catch { }
-                ch.WriteFloat(Time.time - gsSyncLocal + gsServerTime);
-
-                ch.WriteByte(Convert.ToByte(do_effect));
-                //ch.WriteByte(Convert.ToByte(false));
-
-                NetworkStream streamObj = null;
-                try { streamObj = tr.Field("_stream").GetValue<NetworkStream>(); } catch { }
-                Vector3 b = new Vector3(0f, 0.5f, 0f);
-                //position = CharacterManager.Instance.GetCharacter(hit_message.uid).net_sync_position + b;
-                ConnectionDef.WriteCharacterPosition(streamObj, position);
-                ConnectionDef.WriteCharacterEulerAngles(streamObj, direction.normalized);
-
-                ch.WriteByte(slot);
-                if (AimTrack.Enabled && AimTrack.currentTarget && !(Level.Instance.GetPlayer().mWeapon is KnifeBaseController))
-                {
-                    Character player = global::ASSingleton<global::Level>.Instance.GetPlayer();
-                    var uid = (int)AimTrack.currentTarget.uid ^ player.currentSpreadIndex;
-                    ch.WriteByte((byte)uid);
-                    if (player.mWeapon is SniperGunController)
-                    {
-                        ch.WriteShort(1198);
-                    }
-                    else if (player.mWeapon is GunBaseController)
-                    {
-                        ch.WriteShort(4);
-                    }
-
-                    ch.WriteByte((byte)4);
-                }
-                else
-                {
-                    if (hit_message.uid != 0)
-                    {
-                        ch.WriteByte((byte)hit_message.uid);
-                        ch.WriteShort(hit_message.distance);
-                        ch.WriteByte((byte)hit_message.part);
-                    }
-                    else
-                    {
-                        ch.WriteByte(0);
-                    }
-                }
-
-                ch.WriteInt(hit_message.enc);
-                ch.WriteFloat(hit_message.spread);
-
-                ch.WriteByte((byte)hit_message.current_sight);
-
-                ch.EndWrite();
+                // 当前主程序集的 ChannelConnection.Shoot 已改为
+                // ShootPayloadCrypt.BuildEncryptedPayload(hit_message)。
+                // 旧版手写 106 包缺少 32 字节加密 payload/MAC，服务端会丢弃或判异常；
+                // 所以这里绝不能 return false 接管写包，只能放行原生实现。
+                ApplyAimTrackShotCompat(hit_message);
+                NormalizeBulletNoRecoilShotCompat(hit_message);
+                ShotDiagnostics.LogShoot(position, direction, hit_message, slot, do_effect, velocity);
+                // Do not touch aim-report fields here. The native Shoot method still needs to
+                // apply the same-frame v8 capture and write its sample count before encryption.
             }
             catch (Exception e)
             {
                 FileLogger.Log("PATCH", "[ChannelConnection.Shoot] prefix error: " + e);
             }
-            // 跳过原方法
-            return false;
+            return true;
+        }
+
+        private static void ApplyAimTrackShotCompat(object hitMessage)
+        {
+            try
+            {
+                if (!AimTrack.Enabled || hitMessage == null || AimTrack.currentTarget == null) return;
+
+                Character player = global::ASSingleton<global::Level>.Instance.GetPlayer();
+                if (player == null || player.mWeapon is KnifeBaseController) return;
+
+                int targetUid = (int)AimTrack.currentTarget.uid ^ player.currentSpreadIndex;
+                short distance = (short)((player.mWeapon is SniperGunController) ? 1198 : 4);
+
+                TrySetHitField(hitMessage, "uid", targetUid);
+                TrySetHitField(hitMessage, "distance", distance);
+                TrySetHitField(hitMessage, "part", 4);
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[ChannelConnection.Shoot] aim track compat error: " + e.Message);
+            }
+        }
+
+        private static void NormalizeBulletNoRecoilShotCompat(object hitMessage)
+        {
+            try
+            {
+                if (!BulletNoRecoil.Enabled || hitMessage == null) return;
+                // enc/spread 同时参与服务端命中校验；强行清零会导致客户端看似命中但服务端不结算伤害。
+                // 子弹直线只改 FireCheck 的射线，命中包字段保持原版 FireCheck 计算结果。
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[ChannelConnection.Shoot] bullet no recoil normalize error: " + e.Message);
+            }
+        }
+
+        private static void SanitizeAimReportCompat(object hitMessage)
+        {
+            // Kept as a compatibility stub for older patch references. Aim reports must remain
+            // untouched until the native same-frame fill and outer sample-count write complete.
+        }
+
+        private static void ApplyPendingShotReportCompat(object hitMessage)
+        {
+            try
+            {
+                if (hitMessage == null) return;
+                var type = AccessTools.TypeByName("AimAssistDetector");
+                if (type == null) return;
+                var method = type.GetMethod("ApplyPendingShotReport",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                    null,
+                    new Type[] { hitMessage.GetType() },
+                    null);
+                if (method != null)
+                    method.Invoke(null, new object[] { hitMessage });
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[ChannelConnection.Shoot] aim report apply compat error: " + e.Message);
+            }
+        }
+
+        private static void WriteAimReportFieldsCompat(global::ChannelConnection ch, object hitMessage)
+        {
+            try
+            {
+                if (ch == null || hitMessage == null) return;
+                if (!HasField(hitMessage, "aim_report_version")) return;
+
+                ch.WriteByte(ReadByteField(hitMessage, "aim_report_version"));
+                ch.WriteByte(ReadByteField(hitMessage, "aim_lock_target_uid"));
+                ch.WriteByte(ReadByteField(hitMessage, "aim_target_uid"));
+                ch.WriteInt(ReadIntField(hitMessage, "aim_lock_session_id"));
+                ch.WriteInt(ReadIntField(hitMessage, "aim_lock_duration_ms"));
+                ch.WriteShort(ReadShortField(hitMessage, "aim_relative_speed_cmps"));
+                ch.WriteShort(ReadShortField(hitMessage, "aim_head_precision_mm"));
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[ChannelConnection.Shoot] aim report write compat error: " + e.Message);
+            }
+        }
+
+        private static bool HasField(object instance, string fieldName)
+        {
+            return instance != null && instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) != null;
+        }
+
+        private static byte ReadByteField(object instance, string fieldName)
+        {
+            var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return field == null ? (byte)0 : Convert.ToByte(field.GetValue(instance));
+        }
+
+        private static short ReadShortField(object instance, string fieldName)
+        {
+            var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return field == null ? (short)0 : Convert.ToInt16(field.GetValue(instance));
+        }
+
+        private static int ReadIntField(object instance, string fieldName)
+        {
+            var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return field == null ? 0 : Convert.ToInt32(field.GetValue(instance));
+        }
+
+        private static bool TrySetHitField(object instance, string fieldName, object plainValue)
+        {
+            try
+            {
+                if (instance == null) return false;
+                var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field == null) return false;
+
+                object boxed = BuildFieldValue(field.FieldType, plainValue);
+                if (boxed == null) return false;
+                field.SetValue(instance, boxed);
+                return true;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[ChannelConnection.Shoot] set hit field " + fieldName + " error: " + e.Message);
+                return false;
+            }
+        }
+
+        private static object BuildFieldValue(Type fieldType, object plainValue)
+        {
+            if (fieldType == null) return null;
+            if (plainValue == null) return null;
+            if (fieldType.IsAssignableFrom(plainValue.GetType())) return plainValue;
+
+            try
+            {
+                var implicitMethod = fieldType.GetMethod("op_Implicit",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new Type[] { plainValue.GetType() },
+                    null);
+                if (implicitMethod != null)
+                    return implicitMethod.Invoke(null, new object[] { plainValue });
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                object converted = Convert.ChangeType(plainValue, fieldType);
+                if (converted != null) return converted;
+            }
+            catch
+            {
+            }
+
+            return null;
         }
 
         static Assembly GetAsm(string name)
@@ -1694,6 +2508,11 @@ namespace ASWDEBUG
         {
             try
             {
+                if (AutoBattleInput.TryGetKey(key, ref __result))
+                {
+                    return false;
+                }
+
                 // 读取游戏里配置的“开火键”
                 var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
 
@@ -1754,6 +2573,11 @@ namespace ASWDEBUG
             {
                 if (TryParseKeyCode(name, out var keyCode))
                 {
+                    if (AutoBattleInput.TryGetKey(keyCode, ref __result))
+                    {
+                        return false;
+                    }
+
                     var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
                     if ((keyCode == fireKey && AutoFire.AutoFireAllowed) || (keyCode == fireKey && SpinTop.Enabled))
                     {
@@ -1765,6 +2589,90 @@ namespace ASWDEBUG
             catch { /* 忽略异常，保证不崩 */ }
 
             return true; // 走原始 GetKey(string)
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(
+        Exclude = true,
+        ApplyToMembers = true,
+        Feature = "-rename",
+        StripAfterObfuscation = false
+    )]
+    public static class Patch_Input_GetKeyDown_KeyCode_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetKeyDown", new Type[] { typeof(KeyCode) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetKeyDown(KeyCode) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetKeyDown KeyCode) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(KeyCode key, ref bool __result)
+        {
+            try
+            {
+                if (AutoBattleInput.TryGetKeyDown(key, ref __result))
+                {
+                    return false;
+                }
+            }
+            catch
+            {
+            }
+
+            return true;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(
+        Exclude = true,
+        ApplyToMembers = true,
+        Feature = "-rename",
+        StripAfterObfuscation = false
+    )]
+    public static class Patch_Input_GetKeyDown_String_Prefix
+    {
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var m = AccessTools.Method(typeof(UnityEngine.Input), "GetKeyDown", new Type[] { typeof(string) });
+                if (m == null) FileLogger.Log("PATCH", "UnityEngine.Input.GetKeyDown(string) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(Input.GetKeyDown string) error: " + e);
+                return null;
+            }
+        }
+
+        static bool Prefix(string name, ref bool __result)
+        {
+            try
+            {
+                KeyCode keyCode;
+                if (AutoBattleInput.TryParseKeyCode(name, out keyCode) &&
+                    AutoBattleInput.TryGetKeyDown(keyCode, ref __result))
+                {
+                    return false;
+                }
+            }
+            catch
+            {
+            }
+
+            return true;
         }
     }
 
@@ -1874,7 +2782,7 @@ namespace ASWDEBUG
             {
                 global::WaitingPanel.instance.SetActive(false);
 
-                if (AuctionMonitor.IsRunning)
+                if (AuctionMonitor.FeatureEnabled && AuctionMonitor.IsRunning)
                 {
                     bool isMonitorList = (__instance.rpcRequest.func == "auction_list");
                     if (isMonitorList)
@@ -2052,6 +2960,11 @@ namespace ASWDEBUG
         {
             try
             {
+                if (!SpinTop.Enabled)
+                {
+                    return true;
+                }
+
                 if (!SpinTop.setLookEnabled)
                 {
                     return false;
@@ -2126,8 +3039,8 @@ namespace ASWDEBUG
         static void Prefix(object __instance, object __0, ref SpinState __state)
         {
             __state = default;
-            SpinTop.setLookEnabled = true;
             if (!SpinTop.Enabled || __0 == null) return;
+            SpinTop.setLookEnabled = true;
 
             try
             {
@@ -2197,6 +3110,7 @@ namespace ASWDEBUG
 
         static void Postfix(object __instance, object __0, SpinState __state)
         {
+            if (!SpinTop.Enabled) return;
             if (!__state.Valid || __state.Cam == null) return;
             try
             {
@@ -2870,6 +3784,63 @@ namespace ASWDEBUG
                 }
             }
             catch (Exception e) { FileLogger.Log("GamePatches", "[BossImpl.UpdateSyncData] prefix error: " + e); }
+            return true;
+        }
+
+        [Obfuscation(Exclude = true, Feature = "-rename")]
+        static Assembly GetAsm(string name)
+        {
+            var asms = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < asms.Length; i++)
+            {
+                try { if (asms[i].GetName().Name == name) return asms[i]; } catch { }
+            }
+            return null;
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(
+    Exclude = true,
+    ApplyToMembers = true,
+    Feature = "-rename",
+    StripAfterObfuscation = false
+)]
+    public static class Patch_BossManager_UpdateAllBosses_Prefix
+    {
+        [Obfuscation(Exclude = true, Feature = "-rename")]
+        static MethodBase TargetMethod()
+        {
+            try
+            {
+                var asm = GetAsm("Assembly-CSharp");
+                if (asm == null) { FileLogger.Log("PATCH", "Assembly-CSharp not found"); return null; }
+
+                var t = asm.GetType("BossManager");
+                if (t == null) { FileLogger.Log("PATCH", "Type BossManager not found"); return null; }
+
+                var m = AccessTools.Method(t, "UpdateAllBosses", new Type[] { typeof(float) });
+                if (m == null) FileLogger.Log("PATCH", "Method BossManager.UpdateAllBosses(float) not found");
+                return m;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "TargetMethod(BossManager.UpdateAllBosses) error: " + e);
+                return null;
+            }
+        }
+
+        [Obfuscation(Exclude = true, Feature = "-rename")]
+        static bool Prefix(object __instance, float frame_time)
+        {
+            try
+            {
+                if (OtherC.BossEnabled)
+                {
+                    return false;
+                }
+            }
+            catch (Exception e) { FileLogger.Log("GamePatches", "[BossManager.UpdateAllBosses] prefix error: " + e); }
             return true;
         }
 

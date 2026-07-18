@@ -42,7 +42,7 @@ namespace ASWDEBUG.Verify
         public string RelIniPath = "config.ini";
 
         // 版本/MAC 采集（按服务端约定改）
-        public string AppVersion = "1.1";
+        public string AppVersion = "2.0";
 
         // 只读状态
         public volatile bool LoggedIn;
@@ -50,6 +50,9 @@ namespace ASWDEBUG.Verify
         public string Token;            // 登录成功返回的 32 位 code
         public string SingleCode;       // 登录使用的 singlecode（配置里拿）
         public string StaticExpiredText;       // 到期时间
+        public bool QuitOnAuthFailure = false;
+        public bool KillProcessOnAuthFailure = false;
+        public bool QuitOnHeartbeatFailure = false;
 
         private readonly Queue<Action> _mainQ = new Queue<Action>();
         private readonly object _lock = new object();
@@ -249,17 +252,17 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
                     string uSingleCode = OperateIniFile.ReadIniData("root", "singlecode", "", iniPath);
                     if (string.IsNullOrEmpty(uSingleCode))
                     {
-                        //Fail("config.ini 中缺少 singlecode");
+                        Fail("config.ini 中缺少 singlecode");
                         return;
                     }
 
                     // 2) 检测版本（加密）
                     if (!CheckAppVersionEncrypted(AppVersion, out var serverRaw))
                     {
-                        //Fail("当前非最新版，请更新后再运行。");
+                        Fail("当前非最新版或版本检测失败。服务器返回：" + (serverRaw ?? "<null>"));
                         return;
                     }
-                   // FileLogger.Log("AUTH", "版本检测通过：服务器返回=" + serverRaw);
+                    FileLogger.Log("AUTH", "版本检测通过：服务器返回=" + serverRaw);
 
                     // 3) 登录（加密，严格顺序）
                     string mac = GetMacString();
@@ -271,7 +274,7 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
 
                     if (!LoginEncrypted(ordered, out string statusCode))
                     {
-                        //Fail("登录失败。");
+                        Fail("登录失败。");
                         return;
                     }
 
@@ -286,11 +289,11 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
                     if (GetExpiredEncrypted(SingleCode, out var expire))
                     {
                         StaticExpiredText = expire;
-                       // FileLogger.Log("AUTH", "获取到期时间成功：" + expire);
+                        FileLogger.Log("AUTH", "获取到期时间成功：" + expire);
                     }
                     else
                     {
-                      //  FileLogger.Log("AUTH", "获取到期时间失败。");
+                        FileLogger.Log("AUTH", "获取到期时间失败。");
                     }
 
                     // 6) 成功回主线程启动业务 + 开启心跳
@@ -310,7 +313,7 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
                 }
                 catch (Exception ex)
                 {
-                  //  Fail("网络/登录异常：" + ex.Message);
+                    Fail("网络/登录异常：" + ex.Message);
                 }
             });
 
@@ -324,8 +327,15 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
                 PostMain(() =>
                 {
                     onDone?.Invoke(false, msg);
-                    try { Application.Quit(); } catch { }
-                    try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { }
+                    FileLogger.Log("AUTH", "授权失败处理：不启动菜单，quitOnFail=" + QuitOnAuthFailure + " killOnFail=" + KillProcessOnAuthFailure);
+                    if (QuitOnAuthFailure)
+                    {
+                        try { Application.Quit(); } catch { }
+                    }
+                    if (KillProcessOnAuthFailure)
+                    {
+                        try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { }
+                    }
                 });
             }
         }
@@ -374,7 +384,10 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
         {
             statusCode = null;
             if (!CallEncryptedApi(LoginUrl, "42246", ServerPublicKeyPem, ServerPrivateKeyPem, ordered, out var plain))
+            {
+                FileLogger.Log("AUTH", "登录接口调用/解密失败。");
                 return false;
+            }
 
             string head = ExtractHead(plain);
             if (!string.IsNullOrEmpty(head) && head.Length == 32)
@@ -382,6 +395,7 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
                 statusCode = head;
                 return true;
             }
+            FileLogger.Log("AUTH", "登录接口返回非 token：" + DescribeAuthHead(head, plain));
             return false;
         }
 
@@ -540,9 +554,12 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
 
                                 if (_hbFailCount >= 3)
                                 {
-                                    //FileLogger.Log("AUTH", "心跳连续三次失败，退出程序。");
-                                    try { Application.Quit(); } catch { }
-                                    try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { }
+                                    FileLogger.Log("AUTH", "心跳连续三次失败，quitOnHeartbeatFail=" + QuitOnHeartbeatFailure);
+                                    if (QuitOnHeartbeatFailure)
+                                    {
+                                        try { Application.Quit(); } catch { }
+                                        try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { }
+                                    }
                                 }
                             }
                         });
@@ -766,6 +783,18 @@ FN8W9M8D7a7EJ0wd3AB+ZZ5Tw8pDC7KydY8jsfxDwAw=
             int bar = s.IndexOf('|');
             string head = (bar >= 0) ? s.Substring(0, bar) : s;
             return head.Trim();
+        }
+
+        private static string DescribeAuthHead(string head, string plain)
+        {
+            string h = head ?? "";
+            string p = plain ?? "";
+            if (h.Length == 32)
+                h = "<token-like len=32>";
+            else if (h.Length > 96)
+                h = h.Substring(0, 96) + "...";
+
+            return "head=\"" + h + "\" headLen=" + (head == null ? -1 : head.Length) + " plainLen=" + p.Length;
         }
     }
 }

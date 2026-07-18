@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 
@@ -39,12 +40,24 @@ namespace ASWDEBUG.Logger
 
         public static void Log(string tag, string msg)
         {
-            WriteLine("[" + DateTime.Now.ToString("HH:mm:ss.fff") + "][" + tag + "] " + msg);
+            WriteLine("[" + DateTime.Now.ToString("HH:mm:ss.fff") + "][pid=" + CurrentPid() + "][" + tag + "] " + msg);
         }
 
         public static void LogException(string msg, string stack)
         {
             Log("EXCEPTION", msg + (string.IsNullOrEmpty(stack) ? "" : ("\n" + stack)));
+        }
+
+        static int CurrentPid()
+        {
+            try
+            {
+                return Process.GetCurrentProcess().Id;
+            }
+            catch
+            {
+                return -1;
+            }
         }
     }
 

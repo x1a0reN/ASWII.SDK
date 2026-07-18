@@ -1,5 +1,7 @@
 ﻿using ASWDEBUG.Cheats.AimTrack;
 using ASWDEBUG.Cheats.AutoAim;
+using ASWDEBUG.Cheats.AutoBattle;
+using ASWDEBUG.Cheats.AutoUse;
 using ASWDEBUG.Cheats.ESP;
 using ASWDEBUG.Cheats.Other;
 using ASWDEBUG.Cheats.Player;
@@ -25,6 +27,14 @@ namespace ASWDEBUG.UI
     {
         public static bool MenuVisible;
         public static bool SpriteMenuVisible;
+#if AUCTION_BUILD
+        private static readonly bool ShowAuctionUi = true;
+#else
+        private static readonly bool ShowAuctionUi = false;
+#endif
+        private static readonly bool ShowMultiOpenUi = false;
+        private static string _autoBattleDropdownId = string.Empty;
+        private static Vector2 _autoBattleDropdownScroll;
 
         // 是否在“等待按键”模式
         private static bool _waitingForKey;
@@ -105,7 +115,12 @@ namespace ASWDEBUG.UI
             //UIHelper.Button("瞬移秒杀", Aike.Enabled, Aike.Toggle);
             //UIHelper.Button("自动锁血", AutoLockHP.Enabled, AutoLockHP.Toggle);
             UIHelper.Button("超级大陀螺", SpinTop.Enabled, SpinTop.Toggle);
-            //UIHelper.LabelAuto("到期时间: " + EyAuthManager.Instance.StaticExpiredText);
+            string expiredText = "未获取";
+            if (EyAuthManager.Instance != null && !string.IsNullOrEmpty(EyAuthManager.Instance.StaticExpiredText))
+            {
+                expiredText = EyAuthManager.Instance.StaticExpiredText;
+            }
+            UIHelper.LabelAuto("到期时间: " + expiredText);
 
             // ===== Layout 阶段：做快照/决定隐藏 =====
             if (et == EventType.Layout)
@@ -164,11 +179,12 @@ namespace ASWDEBUG.UI
 
 
             // AutoAim
-            UIHelper.Begin("自瞄设置", 165, 10, 165, 88, 0, 22, 0);
+            UIHelper.Begin("自瞄设置", 165, 10, 165, 110, 0, 22, 0);
             UIHelper.Button("开启", AutoAim.Enabled, AutoAim.ToggleEnabled);
             UIHelper.Button("是否判断墙体", AutoAim.Wall, AutoAim.ToggleWall);
             UIHelper.Button("是否判断盾牌", AutoAim.Shield, AutoAim.ToggleShield);
             UIHelper.Button("是否判断隐身", AutoAim.Hidden, AutoAim.ToggleHidden);
+            UIHelper.Button("BOSS自瞄", BossAutoAim.Enabled, BossAutoAim.ToggleEnabled);
             string btnText = _waitingForKey
                 ? "设置按键"
                 : $"{GetKeyDisplayName(GlobalHotkeys.PlayerKey)}";
@@ -237,25 +253,178 @@ namespace ASWDEBUG.UI
             UIHelper.Button("绘制射线", ESP.LineEsp, ESP.ToggleLineEsp);
 
             // Other
-            UIHelper.Begin("其他", 505, 10, 165, 60, 0, 22, 0);
+            UIHelper.Begin("其他", 505, 10, 165, 215, 0, 22, 0);
             UIHelper.Button("自动防踢", AutoKick.Enabled, AutoKick.Toggle);
             //UIHelper.Button("自动拉对局频道", AutoInterface.Enabled, AutoInterface.Toggle);
             UIHelper.Button("屏蔽所有弹窗", HookMsgbox.Enabled, HookMsgbox.Toggle);
             UIHelper.Button("翻牌透视", OtherC.Enabled, OtherC.Toggle);
             UIHelper.Button("取消验证", OtherC.EnabledVeryify, OtherC.ToggleEnabledVeryify);
             UIHelper.Button("锁定BOSS", OtherC.BossEnabled, OtherC.ToggleBossEnabled);
-            UIHelper.Button("叠刀BOSS", OtherC.KnifeEnabled, OtherC.ToggleKnifeEnabled);
-            UIHelper.Button("秒过小关(同时开上两个功能即可)");
+            UIHelper.Button("自动使用", AutoUseManager.Enabled, AutoUseManager.Toggle);
+            if (UIHelper.Button("自动使用配置"))
+            {
+                AutoUseConfigPanel.Visible = !AutoUseConfigPanel.Visible;
+            }
+            if (UIHelper.Button("本地Bot控制"))
+            {
+                LocalBotPanel.Visible = !LocalBotPanel.Visible;
+            }
             //if (UIHelper.Button("关闭服务器"))
             //{
             //    OtherC.Boom();
             //}
 
-            //AuctionItemDrawer.Draw(10, 320, 600, 400);
+            DrawAutoBattlePanel();
+
+            if (ShowMultiOpenUi)
+            {
+                UIHelper.Begin("多开辅助", 675, 10, 210, 190, 0, 20, 0);
+                UIHelper.LabelAuto("PID: " + CurrentPid());
+                UIHelper.LabelAuto("ID: " + SafeHash(Settings.MultiOpenLastIdentityHash));
+                UIHelper.LabelAuto("UC: " + SafeHash(Settings.MultiOpenLastIsolatedUcHash) + " / " + SafeHash(Settings.MultiOpenLastServerUcHash));
+                UIHelper.LabelAuto("ASWC: " + SafeHash(Settings.MultiOpenLastAswcPathHash));
+                UIHelper.LabelAuto("OPENID: " + SafeHash(Settings.MultiOpenLastOpenIdHash));
+                UIHelper.Button("多开辅助", Settings.MultiOpenEnabled, ToggleMultiOpenEnabled);
+                UIHelper.Button("隔离ASWC", Settings.MultiOpenAswcIsolationEnabled, ToggleMultiOpenAswcIsolation);
+                UIHelper.Button("拦截启动器退出", Settings.MultiOpenBlockLauncherProcessExit, ToggleMultiOpenBlockLauncherExit);
+                UIHelper.Button("实验拦截房间踢", Settings.MultiOpenBlockRoomKickClient, ToggleMultiOpenBlockRoomKick);
+            }
+
+            if (ShowAuctionUi)
+            {
+                AuctionItemDrawer.Draw(10, 320, 600, 400);
+            }
+
+            AutoUseConfigPanel.Display();
+            LocalBotPanel.Display();
 
             if (!SpriteMenuVisible) return;
             //SpriteListDrawer.DrawSpriteList(700, 10, 520, 620);
         }
+
+        private static void DrawAutoBattlePanel()
+        {
+            Rect panelRect = new Rect(675, 10, 230, 330);
+            UIHelper.DrawPanel(panelRect, new Color(0f, 0f, 0f, 0.58f), new Color(1f, 1f, 1f, 0.16f), 1f);
+            UIHelper.Begin("自动战斗", panelRect.x, panelRect.y, panelRect.width, panelRect.height, 0, 20, 2);
+            UIHelper.Button("启用AI接管", Settings.AutoBattleEnabled, AutoBattleManager.ToggleEnabled);
+
+            int strategy = DropdownRow(
+                "策略模式",
+                AutoBattleManager.StrategyNames,
+                Settings.AutoBattleStrategyMode,
+                "autobattle_strategy",
+                AutoBattleManager.SetStrategy);
+            if (strategy != Settings.AutoBattleStrategyMode) AutoBattleManager.SetStrategy(strategy);
+
+            int accuracy = DropdownRow(
+                "命中拟真",
+                AutoBattleManager.AccuracyNames,
+                Settings.AutoBattleAccuracyMode,
+                "autobattle_accuracy",
+                AutoBattleManager.SetAccuracy);
+            if (accuracy != Settings.AutoBattleAccuracyMode) AutoBattleManager.SetAccuracy(accuracy);
+
+            UIHelper.Button("联动用药/技能", Settings.AutoBattleLinkAutoUse, AutoBattleManager.ToggleAutoUseLink);
+            UIHelper.Button("调试日志", Settings.AutoBattleDebugLog, AutoBattleManager.ToggleDebugLog);
+            UIHelper.LabelAuto("提示: 手动按键/鼠标优先，AI会暂停", 11);
+            UIHelper.LabelAuto("联动说明: 开启后AI会临时启用自动使用规则，关闭AI后恢复原状态。", 10);
+            UIHelper.LabelAuto("状态: " + AutoBattleManager.LastStatus, 11);
+            UIHelper.LabelAuto("目标: " + AutoBattleManager.LastTarget, 11);
+            UIHelper.LabelAuto("路径: " + AutoBattleManager.LastPath + " [" + AutoBattleManager.LastPathProvider + "]", 11);
+            UIHelper.LabelAuto("动作: " + AutoBattleManager.LastAction, 11);
+        }
+
+        private static int DropdownRow(string label, string[] options, int selected, string id, Action<int> onSelect)
+        {
+            if (options == null || options.Length == 0) return selected;
+            selected = Mathf.Clamp(selected, 0, options.Length - 1);
+
+            Rect r = UIHelper.NextRectFlexible(22f);
+            GUIStyle labelStyle = new GUIStyle(UIHelper.StringStyle ?? GUI.skin.label)
+            {
+                fontSize = 13,
+                alignment = TextAnchor.MiddleLeft,
+                richText = false
+            };
+            GUIStyle buttonStyle = new GUIStyle(UIHelper.ButtonStyle ?? GUI.skin.button)
+            {
+                fontSize = 13,
+                alignment = TextAnchor.MiddleLeft,
+                padding = new RectOffset(8, 8, 0, 0)
+            };
+
+            GUI.Label(new Rect(r.x + 4f, r.y, 66f, r.height), label, labelStyle);
+            Rect button = new Rect(r.x + 72f, r.y + 1f, r.width - 76f, r.height - 2f);
+            if (GUI.Button(button, options[selected] + "  ▼", buttonStyle))
+            {
+                _autoBattleDropdownId = _autoBattleDropdownId == id ? string.Empty : id;
+                _autoBattleDropdownScroll = Vector2.zero;
+            }
+
+            if (_autoBattleDropdownId != id) return selected;
+
+            float rowH = 21f;
+            float h = Mathf.Min(options.Length, 6) * rowH + 8f;
+            Rect area = UIHelper.NextRectFlexible(h);
+            UIHelper.DrawPanel(area, new Color(0f, 0f, 0f, 0.88f), new Color(1f, 1f, 1f, 0.2f), 1f);
+
+            Rect view = new Rect(area.x + 4f, area.y + 4f, area.width - 8f, area.height - 8f);
+            Rect content = new Rect(0f, 0f, view.width - 16f, options.Length * rowH);
+            _autoBattleDropdownScroll = GUI.BeginScrollView(view, _autoBattleDropdownScroll, content, false, true);
+            for (int i = 0; i < options.Length; i++)
+            {
+                Rect row = new Rect(0f, i * rowH, content.width, rowH);
+                string text = (i == selected ? "• " : "  ") + options[i];
+                if (GUI.Button(row, text, buttonStyle))
+                {
+                    selected = i;
+                    _autoBattleDropdownId = string.Empty;
+                    if (onSelect != null) onSelect(i);
+                }
+            }
+            GUI.EndScrollView();
+
+            return selected;
+        }
+
+        private static void ToggleMultiOpenEnabled()
+        {
+            Settings.MultiOpenEnabled = !Settings.MultiOpenEnabled;
+        }
+
+        private static void ToggleMultiOpenAswcIsolation()
+        {
+            Settings.MultiOpenAswcIsolationEnabled = !Settings.MultiOpenAswcIsolationEnabled;
+        }
+
+        private static void ToggleMultiOpenBlockLauncherExit()
+        {
+            Settings.MultiOpenBlockLauncherProcessExit = !Settings.MultiOpenBlockLauncherProcessExit;
+        }
+
+        private static void ToggleMultiOpenBlockRoomKick()
+        {
+            Settings.MultiOpenBlockRoomKickClient = !Settings.MultiOpenBlockRoomKickClient;
+        }
+
+        private static int CurrentPid()
+        {
+            try
+            {
+                return System.Diagnostics.Process.GetCurrentProcess().Id;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private static string SafeHash(string value)
+        {
+            return string.IsNullOrEmpty(value) ? "-" : value;
+        }
+
         private static string GetKeyDisplayName(KeyCode key)
         {
             switch (key)

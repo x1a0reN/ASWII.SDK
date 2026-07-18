@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
-using System.Text;
 using UnityEngine;
 using ASWDEBUG.Patch;
 using ASWDEBUG.UI;
@@ -16,7 +15,13 @@ using ASWDEBUG.Verify;
 public class ConsoleManager : MonoBehaviour
 {
     private const float RuntimeDumpDelaySeconds = 12f;
+    private static readonly bool AutoDumpGameAssembly = false;
     private static readonly bool TelemetryOnlyMode = false;
+#if AUCTION_BUILD || MULTIOPEN_FORK
+    private static readonly bool NetworkAuthEnabled = false;
+#else
+    private static readonly bool NetworkAuthEnabled = true;
+#endif
 
     
     // 固定单码文件（注意 @ 避免 \x1a 转义）
@@ -67,104 +72,71 @@ public class ConsoleManager : MonoBehaviour
         // 日志初始化
         string logDir = Path.Combine(Application.persistentDataPath, "Logs");
         try { Directory.CreateDirectory(logDir); } catch { }
-        FileLogger.Init(Path.Combine(logDir, "ASW_App.log"), rotate: true);
+        int pid = -1;
+        try { pid = System.Diagnostics.Process.GetCurrentProcess().Id; } catch { }
+        FileLogger.Init(Path.Combine(logDir, "ASW_App.pid" + pid + ".log"), rotate: true);
         FileLogger.Log("MARK", "Start() ENTER");
 
-        //捕获 Unity 日志
+        // 捕获 Unity 日志
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
-        // [排查] 走 else 分支，用 BisectPatchGameClasses 逐批测试
-        HarmonyLoader.Install(false);
-        BootCheatMain();
-        //StartCoroutine(DeobfRepackRoutine());
-        //StartStructuredDump();
-        FileLogger.Log("MARK", "Bisect mode: batch 1 enabled.");
 
-        //return;
-        //确保 EyAuthManager 存在
-        //if (EyAuthManager.Instance == null)
-        //{
-        //    var go = new GameObject("EyAuthManager");
-        //    go.hideFlags = HideFlags.HideAndDontSave;
-        //    DontDestroyOnLoad(go);
-        //    go.AddComponent<EyAuthManager>();
-        //}
+        // 先把所有补丁装上，尽早覆盖反检测/反踢链路；
+        // 具体功能与菜单仍然延后到验证通过后再启动。
+        HarmonyLoader.Install(TelemetryOnlyMode);
+        FileLogger.Log("MARK", "Harmony installed before auth.");
 
-        //var mgr = EyAuthManager.Instance;
-
-        // 1) 先检测是否最新版（42252）
-        //if (!mgr.CheckAppVersionEncrypted(mgr.AppVersion, out var verHead))
-        //{
-        //    FileLogger.Log("AUTH", "版本检测失败或非最新版，服务器返回：" + (verHead ?? "<null>"));
-        //    try { Application.Quit(); } catch { }
-        //    try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { }
-        //    return;
-        //}
-        //FileLogger.Log("AUTH", "版本检测通过：已是最新版。");
-
-        // 2) 登录（内部开线程，失败会自行退出）
-        //mgr.RunAutoLogin((ok, err) =>
-        //{
-        //    if (!ok)
-        //    {
-        //        FileLogger.Log("AUTH", "自动登录失败：" + (string.IsNullOrEmpty(err) ? "未知错误" : err));
-        //        // RunAutoLogin 内已负责退出
-        //        return;
-        //    }
-
-        //    FileLogger.Log("AUTH", "登录成功：SingleCode=" + mgr.SingleCode + " Token=" + mgr.Token);
-
-        //    // 3) 登录成功 → 获取到期时间（42248）
-        //    if (mgr.GetExpiredEncrypted(mgr.SingleCode, out var expired))
-        //    {
-        //        FileLogger.Log("AUTH", "到期时间：" + expired);
-        //        // 安装补丁
-        //        HarmonyLoader.Install();
-        //        // 启动作弊
-        //        BootCheatMain();
-        //    }
-        //    else
-        //    {
-        //        FileLogger.Log("AUTH", "获取到期时间失败");
-        //    }
-
-        //    // 业务入口已在 EyAuthManager 内部（IAuthorizedEntry）自动启动
-        //});
-    }
-
-
-    private void BootCheatMain()
-    {
-        try
+        if (AutoDumpGameAssembly)
         {
-            if (CheatMain.Instance != null)
+            StartStructuredDump();
+            StartCoroutine(DeobfRepackRoutine());
+            FileLogger.Log("MARK", "Auto game assembly dump armed.");
+        }
+
+        if (!NetworkAuthEnabled)
+        {
+            FileLogger.Log("AUTH", "Network auth disabled. Booting CheatMain directly.");
+            BootCheatMain();
+            FileLogger.Log("MARK", "Auth bypassed. CheatMain started; patches were already active.");
+            return;
+        }
+
+        // 网络验证通过后，再启用具体功能和菜单。
+        if (EyAuthManager.Instance == null)
+        {
+            var go = new GameObject("EyAuthManager");
+            go.hideFlags = HideFlags.HideAndDontSave;
+            DontDestroyOnLoad(go);
+            go.AddComponent<EyAuthManager>();
+        }
+
+        var mgr = EyAuthManager.Instance;
+        if (mgr == null)
+        {
+            FileLogger.Log("AUTH", "EyAuthManager 初始化失败。");
+            return;
+        }
+
+        mgr.RunAutoLogin((ok, err) =>
+        {
+            if (!ok)
             {
-                //FileLogger.Log("BOOT", "CheatMain already exists.");
+                FileLogger.Log("AUTH", "自动登录失败：" + (string.IsNullOrEmpty(err) ? "未知错误" : err));
                 return;
             }
 
-            GameObject host = new GameObject("CheatMain");
-            host.hideFlags = HideFlags.HideAndDontSave;
-            DontDestroyOnLoad(host);
-            host.AddComponent<CheatMain>();
-            //FileLogger.Log("BOOT", "CheatMain created on dedicated host.");
-        }
-        catch (Exception e)
-        {
-            //FileLogger.Log("BOOT", "BootCheatMain failed: " + e);
-        }
-    }
+            FileLogger.Log("AUTH", "登录成功：SingleCode=" + mgr.SingleCode + " Token=" + mgr.Token);
+            if (!string.IsNullOrEmpty(mgr.StaticExpiredText))
+            {
+                FileLogger.Log("AUTH", "到期时间：" + mgr.StaticExpiredText);
+            }
+            else
+            {
+                FileLogger.Log("AUTH", "到期时间：未获取");
+            }
 
-    private void HandleLog(string condition, string stacktrace, LogType type)
-    {
-        if (type == LogType.Exception || type == LogType.Error)
-        {
-            FileLogger.LogException(condition, stacktrace);
-            if (this.onError != null) this.onError(condition, stacktrace, type);
-        }
-        else
-        {
-            FileLogger.Log(type.ToString().ToUpper(), condition + (string.IsNullOrEmpty(stacktrace) ? "" : ("\n" + stacktrace)));
-        }
+            BootCheatMain();
+            FileLogger.Log("MARK", "Auth passed. CheatMain started; patches were already active.");
+        });
     }
 
     private IEnumerator DeobfRepackRoutine()
@@ -219,7 +191,6 @@ public class ConsoleManager : MonoBehaviour
         th.Name = "CecilRepackWorker";
         th.Start();
 
-        // 协程到此结束；若你想等待线程结束，可在此轮询 th.IsAlive（一般没必要）
         yield break;
     }
 
@@ -252,18 +223,14 @@ public class ConsoleManager : MonoBehaviour
 
     private string TryGetTemplatePath()
     {
-        // 运行时常见路径：<Game>_Data/Managed/Assembly-CSharp.dll
         string dataDir = Application.dataPath;
-        string baseDir = Path.GetDirectoryName(dataDir); // 去掉 *_Data
-                                                         // 1) <exe目录>/<Game>_Data/Managed/Assembly-CSharp.dll
+        string baseDir = Path.GetDirectoryName(dataDir);
         string p1 = Path.Combine(Path.Combine(baseDir, "Managed"), "Assembly-CSharp.dll");
         if (File.Exists(p1)) return p1;
 
-        // 2) <exe目录>/<Game>_Data/Managed/Assembly-CSharp.dll （某些旧版 dataPath 就是 *_Data）
         string p2 = Path.Combine(dataDir, "Managed/Assembly-CSharp.dll");
         if (File.Exists(p2)) return p2;
 
-        // 3) 兜底：用自身程序集位置反推（某些版本能拿到）
         try
         {
             string loc = typeof(ConsoleManager).Assembly.Location;
@@ -273,6 +240,42 @@ public class ConsoleManager : MonoBehaviour
         catch { }
 
         return null;
+    }
+
+
+    private void BootCheatMain()
+    {
+        try
+        {
+            if (CheatMain.Instance != null)
+            {
+                //FileLogger.Log("BOOT", "CheatMain already exists.");
+                return;
+            }
+
+            GameObject host = new GameObject("CheatMain");
+            host.hideFlags = HideFlags.HideAndDontSave;
+            DontDestroyOnLoad(host);
+            host.AddComponent<CheatMain>();
+            //FileLogger.Log("BOOT", "CheatMain created on dedicated host.");
+        }
+        catch (Exception e)
+        {
+            //FileLogger.Log("BOOT", "BootCheatMain failed: " + e);
+        }
+    }
+
+    private void HandleLog(string condition, string stacktrace, LogType type)
+    {
+        if (type == LogType.Exception || type == LogType.Error)
+        {
+            FileLogger.LogException(condition, stacktrace);
+            if (this.onError != null) this.onError(condition, stacktrace, type);
+        }
+        else
+        {
+            FileLogger.Log(type.ToString().ToUpper(), condition + (string.IsNullOrEmpty(stacktrace) ? "" : ("\n" + stacktrace)));
+        }
     }
 
     public void setEnable(bool value)
@@ -297,7 +300,7 @@ public class ConsoleManager : MonoBehaviour
 
 	public void WriteLogToFile(string path)
 	{
-		StringBuilder stringBuilder = new StringBuilder();
+		System.Text.StringBuilder stringBuilder = new System.Text.StringBuilder();
 		foreach (ConsoleManager.ConsoleMessage consoleMessage in this.messageList)
 		{
 			stringBuilder.AppendLine(consoleMessage.str);

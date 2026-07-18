@@ -150,6 +150,82 @@ namespace ASWDEBUG.Global
 
         public static bool LoopInvite = false;
 
+#if MULTIOPEN_FORK
+        public static bool MultiOpenEnabled = true;
+
+        public static bool MultiOpenPatchHooksEnabled = true;
+
+        public static bool MultiOpenVirtualUcEnabled = false;
+
+        // ASWC-only diagnostic profile: isolate the server-issued UC by stable account
+        // identity while leaving the other candidate causes untouched.
+        public static bool MultiOpenAswcIsolationEnabled = true;
+
+        public static bool MultiOpenBlockLauncherProcessExit = false;
+
+        public static bool MultiOpenBlockRoomKickClient = false;
+
+        public static bool MultiOpenBlockLobbyForceDisconnect = false;
+
+        // Phase 2 single-factor test: keep the first client direct and route the
+        // second client through the configured SOCKS5 endpoint (Clash Verge).
+        public static bool MultiOpenPerProcessProxyEnabled = true;
+
+        public static bool MultiOpenSuppressGameEnterError = false;
+
+        public static bool MultiOpenUcPerProcess = false;
+#else
+        public static bool MultiOpenEnabled = false;
+
+        public static bool MultiOpenPatchHooksEnabled = false;
+
+        public static bool MultiOpenVirtualUcEnabled = false;
+
+        public static bool MultiOpenAswcIsolationEnabled = false;
+
+        public static bool MultiOpenBlockLauncherProcessExit = false;
+
+        public static bool MultiOpenBlockRoomKickClient = false;
+
+        public static bool MultiOpenBlockLobbyForceDisconnect = false;
+
+        public static bool MultiOpenPerProcessProxyEnabled = false;
+
+        public static bool MultiOpenSuppressGameEnterError = false;
+
+        public static bool MultiOpenUcPerProcess = false;
+#endif
+
+        public static bool AimAssistDetectorBypassEnabled = true;
+
+        public static bool ExtendedAntiDetectionBypassEnabled = true;
+
+        public static bool AutoBattleEnabled = false;
+
+        public static int AutoBattleStrategyMode = 0;
+
+        public static int AutoBattleAccuracyMode = 0;
+
+        public static bool AutoBattleLinkAutoUse = true;
+
+        public static bool AutoBattleDebugLog = false;
+
+        public static string MultiOpenLastOriginalUcHash = string.Empty;
+
+        public static string MultiOpenLastVirtualUcHash = string.Empty;
+
+        public static string MultiOpenLastIsolatedUcHash = string.Empty;
+
+        public static string MultiOpenLastServerUcHash = string.Empty;
+
+        public static string MultiOpenLastOpenIdHash = string.Empty;
+
+        public static string MultiOpenLastProcParaHash = string.Empty;
+
+        public static string MultiOpenLastIdentityHash = string.Empty;
+
+        public static string MultiOpenLastAswcPathHash = string.Empty;
+
         public static readonly List<Transform> sharedBoneList = new List<Transform>(32);
 
         public static readonly List<Vector3> sharedWorldPoints = new List<Vector3>(32);

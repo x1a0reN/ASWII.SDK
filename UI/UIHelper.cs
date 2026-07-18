@@ -108,6 +108,10 @@ namespace ASWDEBUG.UI
             TextFieldStyle.normal.background = MakeTex(2, 2, new Color(28f / 255f, 28f / 255f, 28f / 255f));
             TextFieldStyle.hover.background = MakeTex(2, 2, new Color(18f / 255f, 18f / 255f, 18f / 255f));
             TextFieldStyle.focused.background = MakeTex(2, 2, new Color(28f / 255f, 28f / 255f, 28f / 255f));
+            TextFieldStyle.normal.textColor = Color.white;
+            TextFieldStyle.hover.textColor = Color.white;
+            TextFieldStyle.focused.textColor = Color.white;
+            TextFieldStyle.active.textColor = Color.white;
 
             // —— Slider —— 与按钮同一套深色主题
             var texTrack = MakeTex(1, 6, ThemeBg);

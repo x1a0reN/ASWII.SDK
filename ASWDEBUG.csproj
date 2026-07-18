@@ -30,12 +30,21 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Auction|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Auction\</OutputPath>
+    <DefineConstants>TRACE;AUCTION_BUILD</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
       <HintPath>Lib\0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="Assembly-CSharp.deobf">
-      <HintPath>bin\Debug\Assembly-CSharp.deobf.dll</HintPath>
+      <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\Assembly-CSharp.deobf.dll</HintPath>
     </Reference>
     <Reference Include="BouncyCastle.Crypto">
       <HintPath>Lib\BouncyCastle.Crypto.dll</HintPath>
@@ -46,17 +55,17 @@
     </Reference>
     <Reference Include="RAIN, Version=2.0.0.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\RAIN.dll</HintPath>
+      <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\RAIN.dll</HintPath>
     </Reference>
     <Reference Include="RAINMetaform">
-      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\RAINMetaform.dll</HintPath>
+      <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\RAINMetaform.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core">
       <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\System.Core.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine">
-      <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\UnityEngine.dll</HintPath>
+      <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\UnityEngine.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
@@ -65,6 +74,12 @@
   <ItemGroup>
     <Compile Include="Cheats\AimTrack\AimTrack.cs" />
     <Compile Include="Cheats\AutoAim\AutoAim.cs" />
+    <Compile Include="Cheats\AutoAim\BossAutoAim.cs" />
+    <Compile Include="Cheats\AutoBattle\AutoBattleInput.cs" />
+    <Compile Include="Cheats\AutoBattle\AutoBattleManager.cs" />
+    <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
+    <Compile Include="Cheats\AutoUse\AutoUseManager.cs" />
+    <Compile Include="Cheats\LocalBot\LocalBotManager.cs" />
     <Compile Include="Cheats\ESP\ESP.cs" />
     <Compile Include="Cheats\Other\AutoInterface.cs" />
     <Compile Include="Cheats\Other\AutoKick.cs" />
@@ -86,8 +101,10 @@
     <Compile Include="Loader\DoorstopEntrypoint.cs" />
     <Compile Include="Logger\FileLogger.cs" />
     <Compile Include="Main\CheatMain.cs" />
+    <Compile Include="Main\DllUsageTelemetry.cs" />
     <Compile Include="Patch\GamePatches.cs" />
     <Compile Include="Patch\HarmonyLoader.cs" />
+    <Compile Include="Patch\LocalBotNetworkPatches.cs" />
     <Compile Include="Patch\LuaIntrospector.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Dump\RuntimeILDump.cs" />
@@ -95,7 +112,9 @@
     <Compile Include="UI\AuctionItemDrawer.cs" />
     <Compile Include="UI\AuctionMonitor.cs" />
     <Compile Include="UI\AuctionWatchList.cs" />
+    <Compile Include="UI\AutoUseConfigPanel.cs" />
     <Compile Include="UI\LuaLabUI.cs" />
+    <Compile Include="UI\LocalBotPanel.cs" />
     <Compile Include="UI\RpcLabUI.cs" />
     <Compile Include="UI\SearchPanel.cs" />
     <Compile Include="UI\SpriteListDrawer.cs" />
@@ -106,7 +125,7 @@
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' != 'Auction' ">
     <PostBuildEvent>copy /Y "$(ProjectDir)bin\$(Configuration)\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>
   </PropertyGroup>
 </Project>

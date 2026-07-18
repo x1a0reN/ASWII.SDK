@@ -11,6 +11,12 @@ namespace ASWDEBUG.UI
     // 依赖：AuctionWatchList、GameApp.Instance.lobby_connection（AddTextRpc）
     public static class AuctionMonitor
     {
+#if AUCTION_BUILD
+        public static readonly bool FeatureEnabled = true;
+#else
+        public static readonly bool FeatureEnabled = false;
+#endif
+
         // ===== 调参 =====
         private const bool PARALLEL_REQUESTS = true;     // 全量兜底是否并行
         private const int RequestTimeoutMs = 15000;
@@ -76,7 +82,7 @@ namespace ASWDEBUG.UI
 
         public struct NamedId { public string Id; public string Name; } // 供读取类型用
 
-        public static bool IsRunning { get { return _running; } }
+        public static bool IsRunning { get { return FeatureEnabled && _running; } }
 
         // 运行时调节全量兜底间隔（毫秒）。传 0 表示不节流（每轮都跑）
         public static void SetFullBurstIntervalMs(int ms)
@@ -88,6 +94,12 @@ namespace ASWDEBUG.UI
 
         public static void Start()
         {
+            if (!FeatureEnabled)
+            {
+                FileLogger.Log("AuctionMonitor", "START ignored: disabled");
+                return;
+            }
+
             lock (_lock)
             {
                 if (_running) return;
@@ -127,11 +139,27 @@ namespace ASWDEBUG.UI
             }
         }
 
-        public static void Toggle() { if (_running) Stop(); else Start(); }
+        public static void Toggle()
+        {
+            if (!FeatureEnabled)
+            {
+                Stop();
+                FileLogger.Log("AuctionMonitor", "TOGGLE ignored: disabled");
+                return;
+            }
+
+            if (_running) Stop(); else Start();
+        }
 
         // ===== 单独监控 API =====
         public static void StartSingleMonitor(string id, string name, float want, int t = -1, int st = -1)
         {
+            if (!FeatureEnabled)
+            {
+                FileLogger.Log("AuctionMonitor", "SINGLE START ignored: disabled");
+                return;
+            }
+
             if (string.IsNullOrEmpty(id)) return;
             SingleId = id;
             SingleName = name ?? id;
@@ -180,7 +208,7 @@ namespace ASWDEBUG.UI
         {
             try
             {
-                while (_running)
+                while (FeatureEnabled && _running)
                 {
                     _cycleStartUtc = DateTime.UtcNow;
 

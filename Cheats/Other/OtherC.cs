@@ -38,14 +38,21 @@ namespace ASWDEBUG.Cheats.Other
         public static void ToggleEnabledVeryify()
         {
             EnabledVeryify = !EnabledVeryify;
+            if (EnabledVeryify)
+            {
+                GlobalStatic.hookNum = "0";
+            }
+            FileLogger.Log("FEATURE", "[MATCH-CHECK] bypass enabled=" + EnabledVeryify);
         }
         public static void ToggleBossEnabled()
         {
             BossEnabled = !BossEnabled;
+            FileLogger.Log("FEATURE", "[BOSS-LOCK] enabled=" + BossEnabled);
         }
         public static void ToggleKnifeEnabled()
         {
-            KnifeEnabled = !KnifeEnabled;
+            KnifeEnabled = false;
+            FileLogger.Log("FEATURE", "[REMOVED] Boss knife-stack feature is disabled.");
         }
         public static void DumpSpriteNames(string atlasName)
         {
@@ -94,6 +101,8 @@ namespace ASWDEBUG.Cheats.Other
         }
         public static void Update()
         {
+            KnifeEnabled = false;
+
             if (EnabledVeryify)
             {
                 GlobalStatic.hookNum = "0";
@@ -101,6 +110,29 @@ namespace ASWDEBUG.Cheats.Other
             //if (!Enabled) { return; }
             //if (GameApp.Instance.channel_connection.state != global::ChannelConnection.State.kInGame) { return; }
             //30 85 C0 0F 84 8C 00 00 00 C6 86 D4 01 00 00 01 8D 85 20 F8 FF FF 8B 08 89 8D 9C FD FF FF 8B 48 04 89 8D A0 FD FF FF 8B 40 08 89 85 A4 FD FF FF 8D 86 D8 01 00 00 8B 8D 9C FD FF FF 89 08 8B 8D A0 FD FF FF 89 48 04 8B 8D A4 FD FF FF 89 48 08 8D 85 20 F8 FF FF
+        }
+    }
+
+    [HarmonyPatch]
+    [System.Reflection.Obfuscation(Exclude = true, ApplyToMembers = true, Feature = "-rename", StripAfterObfuscation = false)]
+    public static class Patch_NewUIRoom_OpenMatchCheck
+    {
+        static System.Reflection.MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(NewUIRoom), "openMatchCheck", new Type[] { typeof(MatchCheck.Delegate) });
+        }
+
+        static bool Prefix(MatchCheck.Delegate __0)
+        {
+            if (!OtherC.EnabledVeryify) return true;
+
+            GlobalStatic.hookNum = "0";
+            if (__0 != null)
+            {
+                __0();
+            }
+            FileLogger.Log("FEATURE", "[MATCH-CHECK] challenge skipped");
+            return false;
         }
     }
 }

@@ -1,5 +1,6 @@
 ﻿using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
+using ASWDEBUG.Cheats.LocalBot;
 using ASWDEBUG.Main;
 using ASWDEBUG.UI;
 using System;
@@ -116,6 +117,8 @@ namespace ASWDEBUG.Cheats.ESP
         public static Color ChipText = new Color(1f, 1f, 1f, 0.85f);
         public static Color ChipWarnBg = new Color(1f, 0.3f, 0.2f, 0.25f);
         public static Color ChipWarnText = new Color(1f, 0.5f, 0.4f, 1f);
+        public static Color ChipDllBg = new Color(0.16f, 0.45f, 1f, 0.35f);
+        public static Color ChipDllText = new Color(0.65f, 0.9f, 1f, 1f);
 
         public static float InfoMaxWidth = 220f;
         public static float BarHeight = 6f;
@@ -359,7 +362,48 @@ namespace ASWDEBUG.Cheats.ESP
                 // 信息卡片
                 if (InfoEsp && dist <= MAX_INFO_DISTANCE)
                     DrawCharacterInfoCard_Smooth(character, player, cam, dist, now);
+                else if (GetDllUserCardText(character) != null)
+                    DrawDllUserTag(character, cam, dist, now);
             }
+        }
+
+        private static string GetDllUserCardText(Character c)
+        {
+            try
+            {
+                if (c == null || c.character_info == null) return null;
+
+                string label = DllUsageTelemetry.GetVisibleCardLabel(c.character_info.character_id);
+                return string.IsNullOrEmpty(label) ? null : "闲人" + label + "卡";
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void DrawDllUserTag(Character c, Camera cam, float dist, float now)
+        {
+            Vector3 anchor;
+            if (!GetHeadAnchorForUI_Cached(c, cam, now, dist, out anchor)) return;
+
+            Vector3 sp = cam.WorldToScreenPoint(anchor);
+            if (sp.z <= 0f) return;
+
+            string text = GetDllUserCardText(c);
+            if (string.IsNullOrEmpty(text)) return;
+
+            const int font = 13;
+            GUIStyle style = SubStyle(font);
+            _gc.text = text;
+            Vector2 sz = style.CalcSize(_gc);
+            float w = sz.x + 12f;
+            float h = sz.y + 4f;
+            float x = sp.x - w * 0.5f;
+            float y = Screen.height - sp.y - h - 20f;
+
+            UIHelper.DrawBox(new Vector2(x, y), new Vector2(w, h), ChipDllBg, false);
+            UIHelper.DrawString(new Vector2(x + w * 0.5f, y + h * 0.5f), text, ChipDllText, font, true);
         }
 
         // —— 新增：对固定盒子尺寸做合理化（避免被“扁平化”）——
@@ -681,11 +725,14 @@ namespace ASWDEBUG.Cheats.ESP
                 _chipBuf.Add(new Chip("公会:" + c.character_info.guild_name, ChipBg, ChipText));
             bool isHidden = false; try { isHidden = c.GetHidden(); } catch { }
             if (isHidden) _chipBuf.Add(new Chip("隐身", ChipBg, ChipText));
-            if (c.IsRobot) _chipBuf.Add(new Chip("人机", ChipBg, ChipText));
+            if (LocalBotManager.Contains(c)) _chipBuf.Add(new Chip("本地测试Bot", ChipBg, ChipText));
+            else if (c.IsRobot) _chipBuf.Add(new Chip("人机", ChipBg, ChipText));
 
             ulong pid = (c.character_info != null) ? c.character_info.character_id : 0UL;
             if (pid != 0UL)
             {
+                string dllCardText = GetDllUserCardText(c);
+                if (!string.IsNullOrEmpty(dllCardText)) _chipBuf.Add(new Chip(dllCardText, ChipDllBg, ChipDllText));
                 int relMask = GetRelationMaskCached(pid);
                 if ((relMask & 1) != 0) _chipBuf.Add(new Chip("好友", ChipBg, ChipText));
                 if ((relMask & 2) != 0) _chipBuf.Add(new Chip("最近玩家", ChipBg, ChipText));
