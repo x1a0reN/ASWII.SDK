@@ -144,7 +144,7 @@ namespace Doorstop
             GameObject host = new GameObject("__DoorstopBoot__");
             host.hideFlags = HideFlags.HideAndDontSave;
             UnityEngine.Object.DontDestroyOnLoad(host);
-            host.AddComponent<ConsoleManager>();
+            host.AddComponent<SurvivalBotBootstrap>();
 
             LogInfo("Bootstrap: ConsoleManager created OK");
         }

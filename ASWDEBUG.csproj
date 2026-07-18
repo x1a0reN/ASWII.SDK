@@ -72,56 +72,17 @@
     <AppDesigner Include="Properties\" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Cheats\AimTrack\AimTrack.cs" />
-    <Compile Include="Cheats\AutoAim\AutoAim.cs" />
-    <Compile Include="Cheats\AutoAim\BossAutoAim.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleInput.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
-    <Compile Include="Cheats\AutoUse\AutoUseManager.cs" />
-    <Compile Include="Cheats\LocalBot\LocalBotManager.cs" />
-    <Compile Include="Cheats\ESP\ESP.cs" />
-    <Compile Include="Cheats\Other\AutoInterface.cs" />
-    <Compile Include="Cheats\Other\AutoKick.cs" />
-    <Compile Include="Cheats\Other\HookMsgbox.cs" />
-    <Compile Include="Cheats\Other\OtherC.cs" />
-    <Compile Include="Cheats\Other\PlayerAutoNavRAIN.cs" />
-    <Compile Include="Cheats\Player\Aike.cs" />
     <Compile Include="Cheats\Player\AutoFire.cs" />
-    <Compile Include="Cheats\Player\AutoLockHP.cs" />
-    <Compile Include="Cheats\Player\BulletNoRecoil.cs" />
-    <Compile Include="Cheats\Player\GrenadeHalfHurt.cs" />
-    <Compile Include="Cheats\Player\GrenadeNotHurt.cs" />
-    <Compile Include="Cheats\Player\HealthBarDisplay.cs" />
-    <Compile Include="Cheats\Player\NotKick.cs" />
-    <Compile Include="Cheats\Player\SpinTop.cs" />
-    <Compile Include="Cheats\Player\WeaponNotCD.cs" />
-    <Compile Include="Dump\CecilRepacker.cs" />
+    <Compile Include="Cheats\SurvivalBot\SurvivalBotManager.cs" />
     <Compile Include="Loader\ConsoleManager.cs" />
     <Compile Include="Loader\DoorstopEntrypoint.cs" />
     <Compile Include="Logger\FileLogger.cs" />
     <Compile Include="Main\CheatMain.cs" />
-    <Compile Include="Main\DllUsageTelemetry.cs" />
-    <Compile Include="Patch\GamePatches.cs" />
     <Compile Include="Patch\HarmonyLoader.cs" />
-    <Compile Include="Patch\LocalBotNetworkPatches.cs" />
-    <Compile Include="Patch\LuaIntrospector.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="Dump\RuntimeILDump.cs" />
-    <Compile Include="Global\Settings.cs" />
-    <Compile Include="UI\AuctionItemDrawer.cs" />
-    <Compile Include="UI\AuctionMonitor.cs" />
-    <Compile Include="UI\AuctionWatchList.cs" />
-    <Compile Include="UI\AutoUseConfigPanel.cs" />
-    <Compile Include="UI\LuaLabUI.cs" />
-    <Compile Include="UI\LocalBotPanel.cs" />
-    <Compile Include="UI\RpcLabUI.cs" />
-    <Compile Include="UI\SearchPanel.cs" />
-    <Compile Include="UI\SpriteListDrawer.cs" />
-    <Compile Include="UI\UIHelper.cs" />
-    <Compile Include="UI\CheatUIManager.cs" />
-    <Compile Include="Verify\EyAuthManager.cs" />
-    <Compile Include="Verify\OperateIniFile.cs" />
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
