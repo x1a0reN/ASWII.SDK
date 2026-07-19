@@ -236,6 +236,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return false;
             }
 
+            bool aimReady = SnapLook(player, camera, aimPoint);
             EnsureEmergencyWeapon(player, distance);
             if (Time.time < _nextWeaponSwitchAt)
             {
@@ -244,7 +245,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             if (!EnsureSniperScope(player.mWeapon)) return false;
 
-            bool aimReady = ApplyLook(player, camera, aimPoint, 1440f, 1.2f);
             bool exact = false;
             try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
             if (!aimReady || !CanFire(player, distance))
@@ -491,10 +491,21 @@ namespace ASWDEBUG.Cheats.AutoBattle
                    Mathf.Abs(nextPitch - desiredPitch) <= tolerance;
         }
 
+        private static bool SnapLook(Character player, Camera camera, Vector3 point)
+        {
+            if (player == null || player.camera == null || camera == null) return false;
+            Vector3 direction = point - camera.transform.position;
+            if (direction.sqrMagnitude < 0.01f) return false;
+            Vector3 desired = Quaternion.LookRotation(direction.normalized).eulerAngles;
+            float desiredPitch = Mathf.Clamp(Mathf.DeltaAngle(0f, desired.x), -59f, 63f);
+            player.camera.finalx = desired.y;
+            player.camera.finaly = Mathf.Clamp(CameraPitchOffset - desiredPitch, -75f, 48f);
+            return true;
+        }
+
         private static void EnsureEmergencyWeapon(Character player, float distance)
         {
             if (player == null || player.weaponlist == null || Time.time < _nextWeaponSwitchAt) return;
-            if (IsEmergencyWeaponSuitable(player.mWeapon, distance)) return;
 
             WeaponBase best = null;
             float bestScore = float.MinValue;
@@ -509,7 +520,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 else if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
                          type == WeaponType.kWeaponTypeDualWeapon) score += 135f;
                 else if (type == WeaponType.kWeaponTypePistol) score += 75f;
-                else if (type == WeaponType.kWeaponTypeSniperGun) score += distance >= 8f ? 80f : -80f;
+                else if (type == WeaponType.kWeaponTypeSniperGun) score += 320f;
                 else if (type == WeaponType.kWeaponTypeRPG) score += CurrentRole == "重装" ? 175f : 95f;
                 else if (type == WeaponType.kWeaponTypeBow) score += distance >= 10f ? 35f : -100f;
 
@@ -518,7 +529,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                          (type == WeaponType.kWeaponTypeDualWeapon || type == WeaponType.kWeaponTypePistol)) score += 25f;
                 else if (CurrentRole == "突击/狙击")
                 {
-                    if (type == WeaponType.kWeaponTypeSniperGun && distance >= 8f) score += 30f;
+                    if (type == WeaponType.kWeaponTypeSniperGun) score += 80f;
                     if (type == WeaponType.kWeaponTypeShotGun || type == WeaponType.kWeaponTypeSubMachineGun) score += 25f;
                 }
 
@@ -543,15 +554,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool IsEmergencyWeaponSuitable(WeaponBase weapon, float distance)
-        {
-            if (!IsReadyGun(weapon)) return false;
-            WeaponType type = GetWeaponType(weapon);
-            if (type == WeaponType.kWeaponTypeBow) return false;
-            if (type == WeaponType.kWeaponTypeSniperGun && distance < 8f) return false;
-            return true;
-        }
-
         private static void EnsureRoleWeapon(Character player, float distance)
         {
             if (player == null || player.weaponlist == null) return;
@@ -562,7 +564,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 preferred = WeaponType.kWeaponTypeRPG;
             else if (CurrentRole == "医疗/守护" && distance >= 4f && Time.time >= _nextRoleSpecialAt)
                 preferred = WeaponType.kWeaponTypeBow;
-            else if (CurrentRole == "突击/狙击" && distance > 4.2f)
+            else if (CurrentRole == "突击/狙击")
                 preferred = WeaponType.kWeaponTypeSniperGun;
 
             if (IsWeaponSuitable(player.mWeapon, preferred, distance)) return;
