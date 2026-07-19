@@ -35,7 +35,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _previousRoundSlept;
         private static bool _matching;
         private static bool _pendingSurvivalMatchRequest;
-        private static bool _awaitingMatchVerification;
         private static bool _cancelPending;
         private static bool _gmHandledThisRound;
         private static bool _roundEndedByGm;
@@ -49,10 +48,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _controlStartedAt;
         private static float _rewardWaitStartedAt;
         private static float _matchStartedAt;
-        private static float _verificationStartedAt;
         private static float _nextMatchAt;
         private static float _cancelRequestedAt;
         private static float _nextPunishRefreshAt;
+        private static float _nextLobbyTraceAt;
         private static float _nextSafePointAt;
         private static float _nextAttackPointAt;
         private static float _suicideStartedAt;
@@ -76,6 +75,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _cardCloseScheduled;
         private static byte _pendingGmUid;
         private static byte _pendingGmTeam;
+        private static string _lastLobbyTrace = string.Empty;
 
         public static bool Enabled { get; private set; }
         public static bool CombatTestEnabled { get; private set; }
@@ -133,7 +133,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 _matching = false;
                 _pendingSurvivalMatchRequest = false;
-                _awaitingMatchVerification = false;
                 _cancelPending = false;
                 if (!_roundActive) StartRound(level, player);
                 TickRound(app, level, player, camera);
@@ -162,8 +161,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _gmHandledThisRound = false;
             _roundEndedByGm = false;
             _pendingSurvivalMatchRequest = false;
-            _awaitingMatchVerification = false;
             _nextMatchAt = Time.time + 1f;
+            _nextLobbyTraceAt = 0f;
+            _lastLobbyTrace = string.Empty;
             Phase = SurvivalBotPhase.Lobby;
             StatusText = "机器人已启动";
             FileLogger.Log("SURVIVAL", "enabled reason=" + reason);
@@ -233,7 +233,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _cardManager = null;
             _matching = false;
             _pendingSurvivalMatchRequest = false;
-            _awaitingMatchVerification = false;
             _cancelPending = false;
             _matchStartedAt = 0f;
 
@@ -271,7 +270,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             if (!Enabled || gameMode != (byte)RoomInfo.GameType.kGameTypeChiji) return;
             _pendingSurvivalMatchRequest = true;
-            _awaitingMatchVerification = false;
             _matching = true;
             _cancelPending = false;
             _matchStartedAt = Time.time;
@@ -305,7 +303,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             bool stopForManualCancel = Enabled && !retryAllowed && !automaticCancel;
             _matching = false;
             _pendingSurvivalMatchRequest = false;
-            _awaitingMatchVerification = false;
             _cancelPending = false;
             _matchStartedAt = 0f;
 
@@ -684,6 +681,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static void TickLobby(GameApp app)
         {
+            TraceLobbyGate(app);
+
             if (_cardManager != null || _awaitingReward)
             {
                 Phase = SurvivalBotPhase.Balance;
@@ -739,18 +738,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            if (_awaitingMatchVerification)
-            {
-                Phase = SurvivalBotPhase.Lobby;
-                float verificationElapsed = Time.time - _verificationStartedAt;
-                StatusText = "等待完成匹配验证码 " + verificationElapsed.ToString("0") + "/120 秒";
-                if (verificationElapsed < 120f) return;
-                _awaitingMatchVerification = false;
-                _nextMatchAt = Time.time + 1f;
-                FileLogger.Log("MATCH", "verification wait timeout; retry armed");
-                return;
-            }
-
             if (Time.time < _nextMatchAt)
             {
                 Phase = SurvivalBotPhase.Lobby;
@@ -768,44 +755,83 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             try
             {
                 NewUIRoom roomUi = NewUIRoom.getInstance();
-                if (roomUi == null)
+                if (roomUi != null && roomUi.InMatch)
                 {
-                    _nextMatchAt = Time.time + 3f;
-                    StatusText = "等待匹配界面";
+                    _pendingSurvivalMatchRequest = true;
+                    _matching = true;
+                    _cancelPending = false;
+                    _matchStartedAt = Time.time;
+                    Phase = SurvivalBotPhase.Matching;
+                    StatusText = "已接管当前匹配";
+                    FileLogger.Log("MATCH", "existing room matching state adopted");
                     return;
                 }
 
                 string hookNum = GlobalStatic.hookNum;
                 try
                 {
-                    if (_previousRoundSlept) GlobalStatic.hookNum = "0";
-                    roomUi.TeamMatchOnClick(RoomInfo.GameType.kGameTypeChiji);
+                    // Automated matching must not stall on the UI verification branch.
+                    GlobalStatic.hookNum = "0";
+                    if (roomUi != null)
+                    {
+                        FileLogger.Log("MATCH", "auto match attempt path=room-ui");
+                        roomUi.TeamMatchOnClick(RoomInfo.GameType.kGameTypeChiji);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log("MATCH", "room UI attempt failed; direct fallback error=" + ex.Message);
                 }
                 finally
                 {
-                    if (_previousRoundSlept) GlobalStatic.hookNum = hookNum;
+                    GlobalStatic.hookNum = hookNum;
                 }
 
                 if (!_matching)
                 {
-                    if (_previousRoundSlept)
-                    {
-                        _nextMatchAt = Time.time + 3f;
-                        StatusText = "睡眠局后等待匹配请求";
-                    }
-                    else
-                    {
-                        _awaitingMatchVerification = true;
-                        _verificationStartedAt = Time.time;
-                        StatusText = "等待完成匹配验证码";
-                    }
+                    FileLogger.Log("MATCH", "room UI did not send request; direct fallback roomUi=" +
+                        (roomUi == null ? "null" : "ready"));
+                    app.lobby_connection.RequestMatching(
+                        (byte)RoomInfo.GameType.kGameTypeChiji,
+                        (byte)0);
+                }
+
+                if (!_matching)
+                {
+                    _nextMatchAt = Time.time + 3f;
+                    StatusText = "匹配请求未发出，准备重试";
+                    FileLogger.Log("MATCH", "request hook was not observed; retry armed");
                 }
             }
             catch (Exception ex)
             {
                 _nextMatchAt = Time.time + 5f;
                 StatusText = "匹配请求失败: " + ex.Message;
+                FileLogger.Log("MATCH", StatusText);
             }
+        }
+
+        private static void TraceLobbyGate(GameApp app)
+        {
+            if (Time.time < _nextLobbyTraceAt) return;
+            _nextLobbyTraceAt = Time.time + 3f;
+
+            LobbyConnection connection = app == null ? null : app.lobby_connection;
+            NewUIRoom roomUi = null;
+            try { roomUi = NewUIRoom.getInstance(); } catch { }
+
+            string trace = "state=" + (connection == null ? "null" : connection.state.ToString()) +
+                " roomUi=" + (roomUi == null ? "null" : "ready") +
+                " roomMatching=" + (roomUi != null && roomUi.InMatch) +
+                " lobbyIsNew=" + LobbyState.isNew +
+                " hookZero=" + (GlobalStatic.hookNum == "0") +
+                " halfQuit=" + Mathf.CeilToInt(GlobalStatic.halfQuitStateTime) +
+                " matching=" + _matching +
+                " reward=" + (_cardManager != null || _awaitingReward);
+            if (trace == _lastLobbyTrace) return;
+
+            _lastLobbyTrace = trace;
+            FileLogger.Log("MATCH", "lobby gate " + trace);
         }
 
         private static void TickCards()
@@ -1292,7 +1318,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 _matching = false;
                 _pendingSurvivalMatchRequest = false;
-                _awaitingMatchVerification = false;
                 _cancelPending = false;
                 _matchStartedAt = 0f;
             }
