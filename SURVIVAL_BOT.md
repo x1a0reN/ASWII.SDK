@@ -5,14 +5,25 @@ This branch is intentionally limited to the survival automation runtime.
 ## Runtime loop
 
 1. Wait for the deserter penalty to reach zero.
-2. Match `RoomInfo.GameType.kGameTypeChiji` and retry after 600 seconds.
-3. Freeze the maximum participant set observed during the first five seconds.
+2. Match `RoomInfo.GameType.kGameTypeChiji`; the timeout is configurable from 5 to 15 minutes.
+3. Read the initial room roster, wait for `game_state == kAlive`, then lock the maximum observed participant count.
 4. Stay in cover while more than half of the initial participants are alive.
 5. Switch to strict-line-of-sight ranged attack when the alive count reaches the top-half threshold.
 6. After one kill or assist, navigate to a cliff and jump; use `Suicide(uid)` only as a timeout fallback.
 7. Flip the server-provided number of reward cards and return to matching.
 
-Press `F8` to stop or restart the loop.
+The original physics-grid 2.5D route planner is retained, with denser ground support
+sampling and corrected jump-route execution. Survival combat reuses
+its role detection and tactics for heavy, medic/guard, and assault/sniper loadouts.
+
+Press `Delete` to show or hide the project-style configuration panel. Press `F8`
+to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs`.
+
+## Authentication scope
+
+The fork does not compile or start the old `Verify/EyAuthManager` network
+authorization, heartbeat, token, or expiry workflow. Packet hooks that remain are
+gameplay lifecycle signals used for matching, ranks, cards, and GM/viewer detection.
 
 ## GM signal
 

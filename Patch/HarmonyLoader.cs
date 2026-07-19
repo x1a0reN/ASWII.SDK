@@ -47,8 +47,9 @@ namespace ASWDEBUG.Patch
             PatchByName(harmony, typeof(Level), "LoadMap", 3, "LevelLoadMapPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseCharacterInfo", 1, "CharacterInfoPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseGameEnd", 1, "GameEndPrefix", null);
-            PatchByName(harmony, typeof(LobbyConnection), "ResponseMatching", 0, null, "MatchingAcceptedPostfix");
-            PatchByName(harmony, typeof(LobbyConnection), "ResponseCancelMatching", 0, null, "MatchingCancelledPostfix");
+            PatchByName(harmony, typeof(LobbyConnection), "RequestMatching", 2, "MatchingRequestedPrefix", null);
+            PatchByName(harmony, typeof(LobbyConnection), "ResponseMatching", 0, null, "MatchingResponsePostfix");
+            PatchByName(harmony, typeof(LobbyConnection), "ResponseCancelMatching", 0, null, "MatchingCancelResponsePostfix");
             PatchByName(harmony, typeof(UITakeCardManager), "Refresh", 0, null, "CardRefreshPostfix");
         }
 
@@ -163,7 +164,7 @@ namespace ASWDEBUG.Patch
                 byte team = reader.recv_buffer[p + 6];
                 Level level = ASSingleton<Level>.Instance;
                 Character player = level == null ? null : level.GetPlayer();
-                if (player != null && remoteUid != player.uid && team >= 2)
+                if (team >= 2 && (player == null || remoteUid != player.uid))
                     SurvivalBotManager.NotifyRemoteGmCandidate(remoteUid, team);
             }
             catch (Exception ex)
@@ -182,14 +183,32 @@ namespace ASWDEBUG.Patch
             catch { }
         }
 
-        private static void MatchingAcceptedPostfix()
+        private static void MatchingRequestedPrefix(byte game_mode)
         {
-            SurvivalBotManager.NotifyMatchingAccepted();
+            SurvivalBotManager.NotifyMatchingRequested(game_mode);
         }
 
-        private static void MatchingCancelledPostfix()
+        private static void MatchingResponsePostfix()
         {
-            SurvivalBotManager.NotifyMatchingCancelled();
+            bool accepted = false;
+            try
+            {
+                NewUIRoom room = NewUIRoom.getInstance();
+                accepted = room != null && room.InMatch;
+            }
+            catch { }
+            SurvivalBotManager.NotifyMatchingResponse(accepted);
+        }
+
+        private static void MatchingCancelResponsePostfix()
+        {
+            if (!SurvivalBotManager.HasPendingSurvivalMatchRequest) return;
+            try
+            {
+                NewUIRoom room = NewUIRoom.getInstance();
+                if (room == null || !room.InMatch) SurvivalBotManager.NotifyMatchingCancelled();
+            }
+            catch { }
         }
 
         private static void CardRefreshPostfix(UITakeCardManager __instance)

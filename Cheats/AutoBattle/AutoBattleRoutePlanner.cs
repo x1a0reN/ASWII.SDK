@@ -214,8 +214,29 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Vector3 snapped;
             if (!TrySnapToGround(to, out snapped, true)) return 220f;
             if (Mathf.Abs(snapped.y - from.y) > 4.0f) return 120f;
-            if (HasWalkSegment(from, snapped, ignoreRoot) && HasGroundSupportSegment(from, snapped, ignoreRoot)) return 0f;
+            if (HasWalkSegment(from, snapped, ignoreRoot) && HasCandidateGroundSupportSegment(from, snapped)) return 0f;
             return 18f;
+        }
+
+        private static bool HasCandidateGroundSupportSegment(Vector3 from, Vector3 to)
+        {
+            float distance = XZDistance(from, to);
+            if (distance < 0.65f) return true;
+            int samples = Mathf.Clamp(Mathf.CeilToInt(distance / 2.5f), 2, 8);
+            try
+            {
+                for (int i = 1; i < samples; i++)
+                {
+                    float t = (float)i / samples;
+                    Vector3 expected = Vector3.Lerp(from, to, t);
+                    RaycastHit hit;
+                    if (!Physics.Raycast(expected + Vector3.up * 0.9f, Vector3.down, out hit, 1.9f, GroundMask))
+                        return false;
+                    if (Mathf.Abs(hit.point.y - expected.y) > 0.72f) return false;
+                }
+                return true;
+            }
+            catch { return false; }
         }
 
         public static bool HasForwardBlock(Vector3 from, Vector3 dir, Transform ignoreRoot)
@@ -249,6 +270,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 return false;
             }
+        }
+
+        public static bool CanExecuteJump(Vector3 from, Vector3 to, AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
+        {
+            return TryJumpSegment(from, to, capabilities ?? new AutoBattleRouteCapabilities(), ignoreRoot);
         }
 
         public static bool HasWalkSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
@@ -1217,7 +1243,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             float distance = XZDistance(from, to);
             if (distance < 0.65f) return true;
-            int samples = Mathf.Clamp(Mathf.CeilToInt(distance / 0.85f), 2, 6);
+            int samples = Mathf.Clamp(Mathf.CeilToInt(distance / 0.75f), 2, 128);
             try
             {
                 for (int i = 1; i < samples; i++)

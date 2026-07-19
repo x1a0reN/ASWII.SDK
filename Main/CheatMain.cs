@@ -1,6 +1,7 @@
 using System;
 using ASWDEBUG.Cheats.SurvivalBot;
 using ASWDEBUG.Logger;
+using ASWDEBUG.UI;
 using UnityEngine;
 
 namespace ASWDEBUG.Main
@@ -10,9 +11,6 @@ namespace ASWDEBUG.Main
         public static CheatMain Instance;
         public static Camera CameraMain;
         public static ChannelConnection channel_connection;
-
-        private GUIStyle _titleStyle;
-        private GUIStyle _bodyStyle;
 
         private void Awake()
         {
@@ -56,23 +54,7 @@ namespace ASWDEBUG.Main
 
         private void OnGUI()
         {
-            if (_titleStyle == null)
-            {
-                _titleStyle = new GUIStyle(GUI.skin.label);
-                _titleStyle.fontSize = 16;
-                _titleStyle.fontStyle = FontStyle.Bold;
-                _titleStyle.normal.textColor = Color.white;
-                _bodyStyle = new GUIStyle(GUI.skin.label);
-                _bodyStyle.fontSize = 13;
-                _bodyStyle.normal.textColor = Color.white;
-                _bodyStyle.wordWrap = true;
-            }
-
-            GUILayout.BeginArea(new Rect(12f, 12f, 390f, 150f), GUI.skin.box);
-            GUILayout.Label("ASWII Survival Bot", _titleStyle);
-            GUILayout.Label(SurvivalBotManager.StatusText, _bodyStyle);
-            GUILayout.Label("F8: " + (SurvivalBotManager.Enabled ? "停止" : "启动") + "机器人", _bodyStyle);
-            GUILayout.EndArea();
+            SurvivalBotUI.Display();
         }
 
         private void OnDestroy()

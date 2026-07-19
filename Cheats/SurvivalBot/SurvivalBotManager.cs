@@ -22,29 +22,32 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
     public static class SurvivalBotManager
     {
-        private const float MatchTimeoutSeconds = 600f;
-        private const float ParticipantCaptureSeconds = 5f;
-        private const float SafePointRefreshSeconds = 1.35f;
-        private const float DesiredSeparation = 13f;
-        private const float SuicideFallbackSeconds = 25f;
-
         private static readonly List<Character> Enemies = new List<Character>(16);
         private static readonly HashSet<int> ParticipantIds = new HashSet<int>();
         private static readonly float[] SafeRadii = { 5f, 9f, 13f };
 
         private static bool _roundActive;
+        private static bool _controlStarted;
         private static bool _participantLocked;
         private static bool _taskCompleted;
         private static bool _previousRoundSlept;
         private static bool _matching;
+        private static bool _pendingSurvivalMatchRequest;
+        private static bool _awaitingMatchVerification;
         private static bool _cancelPending;
         private static bool _gmHandledThisRound;
         private static bool _roundEndedByGm;
+        private static bool _awaitingReward;
         private static int _consecutiveGmRounds;
+        private static int _roundGeneration;
+        private static int _pendingGmGeneration;
         private static int _baselineKills;
         private static int _baselineAssists;
         private static float _roundStartedAt;
+        private static float _controlStartedAt;
+        private static float _rewardWaitStartedAt;
         private static float _matchStartedAt;
+        private static float _verificationStartedAt;
         private static float _nextMatchAt;
         private static float _cancelRequestedAt;
         private static float _nextPunishRefreshAt;
@@ -52,10 +55,15 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _nextAttackPointAt;
         private static float _suicideStartedAt;
         private static float _nextCliffScanAt;
+        private static float _nextGmLeaveAt;
+        private static float _lastCliffProgressAt;
+        private static float _lastCliffDistance;
         private static Vector3 _safePoint;
         private static Vector3 _attackPoint;
         private static Vector3 _cliffEdge;
         private static Vector3 _cliffOutward;
+        private static Vector3 _failedCandidate;
+        private static float _failedCandidateUntil;
         private static bool _hasSafePoint;
         private static bool _hasAttackPoint;
         private static bool _hasCliff;
@@ -67,28 +75,29 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static byte _pendingGmUid;
         private static byte _pendingGmTeam;
 
-        public static bool Enabled = true;
+        public static bool Enabled { get; private set; }
         public static SurvivalBotPhase Phase = SurvivalBotPhase.Lobby;
         public static string StatusText = "等待初始化";
         public static int InitialPlayers { get; private set; }
         public static int RemainingPlayers { get; private set; }
         public static int LastFinalRank { get; private set; }
+        public static bool HasPendingSurvivalMatchRequest
+        {
+            get { return _pendingSurvivalMatchRequest; }
+        }
+
+        static SurvivalBotManager()
+        {
+            SurvivalBotSettings.EnsureLoaded();
+            Enabled = true;
+        }
 
         public static void Tick(Level level, Character player, Camera camera)
         {
             AutoBattleInput.BeginFrame();
 
             if (Input.GetKeyDown(KeyCode.F8))
-            {
-                Enabled = !Enabled;
-                if (!Enabled) Stop("manual_stop");
-                else
-                {
-                    Phase = SurvivalBotPhase.Lobby;
-                    StatusText = "机器人已启动";
-                    _nextMatchAt = Time.time + 1f;
-                }
-            }
+                SetEnabled(!Enabled, "hotkey");
 
             if (!Enabled)
             {
@@ -100,10 +109,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             TickCards();
 
             GameApp app = GameApp.Instance;
-            bool inSurvival = IsInSurvivalGame(app) && player != null;
+            bool inSurvival = IsInSurvivalGame(app);
             if (inSurvival)
             {
                 _matching = false;
+                _pendingSurvivalMatchRequest = false;
+                _awaitingMatchVerification = false;
                 _cancelPending = false;
                 if (!_roundActive) StartRound(level, player);
                 TickRound(app, level, player, camera);
@@ -114,21 +125,53 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             TickLobby(app);
         }
 
+        public static void SetEnabled(bool enabled, string reason)
+        {
+            if (!enabled)
+            {
+                Stop(reason);
+                return;
+            }
+
+            if (Enabled) return;
+            Enabled = true;
+            _consecutiveGmRounds = 0;
+            _pendingGmUid = 0;
+            _pendingGmTeam = 0;
+            _pendingGmGeneration = 0;
+            _gmHandledThisRound = false;
+            _roundEndedByGm = false;
+            _pendingSurvivalMatchRequest = false;
+            _awaitingMatchVerification = false;
+            _nextMatchAt = Time.time + 1f;
+            Phase = SurvivalBotPhase.Lobby;
+            StatusText = "机器人已启动";
+            FileLogger.Log("SURVIVAL", "enabled reason=" + reason);
+        }
+
         public static void Stop(string reason)
         {
+            if (!Enabled && Phase == SurvivalBotPhase.Stopped) return;
             Enabled = false;
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;
             AutoBattleInput.ClearAll();
             AutoBattleManager.ResetSurvivalRuntime(reason);
+            CancelActiveSession();
+            _roundActive = false;
+            _controlStarted = false;
+            _awaitingReward = false;
+            _cardManager = null;
             FileLogger.Log("SURVIVAL", StatusText);
         }
 
         public static void NotifyRemoteGmCandidate(byte uid, byte team)
         {
-            if (!Enabled) return;
+            GameApp app = GameApp.Instance;
+            if (!Enabled || !IsInSurvivalGame(app)) return;
             _pendingGmUid = uid;
             _pendingGmTeam = team;
+            _pendingGmGeneration = _roundActive ? _roundGeneration : _roundGeneration + 1;
             FileLogger.Log("GM", "remote GM/viewer candidate uid=" + uid + " team=" + team);
         }
 
@@ -139,17 +182,38 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 " topHalf=" + (InitialPlayers > 0 && rank <= InitialPlayers / 2));
         }
 
-        public static void NotifyMatchingAccepted()
+        public static void NotifyMatchingRequested(byte gameMode)
         {
+            if (!Enabled || gameMode != (byte)RoomInfo.GameType.kGameTypeChiji) return;
+            _pendingSurvivalMatchRequest = true;
+            _awaitingMatchVerification = false;
             _matching = true;
             _cancelPending = false;
-            if (_matchStartedAt <= 0f) _matchStartedAt = Time.time;
+            _matchStartedAt = Time.time;
             Phase = SurvivalBotPhase.Matching;
+            FileLogger.Log("MATCH", "survival matching request sent");
+        }
+
+        public static void NotifyMatchingResponse(bool accepted)
+        {
+            if (!_pendingSurvivalMatchRequest) return;
+            if (accepted)
+            {
+                _matching = true;
+                _cancelPending = false;
+                if (_matchStartedAt <= 0f) _matchStartedAt = Time.time;
+                Phase = SurvivalBotPhase.Matching;
+                return;
+            }
+
+            NotifyMatchingCancelled();
         }
 
         public static void NotifyMatchingCancelled()
         {
             _matching = false;
+            _pendingSurvivalMatchRequest = false;
+            _awaitingMatchVerification = false;
             _cancelPending = false;
             _matchStartedAt = 0f;
             _nextMatchAt = Time.time + 1.5f;
@@ -159,10 +223,27 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static void NotifyCardRefresh(UITakeCardManager manager)
         {
             if (!Enabled || manager == null) return;
+            if (_previousRoundSlept)
+            {
+                try
+                {
+                    if (manager.window != null)
+                    {
+                        manager.window.StopCountdown();
+                        manager.window.FinishHideView();
+                    }
+                }
+                catch { }
+                _awaitingReward = false;
+                _nextMatchAt = Time.time + 2f;
+                StatusText = "睡眠局跳过翻牌，准备下一场";
+                return;
+            }
             _cardManager = manager;
             _cardCount = ReadPrivateInt(manager, "cardCount");
             _nextCardActionAt = Time.time + 0.8f;
             _cardCloseScheduled = false;
+            _awaitingReward = true;
             Phase = SurvivalBotPhase.Balance;
             StatusText = _cardCount <= 0 ? "结算无可翻牌奖励" : "结算翻牌 0/" + _cardCount;
             FileLogger.Log("CARD", "refresh cardCount=" + _cardCount);
@@ -170,28 +251,34 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static void StartRound(Level level, Character player)
         {
+            _roundGeneration++;
             _roundActive = true;
+            _controlStarted = false;
             _participantLocked = false;
             _taskCompleted = false;
             _gmHandledThisRound = false;
             _roundEndedByGm = false;
+            _awaitingReward = false;
+            _cardManager = null;
             _roundStartedAt = Time.time;
-            _baselineKills = player.num_killed;
-            _baselineAssists = player.holding_attack_count;
+            _baselineKills = 0;
+            _baselineAssists = 0;
             InitialPlayers = 0;
             RemainingPlayers = 0;
+            LastFinalRank = 0;
             ParticipantIds.Clear();
             _hasSafePoint = false;
             _hasAttackPoint = false;
             _hasCliff = false;
             _attackTarget = null;
+            _failedCandidateUntil = 0f;
             _nextSafePointAt = 0f;
             _nextAttackPointAt = 0f;
             AutoBattleManager.ResetSurvivalRuntime("round_start");
-            CaptureParticipants(level, player);
+            CaptureParticipants(GameApp.Instance, level, player);
             Phase = SurvivalBotPhase.CaptureParticipants;
-            StatusText = "进入生存对局，采集初始人数";
-            FileLogger.Log("SURVIVAL", "round start kills=" + _baselineKills + " assists=" + _baselineAssists);
+            StatusText = "进入生存对局，等待角色就绪";
+            FileLogger.Log("SURVIVAL", "round connection entered generation=" + _roundGeneration);
         }
 
         private static void FinishRound()
@@ -201,45 +288,73 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("SURVIVAL", "round finish task=" + _taskCompleted + " gm=" + _roundEndedByGm +
                 " slept=" + _previousRoundSlept + " rank=" + LastFinalRank);
             _roundActive = false;
+            _controlStarted = false;
             _pendingGmUid = 0;
             _pendingGmTeam = 0;
+            _pendingGmGeneration = 0;
             AutoBattleInput.ClearAll();
             AutoBattleManager.ResetSurvivalRuntime("round_finish");
             Phase = SurvivalBotPhase.Balance;
             StatusText = "等待结算/返回大厅";
-            _nextMatchAt = Time.time + 5f;
+            _awaitingReward = !_roundEndedByGm && !_previousRoundSlept;
+            _rewardWaitStartedAt = Time.time;
+            _nextMatchAt = Time.time + (_awaitingReward ? 12f : 3f);
         }
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)
         {
-            AutoBattleManager.MarkSurvivalActivity(player);
-
-            if (_pendingGmTeam >= 2 && !_gmHandledThisRound)
+            if (_pendingGmTeam >= 2 && _pendingGmGeneration == _roundGeneration && !_gmHandledThisRound)
             {
                 HandleGmExit(app);
                 return;
             }
 
-            CaptureParticipants(level, player);
-            RefreshEnemies(level, player);
-            RemainingPlayers = CountRemaining(player);
-
-            if (!_participantLocked && Time.time - _roundStartedAt >= ParticipantCaptureSeconds)
+            if (_gmHandledThisRound)
             {
-                _participantLocked = true;
-                InitialPlayers = Math.Max(InitialPlayers, ParticipantIds.Count);
-                FileLogger.Log("SURVIVAL", "participants locked initial=" + InitialPlayers);
+                MaintainGmExit(app);
+                return;
             }
 
-            if (player.num_killed > _baselineKills || player.holding_attack_count > _baselineAssists)
+            CaptureParticipants(app, level, player);
+            if (_controlStarted && player != null &&
+                (player.num_killed > _baselineKills || player.holding_attack_count > _baselineAssists))
                 _taskCompleted = true;
-
-            if (player.IsDied)
+            if (player != null && player.IsDied)
             {
                 AutoBattleInput.ClearAll();
                 Phase = SurvivalBotPhase.Balance;
                 StatusText = "角色已死亡，等待结算";
                 return;
+            }
+            if (!IsCharacterControlReady(app, player))
+            {
+                AutoBattleInput.ClearAll();
+                Phase = SurvivalBotPhase.CaptureParticipants;
+                StatusText = "等待角色和倒计时就绪 | 初始 " + InitialPlayers;
+                return;
+            }
+
+            if (!_controlStarted)
+            {
+                _controlStarted = true;
+                _controlStartedAt = Time.time;
+                _baselineKills = player.num_killed;
+                _baselineAssists = player.holding_attack_count;
+                ParticipantIds.Remove(0);
+                CaptureParticipants(app, level, player);
+                FileLogger.Log("SURVIVAL", "control start kills=" + _baselineKills + " assists=" + _baselineAssists +
+                    " roster=" + InitialPlayers);
+            }
+
+            AutoBattleManager.MarkSurvivalActivity(player);
+            RefreshEnemies(level, player);
+            RemainingPlayers = CountRemaining(player);
+
+            if (!_participantLocked && Time.time - _controlStartedAt >= SurvivalBotSettings.ParticipantCaptureSeconds)
+            {
+                _participantLocked = true;
+                InitialPlayers = Math.Max(InitialPlayers, ParticipantIds.Count);
+                FileLogger.Log("SURVIVAL", "participants locked initial=" + InitialPlayers);
             }
 
             if (_taskCompleted)
@@ -260,26 +375,32 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             Phase = SurvivalBotPhase.Hide;
             int exposure = CountExposure(player.transform.position, player);
-            if (exposure > 0)
-            {
-                AutoBattleManager.TryUseSurvivalDefense(player);
-                _nextSafePointAt = 0f;
-            }
-
             if (!_hasSafePoint || Time.time >= _nextSafePointAt ||
                 XzDistance(player.transform.position, _safePoint) < 1.1f)
             {
                 _safePoint = SelectSafetyPoint(player);
                 _hasSafePoint = true;
-                _nextSafePointAt = Time.time + SafePointRefreshSeconds;
+                _nextSafePointAt = Time.time + SurvivalBotSettings.SafePointRefreshSeconds;
             }
 
             Vector3 move = AutoBattleManager.NavigateSurvival(player, _safePoint, true);
+            if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
+            {
+                MarkCandidateFailed(_safePoint);
+                _hasSafePoint = false;
+                _nextSafePointAt = 0f;
+            }
             if (move.sqrMagnitude > 0.01f) AutoBattleInput.SetMoveWorld(player, move, false);
             else AutoBattleInput.ClearMovement();
 
             if (camera != null && move.sqrMagnitude > 0.01f)
                 AutoBattleManager.LookSurvival(player, camera, player.transform.position + move * 8f + Vector3.up);
+
+            if (exposure > 0)
+            {
+                AutoBattleManager.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
+                _nextSafePointAt = 0f;
+            }
 
             StatusText = "躲避模式 | 初始 " + Math.Max(InitialPlayers, ParticipantIds.Count) +
                 " | 存活 " + RemainingPlayers + " | 暴露 " + exposure +
@@ -315,6 +436,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 }
 
                 Vector3 move = AutoBattleManager.NavigateSurvival(player, _attackPoint, false);
+                if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
+                {
+                    MarkCandidateFailed(_attackPoint);
+                    _hasAttackPoint = false;
+                    _nextAttackPointAt = 0f;
+                }
                 if (move.sqrMagnitude > 0.01f) AutoBattleInput.SetMoveWorld(player, move, false);
                 else AutoBattleInput.ClearMovement();
                 if (camera != null)
@@ -333,6 +460,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _suicideStartedAt = Time.time;
                 _nextCliffScanAt = 0f;
                 _hasCliff = false;
+                _lastCliffDistance = float.MaxValue;
+                _lastCliffProgressAt = Time.time;
                 AutoBattleInput.ClearAll();
                 FileLogger.Log("SURVIVAL", "kill/assist complete; cliff suicide started");
             }
@@ -343,12 +472,45 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _hasCliff = TryFindCliff(player, out _cliffEdge, out _cliffOutward);
             }
 
+            if (Time.time - _suicideStartedAt >= SurvivalBotSettings.SuicideFallbackSeconds &&
+                app != null && app.channel_connection != null)
+            {
+                app.channel_connection.Suicide(player.uid);
+                _suicideStartedAt = Time.time + 3600f;
+                AutoBattleInput.ClearAll();
+                StatusText = "跳崖超时，已请求自杀兜底";
+                FileLogger.Log("SURVIVAL", "cliff timeout; Suicide(uid) fallback sent");
+                return;
+            }
+
             if (_hasCliff)
             {
                 float edgeDistance = XzDistance(player.transform.position, _cliffEdge);
+                if (edgeDistance + 0.35f < _lastCliffDistance)
+                {
+                    _lastCliffDistance = edgeDistance;
+                    _lastCliffProgressAt = Time.time;
+                }
+                else if (Time.time - _lastCliffProgressAt > 5f)
+                {
+                    _hasCliff = false;
+                    _nextCliffScanAt = 0f;
+                    AutoBattleInput.ClearMovement();
+                    StatusText = "悬崖路径无进展，重新搜索";
+                    return;
+                }
+
                 if (edgeDistance > 1.1f)
                 {
                     Vector3 move = AutoBattleManager.NavigateSurvival(player, _cliffEdge, false);
+                    if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
+                    {
+                        MarkCandidateFailed(_cliffEdge);
+                        _hasCliff = false;
+                        _nextCliffScanAt = 0f;
+                        AutoBattleInput.ClearMovement();
+                        return;
+                    }
                     if (move.sqrMagnitude > 0.01f) AutoBattleInput.SetMoveWorld(player, move, false);
                     if (camera != null)
                         AutoBattleManager.LookSurvival(player, camera, player.transform.position + _cliffOutward * 8f);
@@ -364,13 +526,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             StatusText = "任务完成，搜索悬崖";
-            if (Time.time - _suicideStartedAt >= SuicideFallbackSeconds && app != null && app.channel_connection != null)
-            {
-                app.channel_connection.Suicide(player.uid);
-                _suicideStartedAt = Time.time + 3600f;
-                StatusText = "地图无可达悬崖，已请求自杀兜底";
-                FileLogger.Log("SURVIVAL", "cliff timeout; Suicide(uid) fallback sent");
-            }
         }
 
         private static void HandleGmExit(GameApp app)
@@ -380,24 +535,38 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _consecutiveGmRounds++;
             Phase = SurvivalBotPhase.GmExit;
             AutoBattleInput.ClearAll();
-            StatusText = "检测到 GM/观战候选，正在退出 | 连续 " + _consecutiveGmRounds + "/3";
+            _nextGmLeaveAt = 0f;
+            StatusText = "检测到 GM/观战候选，正在退出 | 连续 " + _consecutiveGmRounds + "/" +
+                SurvivalBotSettings.GmStopRounds;
             FileLogger.Log("GM", StatusText + " uid=" + _pendingGmUid + " team=" + _pendingGmTeam);
+            MaintainGmExit(app);
 
-            if (app != null && app.channel_connection != null)
-            {
-                try { app.channel_connection.LeaveGame(); }
-                catch (Exception ex) { FileLogger.Log("GM", "LeaveGame failed: " + ex.Message); }
-            }
-
-            if (_consecutiveGmRounds >= 3)
+            if (_consecutiveGmRounds >= SurvivalBotSettings.GmStopRounds)
                 Stop("three_consecutive_gm_rounds");
+        }
+
+        private static void MaintainGmExit(GameApp app)
+        {
+            Phase = SurvivalBotPhase.GmExit;
+            AutoBattleInput.ClearAll();
+            if (Time.time < _nextGmLeaveAt || app == null || app.channel_connection == null) return;
+            _nextGmLeaveAt = Time.time + 1.5f;
+            try { app.channel_connection.LeaveGame(); }
+            catch (Exception ex) { FileLogger.Log("GM", "LeaveGame failed: " + ex.Message); }
         }
 
         private static void TickLobby(GameApp app)
         {
-            if (_cardManager != null)
+            if (_cardManager != null || _awaitingReward)
             {
                 Phase = SurvivalBotPhase.Balance;
+                if (_cardManager == null && Time.time - _rewardWaitStartedAt >= 12f && !IsBalanceState(app))
+                {
+                    _awaitingReward = false;
+                    _nextMatchAt = Time.time + 1f;
+                    StatusText = "未出现翻牌界面，继续匹配";
+                    FileLogger.Log("CARD", "reward gate released after timeout");
+                }
                 return;
             }
 
@@ -424,18 +593,34 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 Phase = SurvivalBotPhase.Matching;
                 float elapsed = Time.time - _matchStartedAt;
-                StatusText = "匹配生存模式 " + elapsed.ToString("0") + "/600 秒";
-                if (elapsed >= MatchTimeoutSeconds && !_cancelPending)
+                StatusText = "匹配生存模式 " + elapsed.ToString("0") + "/" +
+                    SurvivalBotSettings.MatchTimeoutSeconds.ToString("0") + " 秒";
+                if (elapsed >= SurvivalBotSettings.MatchTimeoutSeconds && !_cancelPending)
                 {
                     _cancelPending = true;
                     _cancelRequestedAt = Time.time;
                     try { app.lobby_connection.RequestCancelMatching(); } catch { }
-                    FileLogger.Log("MATCH", "600 second timeout; cancel requested");
+                    FileLogger.Log("MATCH", "matching timeout; cancel requested seconds=" +
+                        SurvivalBotSettings.MatchTimeoutSeconds.ToString("0"));
                 }
                 else if (_cancelPending && Time.time - _cancelRequestedAt > 6f)
                 {
-                    NotifyMatchingCancelled();
+                    _cancelRequestedAt = Time.time;
+                    try { app.lobby_connection.RequestCancelMatching(); } catch { }
+                    FileLogger.Log("MATCH", "cancel response timeout; cancel requested again");
                 }
+                return;
+            }
+
+            if (_awaitingMatchVerification)
+            {
+                Phase = SurvivalBotPhase.Lobby;
+                float verificationElapsed = Time.time - _verificationStartedAt;
+                StatusText = "等待完成匹配验证码 " + verificationElapsed.ToString("0") + "/120 秒";
+                if (verificationElapsed < 120f) return;
+                _awaitingMatchVerification = false;
+                _nextMatchAt = Time.time + 1f;
+                FileLogger.Log("MATCH", "verification wait timeout; retry armed");
                 return;
             }
 
@@ -455,12 +640,39 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             try
             {
-                app.lobby_connection.RequestMatching((byte)RoomInfo.GameType.kGameTypeChiji, 0);
-                _matching = true;
-                _matchStartedAt = Time.time;
-                Phase = SurvivalBotPhase.Matching;
-                StatusText = _previousRoundSlept ? "睡眠局后跳过本地验证码，匹配生存" : "开始匹配生存模式";
-                FileLogger.Log("MATCH", StatusText + " gameType=" + (byte)RoomInfo.GameType.kGameTypeChiji);
+                NewUIRoom roomUi = NewUIRoom.getInstance();
+                if (roomUi == null)
+                {
+                    _nextMatchAt = Time.time + 3f;
+                    StatusText = "等待匹配界面";
+                    return;
+                }
+
+                string hookNum = GlobalStatic.hookNum;
+                try
+                {
+                    if (_previousRoundSlept) GlobalStatic.hookNum = "0";
+                    roomUi.TeamMatchOnClick(RoomInfo.GameType.kGameTypeChiji);
+                }
+                finally
+                {
+                    if (_previousRoundSlept) GlobalStatic.hookNum = hookNum;
+                }
+
+                if (!_matching)
+                {
+                    if (_previousRoundSlept)
+                    {
+                        _nextMatchAt = Time.time + 3f;
+                        StatusText = "睡眠局后等待匹配请求";
+                    }
+                    else
+                    {
+                        _awaitingMatchVerification = true;
+                        _verificationStartedAt = Time.time;
+                        StatusText = "等待完成匹配验证码";
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -477,6 +689,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 if (_cardCount <= 0 || _cardManager.window == null || _cardManager.window.cards == null)
                 {
                     _cardManager = null;
+                    _awaitingReward = false;
                     _nextMatchAt = Time.time + 3f;
                     return;
                 }
@@ -505,22 +718,26 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     _nextMatchAt = Time.time + 5f;
                 }
                 _cardManager = null;
+                _awaitingReward = false;
             }
             catch (Exception ex)
             {
                 FileLogger.Log("CARD", "auto flip failed: " + ex.Message);
                 _cardManager = null;
+                _awaitingReward = false;
                 _nextMatchAt = Time.time + 5f;
             }
         }
 
-        private static void CaptureParticipants(Level level, Character player)
+        private static void CaptureParticipants(GameApp app, Level level, Character player)
         {
             if (_participantLocked) return;
-            if (player != null) ParticipantIds.Add(player.uid);
+            if (player != null && player.uid != 0) ParticipantIds.Add(player.uid);
             RefreshEnemies(level, player);
-            for (int i = 0; i < Enemies.Count; i++) ParticipantIds.Add(Enemies[i].uid);
-            InitialPlayers = Math.Max(InitialPlayers, ParticipantIds.Count);
+            for (int i = 0; i < Enemies.Count; i++)
+                if (Enemies[i].uid != 0) ParticipantIds.Add(Enemies[i].uid);
+            int rosterCount = CountRoomParticipants(app);
+            InitialPlayers = Math.Max(InitialPlayers, Math.Max(ParticipantIds.Count, rosterCount));
         }
 
         private static void RefreshEnemies(Level level, Character player)
@@ -568,8 +785,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     Vector3 dir = Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward;
                     Vector3 ground;
                     if (!TryProjectGround(origin + dir * SafeRadii[r], origin.y, 3f, out ground)) continue;
+                    if (IsFailedCandidate(ground)) continue;
                     float routePenalty = AutoBattleRoutePlanner.CandidatePenalty(origin, ground, player.transform.root);
-                    if (routePenalty >= 500f) continue;
+                    if (routePenalty >= 120f) continue;
                     float score = ScoreSafetyPoint(ground, player, origin, routePenalty) + index * 0.01f;
                     index++;
                     if (score < bestScore)
@@ -590,16 +808,20 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             for (int i = 0; i < Enemies.Count; i++)
             {
                 Character enemy = Enemies[i];
-                if (!IsAttackTargetUsable(enemy)) continue;
+                if (!IsLivingOpponent(enemy)) continue;
                 float distance = XzDistance(point, enemy.transform.position);
                 if (distance < minDistance) minDistance = distance;
-                bool blocked = HasMapBlock(enemy.transform.position + Vector3.up * 1.25f, point + Vector3.up * 1.05f);
+                bool blocked = HasBodyCover(enemy, point);
                 if (blocked) covered++;
-                else if (IsEnemyFacingPoint(enemy, point, 0.22f)) exposed++;
+                else
+                {
+                    exposed++;
+                    if (IsEnemyFacingPoint(enemy, point, 0.22f)) exposed++;
+                }
             }
 
-            float separationPenalty = Mathf.Max(0f, DesiredSeparation - minDistance) * 55f;
-            return exposed * 1200f + separationPenalty + routePenalty + XzDistance(point, origin) * 0.7f - covered * 12f;
+            float separationPenalty = Mathf.Max(0f, SurvivalBotSettings.DesiredSeparation - minDistance) * 55f;
+            return exposed * 1200f + separationPenalty + routePenalty + XzDistance(point, origin) * 0.7f - covered * 20f;
         }
 
         private static int CountExposure(Vector3 point, Character player)
@@ -608,9 +830,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             for (int i = 0; i < Enemies.Count; i++)
             {
                 Character enemy = Enemies[i];
-                if (!IsAttackTargetUsable(enemy)) continue;
+                if (!IsLivingOpponent(enemy)) continue;
                 if (!IsEnemyFacingPoint(enemy, point, 0.22f)) continue;
-                if (!HasMapBlock(enemy.transform.position + Vector3.up * 1.25f, point + Vector3.up * 1.05f)) count++;
+                if (!HasBodyCover(enemy, point)) count++;
             }
             return count;
         }
@@ -642,7 +864,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 if (away.sqrMagnitude < 0.01f) away = -target.transform.forward;
                 away.Normalize();
                 Vector3 retreat;
-                if (TryProjectGround(playerPos + away * 7f, playerPos.y, 3f, out retreat)) return retreat;
+                if (TryProjectGround(playerPos + away * 7f, playerPos.y, 3f, out retreat) &&
+                    !IsFailedCandidate(retreat) &&
+                    AutoBattleRoutePlanner.CandidatePenalty(playerPos, retreat, player.transform.root) < 120f)
+                    return retreat;
             }
 
             Vector3 best = playerPos;
@@ -652,9 +877,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 float angle = i * 15f;
                 Vector3 dir = Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward;
                 Vector3 point;
-                if (!TryProjectGround(targetPos + dir * 16f, playerPos.y, 4f, out point)) continue;
+                float attackRadius = SurvivalBotSettings.AttackStandOffDistance;
+                if (!TryProjectGround(targetPos + dir * attackRadius, playerPos.y, 4f, out point)) continue;
+                if (IsFailedCandidate(point)) continue;
                 float routePenalty = AutoBattleRoutePlanner.CandidatePenalty(playerPos, point, player.transform.root);
-                if (routePenalty >= 500f) continue;
+                if (routePenalty >= 120f) continue;
                 bool clearLane = !HasMapBlock(point + Vector3.up * 1.2f, targetPos + Vector3.up * 1.1f);
                 float score = routePenalty + XzDistance(playerPos, point) + (clearLane ? -80f : 120f);
                 if (score < bestScore)
@@ -686,9 +913,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static bool IsAttackTargetUsable(Character target)
         {
-            if (target == null || target.transform == null || target.IsDied || target.Is_Viewer) return false;
+            if (!IsLivingOpponent(target)) return false;
             try { return !target.GetHidden(); }
             catch { return false; }
+        }
+
+        private static bool IsLivingOpponent(Character target)
+        {
+            return target != null && target.transform != null && !target.IsDied && !target.Is_Viewer;
         }
 
         private static bool TryFindCliff(Character player, out Vector3 edge, out Vector3 outward)
@@ -712,10 +944,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                         continue;
                     }
 
-                    if (lastSafeDistance < 3f) break;
+                    if (lastSafeDistance < 3f || !IsFatalDrop(lastGround, dir)) break;
                     Vector3 candidate = lastGround - dir * 0.8f;
+                    if (IsFailedCandidate(candidate)) break;
                     float routePenalty = AutoBattleRoutePlanner.CandidatePenalty(origin, candidate, player.transform.root);
-                    if (routePenalty < 500f && lastSafeDistance + routePenalty * 0.03f < bestDistance)
+                    if (routePenalty < 120f && lastSafeDistance + routePenalty * 0.03f < bestDistance)
                     {
                         bestDistance = lastSafeDistance + routePenalty * 0.03f;
                         edge = candidate;
@@ -767,6 +1000,51 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return false;
         }
 
+        private static bool HasBodyCover(Character enemy, Vector3 point)
+        {
+            if (enemy == null || enemy.transform == null) return false;
+            Vector3 from = enemy.transform.position + Vector3.up * 1.25f;
+            int blocked = 0;
+            if (HasMapBlock(from, point + Vector3.up * 0.55f)) blocked++;
+            if (HasMapBlock(from, point + Vector3.up * 1.05f)) blocked++;
+            if (HasMapBlock(from, point + Vector3.up * 1.45f)) blocked++;
+            return blocked >= 2;
+        }
+
+        private static bool IsFatalDrop(Vector3 edgeGround, Vector3 outward)
+        {
+            try
+            {
+                Vector3 probe = edgeGround + outward.normalized * 1.8f + Vector3.up * 0.8f;
+                int mask = LayerMask.GetMask(new string[] { "Terrarin" });
+                RaycastHit hit;
+                bool found = mask != 0
+                    ? Physics.Raycast(probe, Vector3.down, out hit, 12f, mask)
+                    : Physics.Raycast(probe, Vector3.down, out hit, 12f);
+                return !found || edgeGround.y - hit.point.y >= 5f;
+            }
+            catch { return false; }
+        }
+
+        private static bool IsRouteFailure()
+        {
+            return string.Equals(AutoBattleManager.LastPath, "no_path", StringComparison.Ordinal) ||
+                   string.Equals(AutoBattleManager.LastPath, "route_null", StringComparison.Ordinal) ||
+                   string.Equals(AutoBattleManager.LastPath, "jump_lane_blocked", StringComparison.Ordinal) ||
+                   string.Equals(AutoBattleManager.LastPath, "wall_repath", StringComparison.Ordinal);
+        }
+
+        private static void MarkCandidateFailed(Vector3 point)
+        {
+            _failedCandidate = point;
+            _failedCandidateUntil = Time.time + 8f;
+        }
+
+        private static bool IsFailedCandidate(Vector3 point)
+        {
+            return Time.time < _failedCandidateUntil && XzDistance(point, _failedCandidate) < 3f;
+        }
+
         private static int CompareHitDistance(RaycastHit a, RaycastHit b)
         {
             return a.distance.CompareTo(b.distance);
@@ -781,6 +1059,99 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return (RoomInfo.GameType)(byte)app.channel_connection.room.room_info.game_type == RoomInfo.GameType.kGameTypeChiji;
             }
             catch { return false; }
+        }
+
+        private static bool IsCharacterControlReady(GameApp app, Character player)
+        {
+            try
+            {
+                if (app == null || app.channel_connection == null || player == null) return false;
+                return string.Equals(app.channel_connection.game_state.ToString(), "kAlive", StringComparison.Ordinal);
+            }
+            catch { return false; }
+        }
+
+        private static bool IsBalanceState(GameApp app)
+        {
+            try
+            {
+                if (app == null || app.channel_connection == null) return false;
+                string connectionState = app.channel_connection.state.ToString();
+                string gameState = app.channel_connection.game_state.ToString();
+                return string.Equals(connectionState, "kInBalance", StringComparison.Ordinal) ||
+                       string.Equals(gameState, "kBalance", StringComparison.Ordinal) ||
+                       string.Equals(gameState, "kInBalance", StringComparison.Ordinal);
+            }
+            catch { return false; }
+        }
+
+        private static int CountRoomParticipants(GameApp app)
+        {
+            try
+            {
+                object room = app == null || app.channel_connection == null ? null : app.channel_connection.room;
+                if (room == null) return 0;
+
+                int count = 0;
+                Array slots = ReadMember(room, "room_slot") as Array;
+                if (slots != null)
+                {
+                    for (int i = 0; i < slots.Length; i++)
+                    {
+                        object slot = slots.GetValue(i);
+                        if (slot == null || ReadMember(slot, "client") == null) continue;
+                        object status = ReadMember(slot, "status");
+                        if (status != null && Convert.ToInt32(status) == 2) continue;
+                        count++;
+                    }
+                }
+
+                if (count == 0)
+                {
+                    object roomInfo = ReadMember(room, "room_info");
+                    object currentClients = ReadMember(roomInfo, "current_client_num");
+                    if (currentClients != null) count = Convert.ToInt32(currentClients);
+                }
+                return count;
+            }
+            catch { return 0; }
+        }
+
+        private static object ReadMember(object instance, string name)
+        {
+            if (instance == null) return null;
+            Type type = instance.GetType();
+            FieldInfo field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null) return field.GetValue(instance);
+            PropertyInfo property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return property == null ? null : property.GetValue(instance, null);
+        }
+
+        private static void CancelActiveSession()
+        {
+            try
+            {
+                GameApp app = GameApp.Instance;
+                if (app == null) return;
+                NewUIRoom roomUi = NewUIRoom.getInstance();
+                if (app.lobby_connection != null && (_matching || (roomUi != null && roomUi.InMatch)))
+                    app.lobby_connection.RequestCancelMatching();
+                if (_roundActive && app.channel_connection != null &&
+                    app.channel_connection.state == ChannelConnection.State.kInGame)
+                    app.channel_connection.LeaveGame();
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("SURVIVAL", "stop cleanup failed: " + ex.Message);
+            }
+            finally
+            {
+                _matching = false;
+                _pendingSurvivalMatchRequest = false;
+                _awaitingMatchVerification = false;
+                _cancelPending = false;
+                _matchStartedAt = 0f;
+            }
         }
 
         private static int ReadPrivateInt(object instance, string fieldName)
