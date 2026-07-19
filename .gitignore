@@ -1,0 +1,5 @@
+Config/proxy.local.ini
+Config/proxy.*.local.ini
+*.proxy-credentials
+.env.local
+artifacts/

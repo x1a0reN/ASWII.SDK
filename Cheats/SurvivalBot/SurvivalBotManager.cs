@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using ASWDEBUG.Cheats.AutoBattle;
 using ASWDEBUG.Logger;
+using ASWDEBUG.Patch;
 using UnityEngine;
 
 namespace ASWDEBUG.Cheats.SurvivalBot
@@ -95,6 +96,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static void Tick(Level level, Character player, Camera camera)
         {
             AutoBattleInput.BeginFrame();
+
+            if (NetworkRouteManager.ProxyRequired && NetworkRouteManager.HasError)
+            {
+                if (Enabled) Stop("network_proxy_failed");
+                return;
+            }
 
             if (Input.GetKeyDown(KeyCode.F8))
                 SetEnabled(!Enabled, "hotkey");

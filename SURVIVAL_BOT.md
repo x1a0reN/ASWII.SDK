@@ -19,6 +19,22 @@ its role detection and tactics for heavy, medic/guard, and assault/sniper loadou
 Press `Delete` to show or hide the project-style configuration panel. Press `F8`
 to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs`.
 
+## Second-client network route
+
+At bootstrap, clients using the same executable are ordered by process start time.
+The first client remains direct; only the second client starts a restricted SSH
+tunnel. Direct `Socket.Connect(string, int)` calls use authenticated SOCKS5,
+`HttpWebRequest` uses the authenticated HTTP proxy, and `WWW(string)` downloads are
+rewritten through an in-process loopback relay. Explicit `Dns.GetHostEntry` and
+`Dns.GetHostAddresses` calls use the server-side DNS relay. Launcher IPC to loopback
+is excluded.
+
+The private runtime configuration is read from
+`Application.persistentDataPath/Config/proxy.local.ini`. Keep it outside Git; use
+`Config/proxy.example.ini` as the schema. The proxy password supports an environment
+variable or a current-user DPAPI value. If the second client's tunnel fails, routing
+fails closed and the survival loop stops instead of falling back to the local IP.
+
 ## Authentication scope
 
 The fork does not compile or start the old `Verify/EyAuthManager` network

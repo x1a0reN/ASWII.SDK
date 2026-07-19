@@ -1,0 +1,19 @@
+[Unit]
+Description=ASWII loopback DNS relay
+After=network-online.target
+
+[Service]
+Type=simple
+User=aswdns
+Group=aswdns
+ExecStart=/usr/bin/python3 /opt/aswrelay/dns_relay.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

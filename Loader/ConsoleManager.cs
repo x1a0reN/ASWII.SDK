@@ -8,6 +8,7 @@ using UnityEngine;
 public sealed class SurvivalBotBootstrap : MonoBehaviour
 {
     private static SurvivalBotBootstrap _instance;
+    private bool _hooksReady;
 
     private void Awake()
     {
@@ -20,10 +21,6 @@ public sealed class SurvivalBotBootstrap : MonoBehaviour
         _instance = this;
         DontDestroyOnLoad(gameObject);
         gameObject.hideFlags = HideFlags.HideAndDontSave;
-    }
-
-    private void Start()
-    {
         string logDir = Path.Combine(Application.persistentDataPath, "Logs");
         try { Directory.CreateDirectory(logDir); } catch { }
 
@@ -33,8 +30,19 @@ public sealed class SurvivalBotBootstrap : MonoBehaviour
         FileLogger.Log("BOOT", "SurvivalBot bootstrap started.");
 
         Application.RegisterLogCallback(HandleLog);
-        HarmonyLoader.Install();
+        try { _hooksReady = HarmonyLoader.Install(); }
+        catch (Exception ex)
+        {
+            FileLogger.Log("BOOT", "hook install failed: " + ex.GetType().Name);
+            try { NetworkRouteManager.PrepareClientRole(); } catch { }
+            NetworkRouteManager.ReportHookFailure();
+            _hooksReady = false;
+        }
+    }
 
+    private void Start()
+    {
+        if (!_hooksReady) return;
         GameObject host = new GameObject("SurvivalBotMain");
         host.hideFlags = HideFlags.HideAndDontSave;
         DontDestroyOnLoad(host);

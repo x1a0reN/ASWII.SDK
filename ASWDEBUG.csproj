@@ -83,6 +83,7 @@
     <Compile Include="Logger\FileLogger.cs" />
     <Compile Include="Main\CheatMain.cs" />
     <Compile Include="Patch\HarmonyLoader.cs" />
+    <Compile Include="Patch\NetworkRouteManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="UI\SurvivalBotUI.cs" />
   </ItemGroup>

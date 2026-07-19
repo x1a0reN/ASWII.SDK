@@ -1,6 +1,7 @@
 using System;
 using ASWDEBUG.Cheats.SurvivalBot;
 using ASWDEBUG.Logger;
+using ASWDEBUG.Patch;
 using ASWDEBUG.UI;
 using UnityEngine;
 
@@ -59,8 +60,10 @@ namespace ASWDEBUG.Main
 
         private void OnDestroy()
         {
-            if (Instance == this) Instance = null;
+            if (Instance != this) return;
+            Instance = null;
             SurvivalBotManager.Stop("plugin_destroyed");
+            NetworkRouteManager.Shutdown();
         }
     }
 }

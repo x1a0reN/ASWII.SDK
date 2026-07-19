@@ -1,4 +1,6 @@
 using System;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using ASWDEBUG.Cheats.AutoBattle;
 using ASWDEBUG.Cheats.SurvivalBot;
@@ -12,15 +14,52 @@ namespace ASWDEBUG.Patch
     {
         private static bool _installed;
 
-        public static void Install()
+        public static bool Install()
         {
-            if (_installed) return;
-            _installed = true;
-
+            if (_installed) return true;
+            NetworkRouteManager.PrepareClientRole();
             HarmonyInstance harmony = HarmonyInstance.Create("aswdebug.survivalbot");
+            bool networkReady = PatchNetworking(harmony);
+            if (!networkReady) NetworkRouteManager.ReportHookFailure();
+            if (!networkReady && NetworkRouteManager.ProxyRequired) return false;
+            NetworkRouteManager.Initialize();
             PatchInput(harmony);
             PatchGameHooks(harmony);
+            _installed = true;
             FileLogger.Log("PATCH", "SurvivalBot hooks installed.");
+            return true;
+        }
+
+        private static bool PatchNetworking(HarmonyInstance harmony)
+        {
+            MethodInfo socketConnect = AccessTools.Method(typeof(Socket), "Connect", new Type[] { typeof(string), typeof(int) });
+            ConstructorInfo wwwConstructor = AccessTools.Constructor(typeof(WWW), new Type[] { typeof(string) });
+            MethodInfo dnsEntry = AccessTools.Method(typeof(Dns), "GetHostEntry", new Type[] { typeof(string) });
+            MethodInfo dnsAddresses = AccessTools.Method(typeof(Dns), "GetHostAddresses", new Type[] { typeof(string) });
+            MethodInfo webRequestString = AccessTools.Method(typeof(WebRequest), "Create", new Type[] { typeof(string) });
+            MethodInfo webRequestUri = AccessTools.Method(typeof(WebRequest), "Create", new Type[] { typeof(Uri) });
+            if (socketConnect == null || wwwConstructor == null || dnsEntry == null || dnsAddresses == null ||
+                webRequestString == null || webRequestUri == null)
+            {
+                FileLogger.Log("PATCH", "one or more network targets are missing");
+                return false;
+            }
+
+            try
+            {
+                Patch(harmony, socketConnect, "SocketConnectPrefix");
+                Patch(harmony, wwwConstructor, "WwwUrlPrefix");
+                Patch(harmony, dnsEntry, "DnsGetHostEntryPrefix");
+                Patch(harmony, dnsAddresses, "DnsGetHostAddressesPrefix");
+                Patch(harmony, webRequestString, "WebRequestStringPrefix");
+                Patch(harmony, webRequestUri, "WebRequestUriPrefix");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("PATCH", "network hook installation failed: " + ex.GetType().Name);
+                return false;
+            }
         }
 
         private static void PatchInput(HarmonyInstance harmony)
@@ -93,6 +132,36 @@ namespace ASWDEBUG.Patch
         private static bool InputAxisPrefix(string axisName, ref float __result)
         {
             return !AutoBattleInput.TryGetAxis(axisName, ref __result);
+        }
+
+        private static bool SocketConnectPrefix(Socket __instance, string host, int port)
+        {
+            return NetworkRouteManager.RouteSocketConnect(__instance, host, port);
+        }
+
+        private static void WwwUrlPrefix(ref string url)
+        {
+            url = NetworkRouteManager.RewriteWwwUrl(url);
+        }
+
+        private static bool DnsGetHostEntryPrefix(string hostNameOrAddress, ref IPHostEntry __result)
+        {
+            return NetworkRouteManager.RouteDnsGetHostEntry(hostNameOrAddress, ref __result);
+        }
+
+        private static bool DnsGetHostAddressesPrefix(string hostNameOrAddress, ref IPAddress[] __result)
+        {
+            return NetworkRouteManager.RouteDnsGetHostAddresses(hostNameOrAddress, ref __result);
+        }
+
+        private static void WebRequestStringPrefix(string requestUriString)
+        {
+            NetworkRouteManager.GuardWebRequest(requestUriString);
+        }
+
+        private static void WebRequestUriPrefix(Uri requestUri)
+        {
+            if (requestUri != null) NetworkRouteManager.GuardWebRequest(requestUri.AbsoluteUri);
         }
 
         private static bool InputButtonPrefix(string buttonName, ref bool __result)

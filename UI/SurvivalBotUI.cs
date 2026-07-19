@@ -1,5 +1,6 @@
 using ASWDEBUG.Cheats.AutoBattle;
 using ASWDEBUG.Cheats.SurvivalBot;
+using ASWDEBUG.Patch;
 using UnityEngine;
 
 namespace ASWDEBUG.UI
@@ -114,8 +115,8 @@ namespace ASWDEBUG.UI
                 GUI.DrawTexture(new Rect(runButton.xMax - 5f, runButton.y + 3f, 3f, runButton.height - 6f), _accentTexture);
             y += 33f;
 
-            float statusTop = _window.yMax - 35f;
-            _rowStride = Mathf.Clamp((statusTop - y - 2f) / 9f, 18f, RowHeight + 1f);
+            float statusTop = _window.yMax - 53f;
+            _rowStride = Mathf.Clamp((statusTop - y - 2f) / 9f, 17f, RowHeight + 1f);
 
             DrawDropdownRow(ref y, "战术", DropdownId.Tactics, TacticsNames, SurvivalBotSettings.TacticsMode);
             DrawDropdownRow(ref y, "职业策略", DropdownId.Role, RoleNames, SurvivalBotSettings.RoleStrategyEnabled ? 0 : 1);
@@ -127,9 +128,12 @@ namespace ASWDEBUG.UI
             DrawDropdownRow(ref y, "自杀兜底", DropdownId.SuicideFallback, SuicideFallbackNames, FindNearest(SuicideFallbackValues, SurvivalBotSettings.SuicideFallbackSeconds));
             DrawDropdownRow(ref y, "GM 停机", DropdownId.GmStopRounds, GmStopRoundNames, SurvivalBotSettings.GmStopRounds - 1);
 
-            Rect status = new Rect(x, _window.yMax - 35f, width, 27f);
+            Rect status = new Rect(x, _window.yMax - 53f, width, 45f);
             DrawPanel(status, _panelInnerTexture, _borderTexture);
-            GUI.Label(new Rect(status.x + 7f, status.y, status.width - 14f, status.height),
+            GUI.Label(new Rect(status.x + 7f, status.y + 1f, status.width - 14f, 21f),
+                ClipToWidth("网络  " + NetworkRouteManager.StatusText, _secondaryLabelStyle, status.width - 14f),
+                _secondaryLabelStyle);
+            GUI.Label(new Rect(status.x + 7f, status.y + 20f, status.width - 14f, 23f),
                 ClipToWidth("状态  " + SurvivalBotManager.StatusText, _secondaryLabelStyle, status.width - 14f),
                 _secondaryLabelStyle);
 
