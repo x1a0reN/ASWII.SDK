@@ -32,7 +32,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _controlStarted;
         private static bool _participantLocked;
         private static bool _taskCompleted;
-        private static bool _previousRoundSlept;
         private static bool _matching;
         private static bool _pendingSurvivalMatchRequest;
         private static bool _cancelPending;
@@ -72,6 +71,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static UITakeCardManager _cardManager;
         private static int _cardCount;
         private static float _nextCardActionAt;
+        private static float _cardDetectedAt;
+        private static float _nextCardWaitLogAt;
         private static bool _cardCloseScheduled;
         private static byte _pendingGmUid;
         private static byte _pendingGmTeam;
@@ -324,30 +325,18 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static void NotifyCardRefresh(UITakeCardManager manager)
         {
             if (!Enabled || manager == null) return;
-            if (_previousRoundSlept)
-            {
-                try
-                {
-                    if (manager.window != null)
-                    {
-                        manager.window.StopCountdown();
-                        manager.window.FinishHideView();
-                    }
-                }
-                catch { }
-                _awaitingReward = false;
-                _nextMatchAt = Time.time + 2f;
-                StatusText = "睡眠局跳过翻牌，准备下一场";
-                return;
-            }
             _cardManager = manager;
             _cardCount = ReadPrivateInt(manager, "cardCount");
-            _nextCardActionAt = Time.time + 0.8f;
+            _cardDetectedAt = Time.time;
+            _nextCardWaitLogAt = 0f;
+            _nextCardActionAt = Time.time + 0.15f;
             _cardCloseScheduled = false;
             _awaitingReward = true;
             Phase = SurvivalBotPhase.Balance;
             StatusText = _cardCount <= 0 ? "结算无可翻牌奖励" : "结算翻牌 0/" + _cardCount;
-            FileLogger.Log("CARD", "refresh cardCount=" + _cardCount);
+            bool active = manager.window != null && manager.window.gameObject != null &&
+                manager.window.gameObject.activeInHierarchy;
+            FileLogger.Log("CARD", "refresh cardCount=" + _cardCount + " active=" + active);
         }
 
         private static void StartRound(Level level, Character player)
@@ -385,9 +374,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static void FinishRound()
         {
             if (!_roundEndedByGm) _consecutiveGmRounds = 0;
-            _previousRoundSlept = !_taskCompleted && !_roundEndedByGm;
             FileLogger.Log("SURVIVAL", "round finish task=" + _taskCompleted + " gm=" + _roundEndedByGm +
-                " slept=" + _previousRoundSlept + " rank=" + LastFinalRank);
+                " rank=" + LastFinalRank);
             _roundActive = false;
             _controlStarted = false;
             _pendingGmUid = 0;
@@ -397,7 +385,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             SurvivalCombatAdapter.ResetSurvivalRuntime("round_finish");
             Phase = SurvivalBotPhase.Balance;
             StatusText = "等待结算/返回大厅";
-            _awaitingReward = !_roundEndedByGm && !_previousRoundSlept;
+            _awaitingReward = !_roundEndedByGm;
             _rewardWaitStartedAt = Time.time;
             _nextMatchAt = Time.time + (_awaitingReward ? 12f : 3f);
         }
@@ -839,24 +827,47 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (_cardManager == null || Time.time < _nextCardActionAt) return;
             try
             {
-                if (_cardCount <= 0 || _cardManager.window == null || _cardManager.window.cards == null)
+                UIJieSuanTakeCard window = _cardManager.window;
+                if (window == null || window.gameObject == null || !window.gameObject.activeInHierarchy)
                 {
-                    _cardManager = null;
-                    _awaitingReward = false;
-                    _nextMatchAt = Time.time + 3f;
+                    if (Time.time >= _nextCardWaitLogAt)
+                    {
+                        _nextCardWaitLogAt = Time.time + 1f;
+                        FileLogger.Log("CARD", "waiting for active card window elapsed=" +
+                            (Time.time - _cardDetectedAt).ToString("0.0"));
+                    }
+                    _nextCardActionAt = Time.time + 0.15f;
+                    return;
+                }
+
+                if (_cardCount <= 0)
+                {
+                    window.StopCountdown();
+                    window.CloseTackCardView();
+                    StatusText = "无可翻牌奖励，返回大厅";
+                    FileLogger.Log("CARD", "no card reward; card window closed");
+                    CompleteCardPhase(3f);
+                    return;
+                }
+
+                if (window.cards == null || window.cards.Count == 0)
+                {
+                    _nextCardActionAt = Time.time + 0.2f;
                     return;
                 }
 
                 int chosen = ReadPrivateInt(_cardManager, "chooseCardCount");
                 if (chosen < _cardCount)
                 {
-                    for (int i = 0; i < _cardManager.window.cards.Count; i++)
+                    for (int i = 0; i < window.cards.Count; i++)
                     {
-                        CardBehaviour card = _cardManager.window.cards[i];
+                        CardBehaviour card = window.cards[i];
                         if (card == null || card.IsTrun) continue;
                         _cardManager.CardsRefresh(card.gameObject);
-                        chosen++;
+                        chosen = ReadPrivateInt(_cardManager, "chooseCardCount");
                         StatusText = "结算翻牌 " + chosen + "/" + _cardCount;
+                        FileLogger.Log("CARD", "flipped chosen=" + chosen + "/" + _cardCount +
+                            " cardIndex=" + i);
                         _nextCardActionAt = Time.time + 0.45f;
                         return;
                     }
@@ -865,21 +876,25 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 if (!_cardCloseScheduled)
                 {
                     _cardCloseScheduled = true;
-                    _cardManager.window.StopCountdown();
-                    _cardManager.window.FinishHideView();
+                    window.StopCountdown();
+                    window.FinishHideView();
                     StatusText = "翻牌完成，返回大厅";
-                    _nextMatchAt = Time.time + 5f;
+                    FileLogger.Log("CARD", "flip complete; close scheduled");
                 }
-                _cardManager = null;
-                _awaitingReward = false;
+                CompleteCardPhase(5f);
             }
             catch (Exception ex)
             {
                 FileLogger.Log("CARD", "auto flip failed: " + ex.Message);
-                _cardManager = null;
-                _awaitingReward = false;
-                _nextMatchAt = Time.time + 5f;
+                CompleteCardPhase(5f);
             }
+        }
+
+        private static void CompleteCardPhase(float nextMatchDelay)
+        {
+            _cardManager = null;
+            _awaitingReward = false;
+            _nextMatchAt = Time.time + nextMatchDelay;
         }
 
         private static void CaptureParticipants(GameApp app, Level level, Character player)
