@@ -43,8 +43,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const float CellSize = 1.0f;
         private const float HeightLayerSize = 0.50f;
         private const int MaxNodes = 14000;
-        private const int MaxNodesPerSlice = 1024;
-        private const int MinSearchSliceMilliseconds = 6;
+        private const int MaxNodesPerSlice = 1536;
+        private const int MinSearchSliceMilliseconds = 7;
         private const int MaxSearchSliceMilliseconds = 20;
         private const float TargetFrameMilliseconds = 20.0f;
         private const float MaxRouteRadius = 96f;
@@ -250,6 +250,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return !HasWalkSegment(from, to, ignoreRoot) || !HasGroundSupportSegment(from, to, ignoreRoot);
         }
 
+        public static bool CanFollowSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
+        {
+            return HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot);
+        }
+
         public static bool ShouldJumpForwardObstacle(Vector3 from, Vector3 dir, Transform ignoreRoot)
         {
             dir.y = 0f;
@@ -436,6 +441,26 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool complete = job.Found != null || job.Open.Count == 0 || job.Expanded >= MaxNodes;
             if (!complete)
             {
+                if (job.Best != null && job.Best != job.First && job.Slices >= 2 &&
+                    XZDistance(job.First.Pos, job.Best.Pos) >= 1.25f)
+                {
+                    List<RouteStep> frontier = SmoothPath(Reconstruct(job.Best), ignoreRoot);
+                    if (frontier.Count > 0)
+                    {
+                        return FromSteps("phys_grid_2_5d_frontier", true, frontier,
+                            "result=frontier nodes=" + job.Expanded +
+                            " layers=" + job.HeightLayers.Count +
+                            " jumps=" + CountJumpSteps(frontier) +
+                            " corners=" + frontier.Count +
+                            " slices=" + job.Slices +
+                            " sliceMs=" + job.LastSliceMilliseconds +
+                            " sliceBudgetMs=" + job.LastSliceBudgetMilliseconds.ToString("0.0") +
+                            " frameMs=" + frameMilliseconds.ToString("0.0") +
+                            " frameEma=" + frameEma.ToString("0.0") +
+                            " endDist=" + XZDistance(frontier[frontier.Count - 1].Pos, job.Goal).ToString("0.0") +
+                            " reason=searching_frontier");
+                    }
+                }
                 return Pending("phys_grid_2_5d_pending",
                     PendingDetail(job, frameMilliseconds, frameEma, "searching"));
             }
@@ -498,16 +523,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _sliceBudgetFrame = frame;
                 _frameMillisecondsEma = Mathf.Lerp(_frameMillisecondsEma, frameMilliseconds, 0.18f);
                 float headroom = Mathf.Max(0f, TargetFrameMilliseconds - _frameMillisecondsEma);
-                _sliceBudgetMilliseconds = Mathf.Clamp(7f + headroom * 0.65f,
+                _sliceBudgetMilliseconds = Mathf.Clamp(8f + headroom * 0.65f,
                     MinSearchSliceMilliseconds, MaxSearchSliceMilliseconds);
                 if (frameMilliseconds >= 30f) _sliceBudgetMilliseconds = MinSearchSliceMilliseconds;
-                else if (frameMilliseconds >= 22f) _sliceBudgetMilliseconds = Mathf.Min(9f, _sliceBudgetMilliseconds);
+                else if (frameMilliseconds >= 22f) _sliceBudgetMilliseconds = Mathf.Min(10f, _sliceBudgetMilliseconds);
                 _sliceSpentMilliseconds = 0f;
             }
 
             frameEma = _frameMillisecondsEma;
             float remaining = Mathf.Max(0f, _sliceBudgetMilliseconds - _sliceSpentMilliseconds);
-            nodeBudget = Mathf.Clamp(Mathf.CeilToInt(remaining * 64f), 160, MaxNodesPerSlice);
+            nodeBudget = Mathf.Clamp(Mathf.CeilToInt(remaining * 72f), 160, MaxNodesPerSlice);
             return remaining;
         }
 
@@ -1497,7 +1522,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 if (_blockMask == int.MinValue)
                 {
-                    _blockMask = LayerMask.GetMask(new string[] { "Terrarin", "kController", "Weapon" });
+                    // Global planning only uses static map geometry. Dynamic actors are handled by the follower.
+                    _blockMask = LayerMask.GetMask(new string[] { "Terrarin" });
                     if (_blockMask == 0) _blockMask = 256;
                 }
                 return _blockMask;
@@ -1627,7 +1653,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             public bool Matches(Vector3 from, Vector3 to, Transform ignoreRoot)
             {
                 return IgnoreRoot == ignoreRoot &&
-                       XZDistance(QueryFrom, from) <= 4.0f &&
+                       XZDistance(QueryFrom, from) <= 10.0f &&
                        Mathf.Abs(QueryFrom.y - from.y) <= 2.5f &&
                        XZDistance(QueryTo, to) <= 0.45f &&
                        Mathf.Abs(QueryTo.y - to.y) <= 0.50f;

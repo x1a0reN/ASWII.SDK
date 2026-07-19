@@ -42,6 +42,22 @@ namespace ASWDEBUG.Cheats.AutoBattle
             ClearMovementState(true);
         }
 
+        public static void ClearFire()
+        {
+            ClearAction(ActionType.kActionFire);
+            HeldUntil.Remove(KeyCode.Mouse0);
+            DownUntil.Remove(KeyCode.Mouse0);
+            DownServedFrame.Remove(KeyCode.Mouse0);
+        }
+
+        public static void ClearSecondFire()
+        {
+            ClearAction(ActionType.kActionSecondFire);
+            HeldUntil.Remove(KeyCode.Mouse1);
+            DownUntil.Remove(KeyCode.Mouse1);
+            DownServedFrame.Remove(KeyCode.Mouse1);
+        }
+
         private static void ClearMovementState(bool clearJump)
         {
             ClearAction(ActionType.kActionMoveForward);

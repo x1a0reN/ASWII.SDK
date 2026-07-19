@@ -24,9 +24,44 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _nextRoleSpecialAt;
         private static float _nextScopeAt;
         private static float _nextCombatTraceAt;
+        private static Vector3 _lastPathProgressPosition;
+        private static float _lastPathProgressAt;
+        private static bool _pathSearchPending;
+        private static bool _currentPathPartial;
+        private static float _currentPathResidual;
+        private static string _navigationIntent;
+        private static int _destinationRevision;
+        private static int _pathDestinationRevision;
+        private static int _stuckRecoveryCount;
+        private static float _nextStuckRecoveryAt;
+        private static float _nextWallRecoveryAt;
+        private static int _wallRecoveryCount;
+        private static int _lastProgressPathIndex;
+        private static float _lastWaypointDistance;
+        private static Character _aimTarget;
+        private static int _aimPreparedFrame;
+        private static float _aimPreparedAt;
+        private static WeaponBase _observedWeapon;
+        private static int _observedClip;
+        private static float _weaponUnavailableSince;
+        private static WeaponBase _fireRequestWeapon;
+        private static float _fireRequestStartedAt;
+        private static float _fireRequestFirstAt;
+        private static WeaponBase _temporarilyBlockedWeapon;
+        private static float _blockedWeaponUntil;
+        private static float _ignoreActualShotUntil;
+        private static WeaponBase _aimWeapon;
+        private static Vector3 _lastAimPoint;
+        private static Character _bodyConfirmTarget;
+        private static float _bodyConfirmStartedAt;
+        private static WeaponBase _scopeWeapon;
+        private static bool _scopeRequestPending;
+        private static bool _scopeRequestedOpen;
+        private static float _scopeRequestedAt;
 
         public static string LastPath = "-";
         public static string LastPathProvider = "-";
+        public static string LastPathIntent = "-";
         public static string LastAction = "-";
         public static string CurrentRole = "通用";
 
@@ -46,8 +81,43 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _nextRoleSpecialAt = 0f;
             _nextScopeAt = 0f;
             _nextCombatTraceAt = 0f;
+            _lastPathProgressPosition = Vector3.zero;
+            _lastPathProgressAt = 0f;
+            _pathSearchPending = false;
+            _currentPathPartial = false;
+            _currentPathResidual = 0f;
+            _navigationIntent = null;
+            _destinationRevision = 0;
+            _pathDestinationRevision = -1;
+            _stuckRecoveryCount = 0;
+            _nextStuckRecoveryAt = 0f;
+            _nextWallRecoveryAt = 0f;
+            _wallRecoveryCount = 0;
+            _lastProgressPathIndex = -1;
+            _lastWaypointDistance = float.MaxValue;
+            _aimTarget = null;
+            _aimPreparedFrame = -1;
+            _aimPreparedAt = 0f;
+            _observedWeapon = null;
+            _observedClip = -1;
+            _weaponUnavailableSince = 0f;
+            _fireRequestWeapon = null;
+            _fireRequestStartedAt = 0f;
+            _fireRequestFirstAt = 0f;
+            _temporarilyBlockedWeapon = null;
+            _blockedWeaponUntil = 0f;
+            _ignoreActualShotUntil = 0f;
+            _aimWeapon = null;
+            _lastAimPoint = Vector3.zero;
+            _bodyConfirmTarget = null;
+            _bodyConfirmStartedAt = 0f;
+            _scopeWeapon = null;
+            _scopeRequestPending = false;
+            _scopeRequestedOpen = false;
+            _scopeRequestedAt = 0f;
             LastPath = reason;
             LastPathProvider = "-";
+            LastPathIntent = "-";
             LastAction = reason;
         }
 
@@ -59,29 +129,61 @@ namespace ASWDEBUG.Cheats.AutoBattle
             try { if (player != null) player.ResetIdleMenu(); } catch { }
         }
 
-        public static Vector3 NavigateSurvival(Character player, Vector3 destination, bool tacticalMove)
+        public static Vector3 NavigateSurvival(Character player, Vector3 destination, bool tacticalMove, string intent)
         {
             if (player == null || player.transform == null) return Vector3.zero;
             Vector3 playerPosition = player.transform.position;
-            bool destinationChanged = !_hasDestination || XzDistance(_destination, destination) > (tacticalMove ? 2.5f : 4f);
-            if (destinationChanged)
+            intent = string.IsNullOrEmpty(intent) ? "survival" : intent;
+            if (!string.Equals(_navigationIntent, intent, StringComparison.Ordinal))
             {
-                // Never continue walking an old route while the 2.5D planner evaluates a new target.
-                Path.Clear();
-                JumpFlags.Clear();
-                _pathIndex = 0;
+                ClearPath();
+                _navigationIntent = intent;
+                _hasDestination = false;
                 _nextRepath = 0f;
+                LastPath = "intent_changed";
             }
-            _destination = destination;
-            _hasDestination = true;
+            LastPathIntent = intent;
 
-            if ((Path.Count == 0 || _pathIndex >= Path.Count || destinationChanged) && Time.time >= _nextRepath)
+            bool firstDestination = !_hasDestination;
+            float destinationDelta = firstDestination ? float.MaxValue : XzDistance(_destination, destination);
+            float destinationYDelta = firstDestination ? float.MaxValue : Mathf.Abs(_destination.y - destination.y);
+            bool softDestinationChanged = !firstDestination &&
+                (destinationDelta > (tacticalMove ? 2f : 2.5f) || destinationYDelta > 1.25f);
+            bool hardDestinationChanged = firstDestination || destinationDelta > 6f || destinationYDelta > 2.5f;
+            bool commitDestination = firstDestination || hardDestinationChanged ||
+                (softDestinationChanged && Time.time >= _nextRepath);
+            if (hardDestinationChanged)
             {
-                _nextRepath = Time.time + (tacticalMove ? 0.45f : 0.75f);
-                BuildPath(player, playerPosition, destination);
+                ClearPath();
+                _nextRepath = 0f;
+                _lastPathProgressPosition = playerPosition;
+                _lastPathProgressAt = Time.time;
+            }
+            if (commitDestination)
+            {
+                if (firstDestination || destinationDelta > 0.2f || destinationYDelta > 0.2f)
+                    _destinationRevision++;
+                _destination = destination;
+                _hasDestination = true;
+            }
+            else if (_hasDestination)
+            {
+                destination = _destination;
             }
 
-            if (Path.Count == 0 || _pathIndex >= Path.Count) return Vector3.zero;
+            bool needRepath = Path.Count == 0 || _pathIndex >= Path.Count;
+            if (!needRepath && softDestinationChanged && commitDestination) needRepath = true;
+            if ((_pathSearchPending || needRepath) && Time.time >= _nextRepath)
+            {
+                _nextRepath = _pathSearchPending ? Time.time : Time.time + (tacticalMove ? 0.24f : 0.36f);
+                BuildPath(player, playerPosition, _destination);
+            }
+
+            if (Path.Count == 0 || _pathIndex >= Path.Count)
+            {
+                if (_pathSearchPending) LastPath = "path_pending_hold";
+                return Vector3.zero;
+            }
             Vector3 next = Path[_pathIndex];
             while (_pathIndex < Path.Count - 1 && XzDistance(playerPosition, next) <= CornerReachDistance)
             {
@@ -92,7 +194,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
             float distance = XzDistance(playerPosition, next);
             if (_pathIndex == Path.Count - 1 && distance <= CornerReachDistance)
             {
-                LastPath = "arrived";
+                if (_currentPathPartial || _currentPathResidual > CornerReachDistance)
+                {
+                    _pathSearchPending = true;
+                    _nextRepath = 0f;
+                    LastPath = "path_partial_continue";
+                }
+                else
+                {
+                    LastPath = "arrived";
+                }
                 return Vector3.zero;
             }
 
@@ -106,9 +217,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 if (!AutoBattleRoutePlanner.CanExecuteJump(playerPosition, next, CreateCapabilities(player), player.transform.root))
                 {
-                    Path.Clear();
-                    JumpFlags.Clear();
-                    _pathIndex = 0;
+                    ClearPath();
                     _nextRepath = 0f;
                     LastPath = "jump_lane_blocked";
                     return Vector3.zero;
@@ -120,16 +229,95 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (!jump && AutoBattleRoutePlanner.HasForwardBlock(playerPosition, direction, player.transform.root))
             {
-                Path.Clear();
-                JumpFlags.Clear();
-                _pathIndex = 0;
+                if (Time.time < _nextWallRecoveryAt) return Vector3.zero;
+                _nextWallRecoveryAt = Time.time + 0.18f;
+                _wallRecoveryCount++;
+                ClearPath();
                 _nextRepath = 0f;
                 LastPath = "wall_repath";
-                return Vector3.zero;
+                Vector3 side = player.transform.right * ((_wallRecoveryCount & 1) == 0 ? 0.55f : -0.55f);
+                side.y = 0f;
+                Vector3 escape = direction + side;
+                return escape.sqrMagnitude < 0.01f ? Vector3.zero : escape.normalized;
+            }
+            _wallRecoveryCount = 0;
+
+            bool waypointProgress = _lastProgressPathIndex != _pathIndex ||
+                distance + 0.25f < _lastWaypointDistance;
+            if (waypointProgress)
+            {
+                _lastPathProgressPosition = playerPosition;
+                _lastPathProgressAt = Time.time;
+                _lastProgressPathIndex = _pathIndex;
+                _lastWaypointDistance = distance;
+                _stuckRecoveryCount = 0;
+            }
+            else if (Time.time - _lastPathProgressAt >= 0.65f && Time.time >= _nextStuckRecoveryAt)
+            {
+                _stuckRecoveryCount++;
+                _nextStuckRecoveryAt = Time.time + 0.45f;
+                _lastPathProgressPosition = playerPosition;
+                _lastPathProgressAt = Time.time;
+                Vector3 side = player.transform.right * ((_stuckRecoveryCount & 1) == 0 ? 1f : -1f);
+                Vector3 forward = player.transform.forward;
+                side.y = 0f;
+                forward.y = 0f;
+                if (side.sqrMagnitude < 0.01f) side = Vector3.right;
+                if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+                side.Normalize();
+                forward.Normalize();
+                if (_stuckRecoveryCount >= 3)
+                {
+                    ClearPath();
+                    _nextRepath = 0f;
+                    _stuckRecoveryCount = 0;
+                    LastPath = "stuck_repath";
+                }
+                else
+                {
+                    LastPath = "stuck_local_recovery#" + _stuckRecoveryCount;
+                }
+                if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(playerPosition, forward, player.transform.root))
+                {
+                    AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
+                    AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
+                }
+                return (side + forward * 0.65f).normalized;
             }
 
-            LastPath = "path " + (_pathIndex + 1) + "/" + Path.Count + (jump ? " jump" : string.Empty);
-            return direction;
+            LastPath = (_pathSearchPending ? "path_pending_follow " : "path ") +
+                (_pathIndex + 1) + "/" + Path.Count + (jump ? " jump" : string.Empty);
+            return ApplyLocalAvoidance(player, direction);
+        }
+
+        private static Vector3 ApplyLocalAvoidance(Character player, Vector3 desired)
+        {
+            if (player == null || player.transform == null || desired.sqrMagnitude < 0.01f) return desired;
+            Vector3 correction = Vector3.zero;
+            try
+            {
+                Level level = ASSingleton<Level>.Instance;
+                List<Character> characters = level == null ? null : level.GetCharacters();
+                if (characters == null) return desired;
+                Vector3 origin = player.transform.position;
+                for (int i = 0; i < characters.Count; i++)
+                {
+                    Character other = characters[i];
+                    if (other == null || other == player || other.transform == null || other.IsDied) continue;
+                    Vector3 offset = origin - other.transform.position;
+                    offset.y = 0f;
+                    float distance = offset.magnitude;
+                    if (distance < 0.05f || distance > 2.1f) continue;
+                    Vector3 towardOther = -offset / distance;
+                    if (Vector3.Dot(desired, towardOther) < 0.15f) continue;
+                    correction += offset.normalized * ((2.1f - distance) / 2.1f);
+                }
+            }
+            catch { }
+            if (correction.sqrMagnitude < 0.001f) return desired;
+            Vector3 result = desired + correction * 1.25f;
+            result.y = 0f;
+            return result.sqrMagnitude < 0.01f ? desired : result.normalized;
         }
 
         public static bool TryUseSurvivalDefense(Character player, int defenseMode)
@@ -181,50 +369,57 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             strictLine = false;
             distance = 99999f;
-            if (player == null || target == null || camera == null || target.IsDied || target.Is_Viewer) return false;
-            try { if (target.GetHidden()) return false; } catch { return false; }
+            bool actualShot = ObserveWeaponShot(player);
+            if (player == null || target == null || camera == null || target.IsDied || target.Is_Viewer) return actualShot;
+            try { if (target.GetHidden()) return actualShot; } catch { return actualShot; }
 
             distance = Vector3.Distance(player.transform.position, target.transform.position);
             Vector3 aimPoint;
             strictLine = TryGetStrictAimPoint(player, target, camera, out aimPoint);
             if (!strictLine)
             {
-                CloseSurvivalScope(player);
-                LastAction = "strict_los_blocked_scope_closed";
-                return false;
+                LastAction = "strict_los_temporarily_blocked";
+                AutoBattleInput.ClearFire();
+                return actualShot;
             }
 
             CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
-            bool aimReady = SnapLook(player, camera, aimPoint);
             EnsureRoleWeapon(player, distance);
             if (Time.time < _nextWeaponSwitchAt)
             {
                 LastAction = "role_weapon_switch_wait";
-                return false;
+                return actualShot;
             }
-            if (!aimReady)
+            if (IsTemporarilyBlocked(player.mWeapon))
             {
-                LastAction = "visible_target_aim_failed";
-                return false;
+                LastAction = "role_weapon_retry_wait";
+                return actualShot;
             }
-            if (!EnsureSniperScope(player.mWeapon)) return false;
+            if (!IsOperationalGun(player.mWeapon))
+            {
+                HandleUnavailableWeapon(player);
+                return actualShot;
+            }
+            _weaponUnavailableSince = 0f;
+            if (!EnsureSniperScope(player.mWeapon)) return actualShot;
+
+            if (!PrepareBodyAim(player, target, camera, aimPoint, false))
+            {
+                return actualShot;
+            }
 
             bool exact = false;
-            try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
-            if (!aimReady || !CanFire(player, distance))
+            if (!ConfirmBodyAim(target, false, 0.12f, out exact))
             {
-                LastAction = "aim_or_weapon_not_ready";
-                return false;
+                LastAction = "body_confirm_wait";
+                return actualShot;
             }
-
-            if (Time.time < _nextFireAt) return false;
-            AutoBattleInput.RequestFire(0.10f);
-            _nextFireAt = Time.time + FireInterval(player.mWeapon);
-            if (GetWeaponType(player.mWeapon) == WeaponType.kWeaponTypeRPG ||
-                GetWeaponType(player.mWeapon) == WeaponType.kWeaponTypeBow)
-                _nextRoleSpecialAt = Time.time + 2.4f;
-            LastAction = exact ? "fire_exact" : "fire_strict_line";
-            return true;
+            if (Time.time < _nextFireAt) return actualShot;
+            AutoBattleInput.RequestFire(0.14f);
+            _nextFireAt = Time.time + 0.05f;
+            TrackFireRequest(player.mWeapon);
+            LastAction = exact ? "fire_request_exact_body" : "fire_request_strict_body_fallback";
+            return actualShot;
         }
 
         public static bool AttackEmergency(Character player, Character target, Camera camera, out bool strictLine,
@@ -232,16 +427,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             strictLine = false;
             distance = 99999f;
-            if (player == null || target == null || camera == null || target.IsDied || target.Is_Viewer) return false;
+            bool actualShot = ObserveWeaponShot(player);
+            if (player == null || target == null || camera == null || target.IsDied || target.Is_Viewer) return actualShot;
 
             distance = Vector3.Distance(player.transform.position, target.transform.position);
             bool hidden;
             try { hidden = target.GetHidden(); }
-            catch { return false; }
+            catch { return actualShot; }
             if (hidden && XzDistance(player.transform.position, target.transform.position) > 6f)
             {
                 LastAction = "emergency_hidden_out_of_range";
-                return false;
+                return actualShot;
             }
             CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
 
@@ -250,32 +446,46 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (!strictLine)
             {
                 LastAction = "emergency_strict_los_blocked";
-                return false;
+                AutoBattleInput.ClearFire();
+                return actualShot;
             }
 
-            bool aimReady = SnapLook(player, camera, aimPoint);
             EnsureEmergencyWeapon(player, distance);
             if (Time.time < _nextWeaponSwitchAt)
             {
                 LastAction = "emergency_weapon_switch_wait";
-                return false;
+                return actualShot;
             }
-            if (!EnsureSniperScope(player.mWeapon)) return false;
-
-            bool exact = false;
-            try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
-            if (!aimReady || !CanFire(player, distance))
+            if (IsTemporarilyBlocked(player.mWeapon))
             {
-                LastAction = aimReady ? "emergency_weapon_not_ready" : "emergency_strong_lock";
-                return false;
+                LastAction = "emergency_weapon_retry_wait";
+                return actualShot;
+            }
+            if (!IsOperationalGun(player.mWeapon))
+            {
+                HandleUnavailableWeapon(player);
+                return actualShot;
+            }
+            _weaponUnavailableSince = 0f;
+            if (!EnsureSniperScope(player.mWeapon)) return actualShot;
+
+            if (!PrepareBodyAim(player, target, camera, aimPoint, true))
+            {
+                return actualShot;
             }
 
-            if (Time.time < _nextFireAt) return false;
-            AutoBattleInput.RequestFire(0.14f);
-            _nextFireAt = Time.time + Mathf.Min(0.08f, FireInterval(player.mWeapon));
-            LastAction = hidden ? "emergency_fire_hidden_close" :
-                exact ? "emergency_fire_exact" : "emergency_fire_strict_line";
-            return true;
+            bool exact = hidden;
+            if (!ConfirmBodyAim(target, hidden, 0.10f, out exact))
+            {
+                LastAction = "emergency_body_confirm_wait";
+                return actualShot;
+            }
+            if (Time.time < _nextFireAt) return actualShot;
+            AutoBattleInput.RequestFire(0.16f);
+            _nextFireAt = Time.time + 0.04f;
+            TrackFireRequest(player.mWeapon);
+            LastAction = hidden ? "emergency_fire_request_hidden_body" : "emergency_fire_request_body";
+            return actualShot;
         }
 
         public static void LogCombatState(Character player, Character target, bool strictLine, float distance, bool fired)
@@ -285,18 +495,43 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             string weapon = "-";
             string scope = "-";
+            string readiness = "-";
             try
             {
                 weapon = GetWeaponType(player == null ? null : player.mWeapon).ToString();
                 SniperGunController sniper = player == null ? null : player.mWeapon as SniperGunController;
                 if (sniper != null) scope = sniper.currentSight.ToString();
+                readiness = DescribeWeaponReadiness(player == null ? null : player.mWeapon);
             }
             catch { }
 
             string targetId = target == null ? "-" : target.uid.ToString();
             FileLogger.Log("AUTO-BATTLE][COMBAT", "role=" + CurrentRole + " target=" + targetId +
                 " dist=" + distance.ToString("0.0") + " los=" + strictLine + " fired=" + fired +
-                " weapon=" + weapon + " scope=" + scope + " action=" + LastAction + " path=" + LastPath);
+                " weapon=" + weapon + " scope=" + scope + " ready=" + readiness +
+                " action=" + LastAction + " path=" + LastPath);
+        }
+
+        private static string DescribeWeaponReadiness(WeaponBase weapon)
+        {
+            if (weapon == null) return "weapon_null";
+            try
+            {
+                bool ready = weapon.Ready();
+                bool infoReady = weapon.info != null && weapon.info.cool_down_ready;
+                float cooling = weapon.info == null ? -1f : (float)weapon.info.cooling;
+                return (ready ? "1" : "0") +
+                    ",clip=" + weapon.clip +
+                    ",reload=" + ((bool)weapon.reloading ? "1" : "0") +
+                    ",cool=" + (weapon.cool_down_ready ? "1" : "0") +
+                    ",infoCool=" + (infoReady ? "1" : "0") +
+                    ",cooling=" + cooling.ToString("0.00") +
+                    ",change=" + ((float)weapon.change_in_time).ToString("0.00");
+            }
+            catch (Exception ex)
+            {
+                return "error:" + ex.GetType().Name;
+            }
         }
 
         public static void LookSurvival(Character player, Camera camera, Vector3 point)
@@ -307,67 +542,196 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         public static bool CloseSurvivalScope(Character player)
         {
-            SniperGunController sniper = player == null ? null : player.mWeapon as SniperGunController;
-            if (sniper == null) return true;
+            return SetSniperScope(player == null ? null : player.mWeapon, false);
+        }
 
-            try
-            {
-                if (sniper.currentSight == 0)
-                {
-                    _nextScopeAt = 0f;
-                    return true;
-                }
+        public static void CancelSurvivalAttack()
+        {
+            bool hadPendingShot = _fireRequestWeapon != null;
+            AutoBattleInput.ClearFire();
+            _aimTarget = null;
+            _aimWeapon = null;
+            _lastAimPoint = Vector3.zero;
+            _bodyConfirmTarget = null;
+            _bodyConfirmStartedAt = 0f;
+            _fireRequestWeapon = null;
+            _fireRequestStartedAt = 0f;
+            _fireRequestFirstAt = 0f;
+            _observedWeapon = null;
+            _observedClip = -1;
+            if (hadPendingShot) _ignoreActualShotUntil = Time.time + 0.18f;
+        }
 
-                if (Time.time >= _nextScopeAt)
-                {
-                    AutoBattleInput.PressAction(ActionType.kActionSecondFire, 0.10f);
-                    _nextScopeAt = Time.time + 0.40f;
-                    LastAction = "sniper_scope_close_request";
-                    FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope close requested");
-                }
-                else
-                {
-                    LastAction = "sniper_scope_close_wait";
-                }
-                return false;
-            }
-            catch (Exception ex)
-            {
-                LastAction = "sniper_scope_close_error";
-                FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope close failed ex=" +
-                    ex.GetType().Name + ":" + ex.Message);
-                return false;
-            }
+        public static void SuspendSurvivalNavigation(string intent)
+        {
+            intent = string.IsNullOrEmpty(intent) ? "suspended" : intent;
+            if (string.Equals(_navigationIntent, intent, StringComparison.Ordinal)) return;
+            ClearPath();
+            _navigationIntent = intent;
+            _hasDestination = false;
+            _nextRepath = 0f;
+            LastPathIntent = intent;
+            LastPath = "navigation_suspended";
         }
 
         private static void BuildPath(Character player, Vector3 from, Vector3 to)
         {
+            bool hadUsablePath = Path.Count > 0 && _pathIndex >= 0 && _pathIndex < Path.Count;
+            float previousResidual = _currentPathResidual;
             AutoBattleRouteCapabilities capabilities = CreateCapabilities(player);
             AutoBattleRouteResult route = AutoBattleRoutePlanner.BuildRoute(from, to, player.transform.root, capabilities);
             if (route == null)
             {
-                LastPath = "route_null";
+                if (!hadUsablePath) LastPath = "route_null";
                 return;
             }
 
             LastPathProvider = route.Provider ?? "-";
             if (!route.Success)
             {
-                LastPath = route.Provider == "phys_grid_2_5d_pending" ? "path_pending" : "no_path";
-                _nextRepath = route.Provider == "phys_grid_2_5d_pending" ? Time.time : Time.time + 0.6f;
+                if (route.Provider == "phys_grid_2_5d_pending")
+                {
+                    _pathSearchPending = true;
+                    _nextRepath = Time.time;
+                    LastPath = hadUsablePath ? "path_pending_follow" : "path_pending_hold";
+                }
+                else
+                {
+                    _pathSearchPending = false;
+                    _nextRepath = Time.time + 0.6f;
+                    if (!hadUsablePath) LastPath = "no_path";
+                }
+                return;
+            }
+
+            float candidateResidual = route.Corners.Count == 0
+                ? XzDistance(from, to)
+                : XzDistance(route.Corners[route.Corners.Count - 1], to);
+            List<Vector3> candidatePath = new List<Vector3>(48);
+            List<bool> candidateJumps = new List<bool>(48);
+            AddPathPoints(route.Corners, route.JumpFlags, from, player.transform.root, candidatePath, candidateJumps);
+            if (candidatePath.Count == 0)
+            {
+                float remaining = XzDistance(from, to);
+                if (route.Partial)
+                {
+                    _pathSearchPending = true;
+                    _nextRepath = Time.time;
+                    LastPath = hadUsablePath ? "path_pending_follow" : "path_pending_hold";
+                    return;
+                }
+
+                ClearPath();
+                LastPath = remaining <= CornerReachDistance ? "holding_position" : "empty_route_repath";
+                if (remaining > CornerReachDistance) _nextRepath = Time.time + 0.2f;
+                return;
+            }
+
+            bool firstJump = candidateJumps.Count > 0 && candidateJumps[0];
+            bool firstSegmentUsable = firstJump
+                ? AutoBattleRoutePlanner.CanExecuteJump(from, candidatePath[0], capabilities, player.transform.root)
+                : AutoBattleRoutePlanner.CanFollowSegment(from, candidatePath[0], player.transform.root);
+            bool newDestinationRevision = _pathDestinationRevision != _destinationRevision;
+            bool frontierImproved = newDestinationRevision || !route.Partial || !hadUsablePath || previousResidual <= 0f ||
+                candidateResidual + 0.35f < previousResidual;
+            if (!firstSegmentUsable || !frontierImproved)
+            {
+                _pathSearchPending = route.Partial;
+                _nextRepath = route.Partial ? Time.time : Time.time + 0.2f;
+                LastPath = hadUsablePath ? "path_candidate_keep_old" : "path_candidate_rejected";
                 return;
             }
 
             Path.Clear();
             JumpFlags.Clear();
+            Path.AddRange(candidatePath);
+            JumpFlags.AddRange(candidateJumps);
             _pathIndex = 0;
-            for (int i = 0; i < route.Corners.Count; i++)
+            _currentPathPartial = route.Partial;
+            _currentPathResidual = candidateResidual;
+            _pathSearchPending = route.Partial;
+            _pathDestinationRevision = _destinationRevision;
+            _lastProgressPathIndex = 0;
+            _lastWaypointDistance = XzDistance(from, Path[0]);
+            if (!hadUsablePath)
             {
-                if (XzDistance(from, route.Corners[i]) < 0.35f) continue;
-                Path.Add(route.Corners[i]);
-                JumpFlags.Add(i < route.JumpFlags.Count && route.JumpFlags[i]);
+                _lastPathProgressPosition = from;
+                _lastPathProgressAt = Time.time;
             }
-            LastPath = Path.Count == 0 ? "path_complete" : route.Provider + " " + Path.Count + " pts";
+            LastPath = route.Provider + (route.Partial ? " partial " : " ") + Path.Count + " pts";
+        }
+
+        private static void AddPathPoints(List<Vector3> points, List<bool> jumpFlags, Vector3 from,
+            Transform ignoreRoot, List<Vector3> outputPath, List<bool> outputJumps)
+        {
+            if (points == null || points.Count == 0 || outputPath == null || outputJumps == null) return;
+            if (points.Count == 1)
+            {
+                if (XzDistance(points[0], from) >= 0.5f)
+                {
+                    outputPath.Add(points[0]);
+                    outputJumps.Add(jumpFlags != null && jumpFlags.Count > 0 && jumpFlags[0]);
+                }
+                return;
+            }
+            int startIndex = 0;
+            float bestDistance = float.MaxValue;
+            for (int i = 0; i + 1 < points.Count; i++)
+            {
+                Vector3 segment = points[i + 1] - points[i];
+                Vector3 offset = from - points[i];
+                segment.y = 0f;
+                offset.y = 0f;
+                if (segment.sqrMagnitude < 0.01f) continue;
+                float t = Mathf.Clamp01(Vector3.Dot(offset, segment) / segment.sqrMagnitude);
+                Vector3 projected = Vector3.Lerp(points[i], points[i + 1], t);
+                float distance = XzDistance(projected, from);
+                if (distance > 3.5f || distance > bestDistance + 0.05f) continue;
+                if (!AutoBattleRoutePlanner.CanFollowSegment(from, projected, ignoreRoot)) continue;
+                bestDistance = distance;
+                startIndex = i + (t >= 0.30f ? 1 : 0);
+            }
+
+            if (bestDistance == float.MaxValue)
+            {
+                for (int i = 0; i < points.Count; i++)
+                {
+                    float distance = XzDistance(points[i], from);
+                    if (distance >= bestDistance) continue;
+                    bestDistance = distance;
+                    startIndex = i;
+                }
+            }
+
+            if (bestDistance > 4f) return;
+            if (startIndex + 1 < points.Count)
+            {
+                Vector3 segment = points[startIndex + 1] - points[startIndex];
+                Vector3 progressed = from - points[startIndex];
+                segment.y = 0f;
+                progressed.y = 0f;
+                if (segment.sqrMagnitude > 0.01f &&
+                    Vector3.Dot(progressed, segment) / segment.sqrMagnitude > 0.35f)
+                    startIndex++;
+            }
+
+            for (int i = startIndex; i < points.Count && outputPath.Count < 48; i++)
+            {
+                Vector3 point = points[i];
+                if (outputPath.Count == 0 && XzDistance(point, from) < 0.5f) continue;
+                outputPath.Add(point);
+                outputJumps.Add(jumpFlags != null && i < jumpFlags.Count && jumpFlags[i]);
+            }
+        }
+
+        private static void ClearPath()
+        {
+            Path.Clear();
+            JumpFlags.Clear();
+            _pathIndex = 0;
+            _pathSearchPending = false;
+            _currentPathPartial = false;
+            _currentPathResidual = 0f;
         }
 
         private static AutoBattleRouteCapabilities CreateCapabilities(Character player)
@@ -460,9 +824,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Vector3 origin = camera.transform.position;
             Vector3[] points =
             {
-                target.transform.position + Vector3.up * 1.45f,
+                target.transform.position + Vector3.up * 0.82f,
                 target.transform.position + Vector3.up * 1.05f,
-                target.transform.position + Vector3.up * 0.65f
+                target.transform.position + Vector3.up * 0.62f
             };
             for (int i = 0; i < points.Length; i++)
             {
@@ -534,19 +898,218 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return true;
         }
 
+        private static bool PrepareBodyAim(Character player, Character target, Camera camera, Vector3 aimPoint,
+            bool emergency)
+        {
+            if (!SnapLook(player, camera, aimPoint))
+            {
+                LastAction = emergency ? "emergency_body_lock_failed" : "body_lock_failed";
+                return false;
+            }
+
+            bool aimRevision = _aimTarget != target || _aimWeapon != player.mWeapon ||
+                (_lastAimPoint != Vector3.zero && Vector3.Distance(_lastAimPoint, aimPoint) >= 0.75f);
+            _lastAimPoint = aimPoint;
+            if (aimRevision)
+            {
+                _aimTarget = target;
+                _aimWeapon = player.mWeapon;
+                _aimPreparedFrame = Time.frameCount;
+                _aimPreparedAt = Time.time;
+                LastAction = emergency ? "emergency_body_lock_settle" : "body_lock_settle";
+                return false;
+            }
+
+            // CameraObj publishes shootForward after the view state advances once.
+            if (Time.frameCount <= _aimPreparedFrame)
+            {
+                LastAction = emergency ? "emergency_body_lock_settle" : "body_lock_settle";
+                return false;
+            }
+
+            if (!emergency && Time.time - _aimPreparedAt < 0.016f)
+            {
+                LastAction = "body_lock_settle";
+                return false;
+            }
+            return true;
+        }
+
+        private static bool ConfirmBodyAim(Character target, bool allowHidden, float fallbackSeconds, out bool exact)
+        {
+            exact = allowHidden;
+            if (!allowHidden)
+            {
+                try { exact = AutoFire.IsCrosshairOnEnemyExact(target); }
+                catch { exact = false; }
+            }
+            if (exact)
+            {
+                _bodyConfirmTarget = null;
+                _bodyConfirmStartedAt = 0f;
+                return true;
+            }
+            if (_bodyConfirmTarget != target)
+            {
+                _bodyConfirmTarget = target;
+                _bodyConfirmStartedAt = Time.time;
+                return false;
+            }
+            return Time.time - _bodyConfirmStartedAt >= fallbackSeconds;
+        }
+
+        private static bool ObserveWeaponShot(Character player)
+        {
+            WeaponBase weapon = player == null ? null : player.mWeapon;
+            if (weapon == null)
+            {
+                _observedWeapon = null;
+                _observedClip = -1;
+                _fireRequestWeapon = null;
+                _fireRequestStartedAt = 0f;
+                _fireRequestFirstAt = 0f;
+                return false;
+            }
+
+            int clip;
+            try { clip = weapon.clip; }
+            catch { return false; }
+            if (_observedWeapon != weapon)
+            {
+                _observedWeapon = weapon;
+                _observedClip = clip;
+                _fireRequestWeapon = null;
+                _fireRequestStartedAt = 0f;
+                _fireRequestFirstAt = 0f;
+                return false;
+            }
+
+            bool fired = _observedClip >= 0 && clip < _observedClip;
+            if (fired)
+            {
+                _fireRequestWeapon = null;
+                _fireRequestStartedAt = 0f;
+                _fireRequestFirstAt = 0f;
+                WeaponType firedType = GetWeaponType(weapon);
+                if (firedType == WeaponType.kWeaponTypeRPG || firedType == WeaponType.kWeaponTypeBow)
+                    _nextRoleSpecialAt = Time.time + 2.4f;
+                if (_temporarilyBlockedWeapon == weapon)
+                {
+                    _temporarilyBlockedWeapon = null;
+                    _blockedWeaponUntil = 0f;
+                }
+                bool ignored = Time.time < _ignoreActualShotUntil;
+                FileLogger.Log("AUTO-BATTLE][FIRE", (ignored ? "late shot ignored weapon=" : "actual shot weapon=") +
+                    firedType + " clip=" + _observedClip + "->" + clip);
+                if (ignored) fired = false;
+            }
+            _observedClip = clip;
+            return fired;
+        }
+
+        private static void TrackFireRequest(WeaponBase weapon)
+        {
+            if (weapon == null) return;
+            if (_fireRequestWeapon != weapon)
+            {
+                _fireRequestWeapon = weapon;
+                _fireRequestStartedAt = Time.time;
+                _fireRequestFirstAt = Time.time;
+                return;
+            }
+
+            if (IsNativeWeaponWaiting(weapon) && Time.time - _fireRequestFirstAt < 3.5f)
+            {
+                _fireRequestStartedAt = Time.time;
+                return;
+            }
+
+            WeaponType type = GetWeaponType(weapon);
+            float timeout = 0.85f;
+            if (type == WeaponType.kWeaponTypeShotGun) timeout = 1.15f;
+            else if (type == WeaponType.kWeaponTypeSniperGun || type == WeaponType.kWeaponTypeRPG ||
+                     type == WeaponType.kWeaponTypeBow) timeout = 1.65f;
+            if (Time.time - _fireRequestStartedAt < timeout) return;
+
+            _temporarilyBlockedWeapon = weapon;
+            _blockedWeaponUntil = Time.time + 0.75f;
+            _fireRequestWeapon = null;
+            _fireRequestStartedAt = 0f;
+            _fireRequestFirstAt = 0f;
+            _nextWeaponSwitchAt = 0f;
+            AutoBattleInput.ClearFire();
+            LastAction = "fire_timeout_switch";
+            FileLogger.Log("AUTO-BATTLE][FIRE", "request timeout; rotate weapon=" + type +
+                " state=" + DescribeWeaponReadiness(weapon));
+        }
+
+        private static bool IsTemporarilyBlocked(WeaponBase weapon)
+        {
+            if (_temporarilyBlockedWeapon == null) return false;
+            if (Time.time >= _blockedWeaponUntil)
+            {
+                _temporarilyBlockedWeapon = null;
+                _blockedWeaponUntil = 0f;
+                return false;
+            }
+            return weapon == _temporarilyBlockedWeapon;
+        }
+
+        private static bool IsNativeWeaponWaiting(WeaponBase weapon)
+        {
+            try
+            {
+                if (weapon == null || weapon.info == null || weapon.reloading) return true;
+                if ((float)weapon.change_in_time > 0f || (float)weapon.info.cooling > 0f) return true;
+                if (!weapon.cool_down_ready || !weapon.info.cool_down_ready) return true;
+                return !weapon.Ready();
+            }
+            catch { return false; }
+        }
+
+        private static bool IsOperationalGun(WeaponBase weapon)
+        {
+            try
+            {
+                if (weapon == null || weapon.info == null || weapon.reloading || weapon.clip <= 0) return false;
+                if (!(weapon.info is GunInfo)) return false;
+                return GetWeaponType(weapon) != WeaponType.kWeaponTypeKnife;
+            }
+            catch { return false; }
+        }
+
+        private static void HandleUnavailableWeapon(Character player)
+        {
+            if (_weaponUnavailableSince <= 0f) _weaponUnavailableSince = Time.time;
+            WeaponBase weapon = player == null ? null : player.mWeapon;
+            if (weapon != null && weapon.clip <= 0 && !weapon.reloading)
+            {
+                try { weapon.Reload(); } catch { }
+            }
+            if (Time.time - _weaponUnavailableSince >= 0.22f) _nextWeaponSwitchAt = 0f;
+            LastAction = "weapon_unavailable_recover";
+        }
+
         private static void EnsureEmergencyWeapon(Character player, float distance)
         {
             if (player == null || player.weaponlist == null || Time.time < _nextWeaponSwitchAt) return;
+
+            WeaponBase sniper = FindOperationalWeapon(player, WeaponType.kWeaponTypeSniperGun);
+            if (sniper != null)
+            {
+                if (sniper != player.mWeapon) SwitchWeapon(player, sniper, "emergency_sniper_switch");
+                return;
+            }
 
             WeaponBase best = null;
             float bestScore = float.MinValue;
             for (int i = 0; i < player.weaponlist.Count; i++)
             {
                 WeaponBase weapon = player.weaponlist[i];
-                if (!IsReadyGun(weapon)) continue;
+                if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) continue;
                 WeaponType type = GetWeaponType(weapon);
 
-                float score = weapon.clip;
+                float score = Mathf.Min(30f, weapon.clip);
                 if (type == WeaponType.kWeaponTypeShotGun) score += distance <= 9f ? 150f : 85f;
                 else if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
                          type == WeaponType.kWeaponTypeDualWeapon) score += 135f;
@@ -571,13 +1134,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (best != null && best != player.mWeapon)
             {
-                try
-                {
-                    player.ChangeWeapon(Convert.ToInt32(best.info.slot));
-                    _nextWeaponSwitchAt = Time.time + 0.15f;
-                    LastAction = "emergency_weapon_switch";
-                }
-                catch { }
+                SwitchWeapon(player, best, "emergency_weapon_switch");
             }
             else if (player.mWeapon != null && player.mWeapon.clip <= 0 && !player.mWeapon.reloading)
             {
@@ -598,16 +1155,25 @@ namespace ASWDEBUG.Cheats.AutoBattle
             else if (CurrentRole == "突击/狙击")
                 preferred = WeaponType.kWeaponTypeSniperGun;
 
-            if (IsWeaponSuitable(player.mWeapon, preferred, distance)) return;
+            if (preferred != WeaponType.kWeaponTypeNone)
+            {
+                WeaponBase preferredWeapon = FindOperationalWeapon(player, preferred);
+                if (preferredWeapon != null)
+                {
+                    if (preferredWeapon != player.mWeapon) SwitchWeapon(player, preferredWeapon, "role_preferred_switch");
+                    return;
+                }
+            }
+            if (IsWeaponSuitable(player.mWeapon, WeaponType.kWeaponTypeNone, distance)) return;
 
             WeaponBase best = null;
             float bestScore = float.MinValue;
             for (int i = 0; i < player.weaponlist.Count; i++)
             {
                 WeaponBase weapon = player.weaponlist[i];
-                if (!IsReadyGun(weapon)) continue;
+                if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) continue;
                 WeaponType type = GetWeaponType(weapon);
-                float score = weapon.clip;
+                float score = Mathf.Min(30f, weapon.clip);
                 if (preferred != WeaponType.kWeaponTypeNone && type == preferred) score += 140f;
                 if ((type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) &&
                     Time.time < _nextRoleSpecialAt) score -= 120f;
@@ -626,13 +1192,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (best != null && best != player.mWeapon)
             {
-                try
-                {
-                    player.ChangeWeapon(Convert.ToInt32(best.info.slot));
-                    _nextWeaponSwitchAt = Time.time + 0.15f;
-                    LastAction = "role_weapon_switch";
-                }
-                catch { }
+                SwitchWeapon(player, best, "role_weapon_switch");
             }
             else if (player.mWeapon != null && player.mWeapon.clip <= 0 && !player.mWeapon.reloading)
             {
@@ -640,88 +1200,122 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool IsReadyGun(WeaponBase weapon)
+        private static WeaponBase FindOperationalWeapon(Character player, WeaponType type)
         {
+            if (player == null || player.weaponlist == null) return null;
+            WeaponBase best = null;
+            int bestClip = -1;
+            for (int i = 0; i < player.weaponlist.Count; i++)
+            {
+                WeaponBase weapon = player.weaponlist[i];
+                if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon) || GetWeaponType(weapon) != type)
+                    continue;
+                if (weapon.clip <= bestClip) continue;
+                best = weapon;
+                bestClip = weapon.clip;
+            }
+            return best;
+        }
+
+        private static void SwitchWeapon(Character player, WeaponBase weapon, string action)
+        {
+            if (player == null || weapon == null || weapon.info == null) return;
             try
             {
-                if (weapon == null || weapon.info == null || weapon.reloading || weapon.clip <= 0) return false;
-                if (!(weapon.info is GunInfo)) return false;
-                if (!weapon.Ready()) return false;
-                if (!weapon.cool_down_ready || !weapon.info.cool_down_ready || (float)weapon.info.cooling > 0f) return false;
-                WeaponType type = GetWeaponType(weapon);
-                return type != WeaponType.kWeaponTypeKnife;
+                player.ChangeWeapon(Convert.ToInt32(weapon.info.slot));
+                _nextWeaponSwitchAt = Time.time + 0.15f;
+                LastAction = action;
             }
-            catch { return false; }
-        }
-
-        private static bool CanFire(Character player, float distance)
-        {
-            if (!IsReadyGun(player == null ? null : player.mWeapon)) return false;
-            WeaponType type = GetWeaponType(player.mWeapon);
-            if (type == WeaponType.kWeaponTypeShotGun && distance > 28f) return false;
-            if ((type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) && distance > 85f) return false;
-            return distance <= (type == WeaponType.kWeaponTypeSniperGun ? 180f : 120f);
-        }
-
-        private static float FireInterval(WeaponBase weapon)
-        {
-            if (weapon == null || weapon.info == null) return 0.12f;
-            WeaponType type = GetWeaponType(weapon);
-            if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
-                type == WeaponType.kWeaponTypeDualWeapon) return UnityEngine.Random.Range(0.045f, 0.085f);
-            if (type == WeaponType.kWeaponTypePistol) return UnityEngine.Random.Range(0.09f, 0.15f);
-            if (type == WeaponType.kWeaponTypeShotGun) return UnityEngine.Random.Range(0.16f, 0.26f);
-            return UnityEngine.Random.Range(0.10f, 0.18f);
+            catch { }
         }
 
         private static bool EnsureSniperScope(WeaponBase weapon)
         {
+            return SetSniperScope(weapon, true);
+        }
+
+        private static bool SetSniperScope(WeaponBase weapon, bool open)
+        {
             SniperGunController sniper = weapon as SniperGunController;
-            if (sniper == null) return true;
+            if (sniper == null)
+            {
+                if (_scopeWeapon != null) AutoBattleInput.ClearSecondFire();
+                _scopeWeapon = null;
+                _scopeRequestPending = false;
+                return true;
+            }
 
             try
             {
-                if (sniper.currentSight != 0)
+                if (_scopeWeapon != weapon)
                 {
+                    AutoBattleInput.ClearSecondFire();
+                    _scopeWeapon = weapon;
+                    _scopeRequestPending = false;
                     _nextScopeAt = 0f;
-                    LastAction = "sniper_scope_ready";
+                }
+                if (_scopeRequestPending && _scopeRequestedOpen != open)
+                {
+                    AutoBattleInput.ClearSecondFire();
+                    _scopeRequestPending = false;
+                    _nextScopeAt = 0f;
+                }
+
+                bool observedOpen = sniper.currentSight != 0;
+                if (observedOpen == open)
+                {
+                    if (_scopeRequestPending) AutoBattleInput.ClearSecondFire();
+                    _scopeRequestPending = false;
+                    _nextScopeAt = 0f;
+                    LastAction = open ? "sniper_scope_ready" : "sniper_scope_closed";
                     return true;
                 }
 
-                if (sniper.reloading)
+                if (open && sniper.reloading)
                 {
                     LastAction = "sniper_scope_reload_wait";
                     return false;
                 }
 
+                if (_scopeRequestPending && Time.time - _scopeRequestedAt < 0.45f)
+                {
+                    LastAction = open ? "sniper_scope_open_wait" : "sniper_scope_close_wait";
+                    return false;
+                }
+                if (_scopeRequestPending)
+                {
+                    AutoBattleInput.ClearSecondFire();
+                    _scopeRequestPending = false;
+                }
+
                 if (Time.time >= _nextScopeAt)
                 {
-                    // SniperGunController toggles its sight on GetKeyDown, not while the key is held.
                     AutoBattleInput.PressAction(ActionType.kActionSecondFire, 0.10f);
-                    _nextScopeAt = Time.time + 0.18f;
-                    LastAction = "sniper_scope_request";
-                    FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope requested");
+                    _scopeRequestPending = true;
+                    _scopeRequestedOpen = open;
+                    _scopeRequestedAt = Time.time;
+                    _nextScopeAt = Time.time + 0.38f;
+                    LastAction = open ? "sniper_scope_open_request" : "sniper_scope_close_request";
+                    FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope " + (open ? "open" : "close") + " requested");
                 }
                 else
                 {
-                    LastAction = "sniper_scope_wait";
+                    LastAction = open ? "sniper_scope_open_wait" : "sniper_scope_close_wait";
                 }
                 return false;
             }
             catch (Exception ex)
             {
-                LastAction = "sniper_scope_error";
-                FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope failed ex=" + ex.GetType().Name + ":" + ex.Message);
+                LastAction = open ? "sniper_scope_open_error" : "sniper_scope_close_error";
+                FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope state failed desired=" +
+                    (open ? "open" : "closed") + " ex=" + ex.GetType().Name + ":" + ex.Message);
                 return false;
             }
         }
 
         private static bool IsWeaponSuitable(WeaponBase weapon, WeaponType preferred, float distance)
         {
-            if (weapon != null && preferred == WeaponType.kWeaponTypeSniperGun &&
-                GetWeaponType(weapon) == WeaponType.kWeaponTypeSniperGun && !weapon.reloading && weapon.clip > 0)
-                return true;
-            if (!IsReadyGun(weapon)) return false;
+            if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) return false;
             WeaponType type = GetWeaponType(weapon);
             if (preferred != WeaponType.kWeaponTypeNone) return type == preferred;
             if (type == WeaponType.kWeaponTypeShotGun && distance > 12f) return false;
@@ -743,6 +1337,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static string DetectRole(Character player)
         {
+            try
+            {
+                if (player != null && player.character_info != null)
+                {
+                    if (player.character_info.career == CareerType.kCareerGunner) return "重装";
+                    if (player.character_info.career == CareerType.kCareerCommando) return "突击/狙击";
+                    if (player.character_info.career == CareerType.kCareerSolider) return "医疗/守护";
+                }
+            }
+            catch { }
             if (HasWeapon(player, WeaponType.kWeaponTypeRPG)) return "重装";
             if (HasWeapon(player, WeaponType.kWeaponTypeBow) || HasSkill(player, 0) || HasSkill(player, 9) || HasSkill(player, 14))
                 return "医疗/守护";

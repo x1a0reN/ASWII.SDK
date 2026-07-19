@@ -27,6 +27,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
     {
         private static readonly List<Character> Enemies = new List<Character>(16);
         private static readonly HashSet<int> ParticipantIds = new HashSet<int>();
+        private static readonly HashSet<int> ConfirmedDeadParticipantIds = new HashSet<int>();
+        private static readonly Dictionary<int, EnemyTrack> EnemyTracks = new Dictionary<int, EnemyTrack>(16);
         private static readonly float[] SafeRadii = { 5f, 9f, 13f };
 
         private static bool _roundActive;
@@ -55,6 +57,20 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _nextLobbyTraceAt;
         private static float _nextSafePointAt;
         private static float _nextAttackPointAt;
+        private static float _attackTargetVisibleAt;
+        private static float _attackTargetLockedAt;
+        private static float _attackEngagementStartedAt;
+        private static float _attackLastDamageAt;
+        private static int _attackTargetLastVital;
+        private static float _opportunityCooldownUntil;
+        private static float _emergencyTargetVisibleAt;
+        private static float _emergencyTargetLockedAt;
+        private static float _nextEnemyTrackAt;
+        private static float _recentDamageAt;
+        private static int _lastPlayerHp;
+        private static int _lastPlayerShield;
+        private static float _safePointLeaseUntil;
+        private static int _lastExposureCount;
         private static float _suicideStartedAt;
         private static float _nextCliffScanAt;
         private static float _nextGmLeaveAt;
@@ -70,6 +86,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _hasAttackPoint;
         private static bool _hasCliff;
         private static Character _attackTarget;
+        private static Character _searchTarget;
+        private static float _searchTargetLockedAt;
         private static Character _emergencyTarget;
         private static UITakeCardManager _cardManager;
         private static UIJiesuan _balanceView;
@@ -189,6 +207,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             DisableSurvivalLoopForCombatTest();
             CombatTestEnabled = true;
             _attackTarget = null;
+            _searchTarget = null;
+            _searchTargetLockedAt = 0f;
+            _attackTargetVisibleAt = 0f;
             _emergencyTarget = null;
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
@@ -380,11 +401,28 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             RemainingPlayers = 0;
             LastFinalRank = 0;
             ParticipantIds.Clear();
+            ConfirmedDeadParticipantIds.Clear();
+            EnemyTracks.Clear();
             _hasSafePoint = false;
             _hasAttackPoint = false;
             _hasCliff = false;
             _attackTarget = null;
+            _attackTargetVisibleAt = 0f;
+            _attackTargetLockedAt = 0f;
+            _attackEngagementStartedAt = 0f;
+            _attackLastDamageAt = 0f;
+            _attackTargetLastVital = 0;
+            _opportunityCooldownUntil = 0f;
             _emergencyTarget = null;
+            _emergencyTargetVisibleAt = 0f;
+            _emergencyTargetLockedAt = 0f;
+            _nextEnemyTrackAt = 0f;
+            _recentDamageAt = 0f;
+            _lastPlayerHp = player == null ? 0 : player.hp;
+            try { _lastPlayerShield = player == null ? 0 : player.shield; }
+            catch { _lastPlayerShield = 0; }
+            _safePointLeaseUntil = 0f;
+            _lastExposureCount = 0;
             _failedCandidateUntil = 0f;
             _nextSafePointAt = 0f;
             _nextAttackPointAt = 0f;
@@ -455,6 +493,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 (player.num_killed > _baselineKills || player.holding_attack_count > _baselineAssists))
             {
                 _taskCompleted = true;
+                SurvivalCombatAdapter.CancelSurvivalAttack();
+                SetAttackTarget(null, "objective_complete");
+                _searchTarget = null;
                 FileLogger.Log("SURVIVAL", "kill/assist objective complete kills=" + player.num_killed +
                     " assists=" + player.holding_attack_count);
             }
@@ -489,6 +530,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             SurvivalCombatAdapter.MarkSurvivalActivity(player);
             RefreshEnemies(level, player);
+            UpdateEnemyTracks(player, camera);
             RemainingPlayers = CountRemaining(player);
 
             if (!_participantLocked && Time.time - _controlStartedAt >= SurvivalBotSettings.ParticipantCaptureSeconds)
@@ -502,86 +544,117 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             int threshold = Math.Max(1, initial / 2);
             bool rankSecured = _participantLocked && RemainingPlayers <= threshold;
 
-            if (_taskCompleted)
+            if (_taskCompleted && rankSecured)
             {
                 ClearEmergencyTarget("objective_complete");
-                if (rankSecured)
-                {
-                    TickSuicide(app, player, camera);
-                }
-                else
-                {
-                    TickHide(player, camera);
-                    StatusText = "任务已完成，等待排名进入前半 | 存活 " + RemainingPlayers +
-                        " / 前半线 " + threshold + " | 路径 " + SurvivalCombatAdapter.LastPath;
-                }
+                TickSuicide(app, player, camera);
                 return;
             }
 
-            if (TickEmergencyCounterattack(player, camera)) return;
+            if (TickEmergencyCounterattack(player, camera, _taskCompleted)) return;
 
-            if (!_participantLocked || RemainingPlayers > threshold)
+            if (_taskCompleted)
             {
                 TickHide(player, camera);
+                StatusText = "任务已完成，等待排名进入前半 | 存活 " + RemainingPlayers +
+                    " / 前半线 " + threshold + " | 路径 " + SurvivalCombatAdapter.LastPath;
+                return;
+            }
+
+            if (!_participantLocked || RemainingPlayers > threshold + 1)
+            {
+                TickHide(player, camera);
+            }
+            else if (RemainingPlayers == threshold + 1)
+            {
+                ClearEmergencyTarget("opportunity_phase");
+                TickAttack(player, camera, true);
             }
             else
             {
                 ClearEmergencyTarget("attack_phase");
-                TickAttack(player, camera);
+                TickAttack(player, camera, false);
             }
         }
 
-        private static bool TickEmergencyCounterattack(Character player, Camera camera)
+        private static bool TickEmergencyCounterattack(Character player, Camera camera, bool objectiveComplete)
         {
             if (player == null || camera == null) return false;
 
             float triggerDistance = SurvivalBotSettings.EmergencyDistance;
-            float releaseDistance = triggerDistance + 2f;
-            bool strictLine = false;
-            float distance = float.MaxValue;
-
-            if (IsEmergencyTargetUsable(_emergencyTarget))
+            if (!IsEmergencyTargetUsable(_emergencyTarget)) ClearEmergencyTarget("target_invalid");
+            float contenderScore;
+            Character contender = SelectEmergencyThreat(player, triggerDistance, out contenderScore);
+            if (_emergencyTarget != null && contender != null && contender != _emergencyTarget &&
+                Time.time - _emergencyTargetLockedAt >= 0.25f)
             {
-                distance = XzDistance(player.transform.position, _emergencyTarget.transform.position);
-                float currentLimit = IsTargetHidden(_emergencyTarget) ? 6f : releaseDistance;
-                strictLine = distance <= currentLimit &&
-                    SurvivalCombatAdapter.SurvivalHasEmergencyFireLine(player, _emergencyTarget, camera);
+                float currentScore = ScoreEmergencyThreat(player, _emergencyTarget, triggerDistance);
+                float currentDistance = XzDistance(player.transform.position, _emergencyTarget.transform.position);
+                float contenderDistance = XzDistance(player.transform.position, contender.transform.position);
+                if (contenderScore >= currentScore + 30f || contenderDistance + 2f < currentDistance)
+                {
+                    ClearEmergencyTarget("higher_threat");
+                }
+            }
+            if (_emergencyTarget == null)
+            {
+                _emergencyTarget = contender;
+                if (_emergencyTarget == null) return false;
+                _emergencyTargetLockedAt = Time.time;
+                EnemyTrack acquiredTrack = GetEnemyTrack(_emergencyTarget);
+                _emergencyTargetVisibleAt = acquiredTrack != null && acquiredTrack.Visible ? Time.time : 0f;
+                FileLogger.Log("SURVIVAL", "emergency counterattack start uid=" + _emergencyTarget.uid +
+                    " dist=" + XzDistance(player.transform.position, _emergencyTarget.transform.position).ToString("0.0") +
+                    " threat=" + contenderScore.ToString("0") + " hidden=" + IsTargetHidden(_emergencyTarget));
             }
 
+            float distance = XzDistance(player.transform.position, _emergencyTarget.transform.position);
+            bool hidden = IsTargetHidden(_emergencyTarget);
+            bool strictLine = SurvivalCombatAdapter.SurvivalHasEmergencyFireLine(player, _emergencyTarget, camera);
+            EnemyTrack track = GetEnemyTrack(_emergencyTarget);
+            if (strictLine) _emergencyTargetVisibleAt = Time.time;
+            bool closing = track != null && track.ClosingSpeed >= 0.8f;
+            bool recentlyDamaged = Time.time - _recentDamageAt <= 1.2f;
+            float releaseDistance = hidden ? 6.8f : triggerDistance + 4f;
+            bool holdThreat = distance <= 4.5f || (hidden && distance <= 6f) ||
+                (distance <= releaseDistance &&
+                 (strictLine || Time.time - _emergencyTargetVisibleAt <= 0.8f || closing || recentlyDamaged));
+            if (!holdThreat)
+            {
+                ClearEmergencyTarget("threat_released");
+                return false;
+            }
+
+            if (Phase != SurvivalBotPhase.Emergency)
+                SurvivalCombatAdapter.SuspendSurvivalNavigation("emergency");
+            Phase = SurvivalBotPhase.Emergency;
             if (!strictLine)
             {
-                ClearEmergencyTarget("threat_lost");
-                float bestDistance = triggerDistance;
-                for (int i = 0; i < Enemies.Count; i++)
-                {
-                    Character candidate = Enemies[i];
-                    if (!IsEmergencyTargetUsable(candidate)) continue;
-                    float candidateDistance = XzDistance(player.transform.position, candidate.transform.position);
-                    float candidateLimit = IsTargetHidden(candidate) ? 6f : triggerDistance;
-                    if (candidateDistance > candidateLimit || candidateDistance > bestDistance) continue;
-                    if (!SurvivalCombatAdapter.SurvivalHasEmergencyFireLine(player, candidate, camera)) continue;
-                    bestDistance = candidateDistance;
-                    _emergencyTarget = candidate;
-                }
+                SurvivalCombatAdapter.CancelSurvivalAttack();
+                if (distance > 6f) SurvivalCombatAdapter.CloseSurvivalScope(player);
+                SurvivalCombatAdapter.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
+                MoveEmergency(player, _emergencyTarget, distance);
+                StatusText = "近敌反击 | 目标短暂遮挡 | 距离 " + distance.ToString("0.0");
+                return true;
+            }
 
-                if (_emergencyTarget == null) return false;
-                distance = bestDistance;
-                FileLogger.Log("SURVIVAL", "emergency counterattack start uid=" + _emergencyTarget.uid +
-                    " dist=" + distance.ToString("0.0") + " trigger=" + triggerDistance.ToString("0.0") +
-                    " hidden=" + IsTargetHidden(_emergencyTarget));
+            bool invincible = track != null && track.Invincible;
+            if (invincible || (objectiveComplete && distance > 6f))
+            {
+                SurvivalCombatAdapter.CancelSurvivalAttack();
+                SurvivalCombatAdapter.CloseSurvivalScope(player);
+                SurvivalCombatAdapter.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
+                MoveEmergency(player, _emergencyTarget, distance);
+                StatusText = invincible
+                    ? "近敌威胁 | 目标无敌，优先脱离"
+                    : "任务已完成 | 优先脱离追兵 | 距离 " + distance.ToString("0.0");
+                return true;
             }
 
             bool fired = SurvivalCombatAdapter.AttackEmergency(player, _emergencyTarget, camera,
                 out strictLine, out distance);
-            if (!strictLine)
-            {
-                ClearEmergencyTarget("strict_line_lost");
-                return false;
-            }
-
-            Phase = SurvivalBotPhase.Emergency;
-            AutoBattleInput.ClearMovement();
-            SurvivalCombatAdapter.LogCombatState(player, _emergencyTarget, true, distance, fired);
+            MoveEmergency(player, _emergencyTarget, distance);
+            SurvivalCombatAdapter.LogCombatState(player, _emergencyTarget, strictLine, distance, fired);
             StatusText = "近敌反击 | 目标 " + SafeName(_emergencyTarget) + " | 距离 " +
                 distance.ToString("0.0") + " / " + triggerDistance.ToString("0.0") + " | 隐身 " +
                 IsTargetHidden(_emergencyTarget) + " | 开火 " + fired;
@@ -594,23 +667,44 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 FileLogger.Log("SURVIVAL", "emergency counterattack stop uid=" + _emergencyTarget.uid +
                     " reason=" + reason);
             _emergencyTarget = null;
+            _emergencyTargetVisibleAt = 0f;
+            _emergencyTargetLockedAt = 0f;
         }
 
         private static void TickHide(Character player, Camera camera)
         {
+            bool enteringHide = Phase != SurvivalBotPhase.Hide;
             Phase = SurvivalBotPhase.Hide;
+            if (enteringHide)
+            {
+                _hasSafePoint = false;
+                _nextSafePointAt = 0f;
+            }
+            SurvivalCombatAdapter.CancelSurvivalAttack();
             SurvivalCombatAdapter.CloseSurvivalScope(player);
             int exposure = CountExposure(player.transform.position, player);
-            if (!_hasSafePoint || Time.time >= _nextSafePointAt ||
-                XzDistance(player.transform.position, _safePoint) < 1.1f)
+            bool exposureStarted = exposure > 0 && _lastExposureCount == 0;
+            _lastExposureCount = exposure;
+            bool arrived = _hasSafePoint && XzDistance(player.transform.position, _safePoint) < 1.1f;
+            bool routeFailed = IsRouteFailure("hide");
+            bool needSafePoint = !_hasSafePoint || routeFailed ||
+                exposureStarted ||
+                (arrived && exposure > 0) ||
+                (exposure > 0 && Time.time >= _nextSafePointAt) ||
+                (arrived && Time.time >= _safePointLeaseUntil);
+            if (needSafePoint)
             {
                 _safePoint = SelectSafetyPoint(player);
                 _hasSafePoint = true;
                 _nextSafePointAt = Time.time + SurvivalBotSettings.SafePointRefreshSeconds;
+                _safePointLeaseUntil = Time.time + UnityEngine.Random.Range(2.5f, 4.5f);
+                arrived = XzDistance(player.transform.position, _safePoint) < 1.1f;
             }
 
-            Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _safePoint, true);
-            if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
+            Vector3 move = arrived && exposure == 0
+                ? Vector3.zero
+                : SurvivalCombatAdapter.NavigateSurvival(player, _safePoint, true, "hide");
+            if (move.sqrMagnitude <= 0.01f && IsRouteFailure("hide"))
             {
                 MarkCandidateFailed(_safePoint);
                 _hasSafePoint = false;
@@ -625,7 +719,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (exposure > 0)
             {
                 SurvivalCombatAdapter.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
-                _nextSafePointAt = 0f;
             }
 
             StatusText = "躲避模式 | 初始 " + Math.Max(InitialPlayers, ParticipantIds.Count) +
@@ -633,15 +726,55 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 " | 路径 " + SurvivalCombatAdapter.LastPath;
         }
 
-        private static void TickAttack(Character player, Camera camera)
+        private static void TickAttack(Character player, Camera camera, bool opportunityOnly)
         {
+            bool enteringAttack = Phase != SurvivalBotPhase.Attack;
             Phase = SurvivalBotPhase.Attack;
-            const string modeName = "攻击模式";
-            _attackTarget = SelectNearestVisibleTarget(player, camera);
+            if (enteringAttack) _hasSafePoint = false;
+            string modeName = opportunityOnly ? "机会攻击" : "强制猎杀";
+            if (opportunityOnly && Time.time < _opportunityCooldownUntil)
+            {
+                TickHide(player, camera);
+                StatusText = modeName + " | 等待安全机会";
+                return;
+            }
+
+            Character visibleTarget = SelectBestVisibleTarget(player, camera, opportunityOnly);
+            bool currentVisible = IsAttackTargetUsable(_attackTarget) &&
+                SurvivalCombatAdapter.SurvivalHasStrictFireLine(player, _attackTarget, camera);
+            if (opportunityOnly && _attackTarget != null && !IsSafeOpportunityTarget(player, _attackTarget))
+            {
+                SetAttackTarget(null, "opportunity_risk");
+                currentVisible = false;
+            }
+            if (currentVisible) _attackTargetVisibleAt = Time.time;
+            if (!IsAttackTargetUsable(_attackTarget))
+            {
+                SetAttackTarget(visibleTarget, "acquire");
+            }
+            else if (visibleTarget != null && visibleTarget != _attackTarget &&
+                ShouldSwitchAttackTarget(player, _attackTarget, visibleTarget, currentVisible))
+            {
+                SetAttackTarget(visibleTarget, "score_advantage");
+                currentVisible = true;
+            }
+            else if (!currentVisible && Time.time - _attackTargetVisibleAt > 0.75f)
+            {
+                SetAttackTarget(null, "line_lost");
+            }
+
             if (_attackTarget == null)
             {
+                SurvivalCombatAdapter.CancelSurvivalAttack();
                 SurvivalCombatAdapter.CloseSurvivalScope(player);
-                Character searchTarget = SelectNearestTarget(player);
+                if (opportunityOnly)
+                {
+                    TickHide(player, camera);
+                    StatusText = modeName + " | 无安全直线目标";
+                    return;
+                }
+
+                Character searchTarget = SelectSearchTarget(player);
                 if (searchTarget == null)
                 {
                     AutoBattleInput.ClearMovement();
@@ -655,21 +788,56 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            _hasAttackPoint = false;
+            int targetVital = CharacterVital(_attackTarget);
+            if (_attackTargetLastVital > 0 && targetVital < _attackTargetLastVital)
+                _attackLastDamageAt = Time.time;
+            _attackTargetLastVital = targetVital;
+            float engagementElapsed = Time.time - _attackEngagementStartedAt;
+            if (opportunityOnly && engagementElapsed >= 2.5f)
+            {
+                SurvivalCombatAdapter.CancelSurvivalAttack();
+                SetAttackTarget(null, "opportunity_hard_budget");
+                _opportunityCooldownUntil = Time.time + 1.5f;
+                TickHide(player, camera);
+                StatusText = modeName + " | 机会窗口结束，返回掩体";
+                return;
+            }
+
             bool strictLine;
             float distance;
             bool fired = SurvivalCombatAdapter.AttackSurvival(player, _attackTarget, camera, out strictLine, out distance);
             SurvivalCombatAdapter.LogCombatState(player, _attackTarget, strictLine, distance, fired);
+            if (!opportunityOnly && engagementElapsed > 5f && Time.time - _attackLastDamageAt > 1.2f)
+            {
+                SurvivalCombatAdapter.CancelSurvivalAttack();
+                SetAttackTarget(null, "engagement_budget");
+                _opportunityCooldownUntil = Time.time + 0.25f;
+                return;
+            }
             if (!strictLine)
             {
+                if (opportunityOnly)
+                {
+                    SurvivalCombatAdapter.CancelSurvivalAttack();
+                    SetAttackTarget(null, "opportunity_line_lost");
+                    TickHide(player, camera);
+                    StatusText = modeName + " | 目标离开直线，返回掩体";
+                    return;
+                }
+                if (Time.time - _attackTargetVisibleAt <= 0.75f)
+                {
+                    TickAttackSearch(player, camera, _attackTarget);
+                    StatusText = modeName + " | 目标短暂遮挡，保持锁定";
+                    return;
+                }
                 SurvivalCombatAdapter.CloseSurvivalScope(player);
-                _attackTarget = null;
+                SetAttackTarget(null, "strict_line_lost");
                 AutoBattleInput.ClearMovement();
                 StatusText = modeName + " | 目标刚失去视线，重新搜敌 | 已关镜";
                 return;
             }
 
-            AutoBattleInput.ClearMovement();
+            MoveCombatStrafe(player, _attackTarget);
             StatusText = modeName + " | 存活 " + RemainingPlayers + " | 目标 " + SafeName(_attackTarget) +
                 " | 距离 " + distance.ToString("0.0") + " | 直线 " + strictLine + " | 开火 " + fired;
         }
@@ -684,8 +852,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _nextAttackPointAt = Time.time + 1.2f;
             }
 
-            Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _attackPoint, false);
-            if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
+            Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _attackPoint, false, "attack");
+            if (move.sqrMagnitude <= 0.01f && IsRouteFailure("attack"))
             {
                 MarkCandidateFailed(_attackPoint);
                 _hasAttackPoint = false;
@@ -753,8 +921,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
                 if (edgeDistance > 1.1f)
                 {
-                    Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _cliffEdge, false);
-                    if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
+                    Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _cliffEdge, false, "suicide");
+                    if (move.sqrMagnitude <= 0.01f && IsRouteFailure("suicide"))
                     {
                         MarkCandidateFailed(_cliffEdge);
                         _hasCliff = false;
@@ -1124,13 +1292,35 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static int CountRemaining(Character player)
         {
-            int count = player != null && !player.IsDied ? 1 : 0;
+            HashSet<int> counted = new HashSet<int>();
+            int count = 0;
+            if (player != null && !player.IsDied && counted.Add(player.uid))
+            {
+                count++;
+            }
             for (int i = 0; i < Enemies.Count; i++)
             {
                 Character ch = Enemies[i];
-                if (ch == null || ch.IsDied) continue;
+                if (ch == null) continue;
+                if (ch.IsDied)
+                {
+                    if (ch.uid != 0) ConfirmedDeadParticipantIds.Add(ch.uid);
+                    continue;
+                }
                 if (_participantLocked && !ParticipantIds.Contains(ch.uid)) continue;
-                count++;
+                if (counted.Add(ch.uid))
+                {
+                    count++;
+                }
+            }
+            if (_participantLocked)
+            {
+                foreach (int uid in ParticipantIds)
+                {
+                    if (uid == 0 || counted.Contains(uid) || ConfirmedDeadParticipantIds.Contains(uid)) continue;
+                    count++;
+                }
+                count += Math.Max(0, InitialPlayers - ParticipantIds.Count);
             }
             return count;
         }
@@ -1140,6 +1330,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Vector3 origin = player.transform.position;
             Vector3 best = origin;
             float bestScore = ScoreSafetyPoint(origin, player, origin, 0f);
+            Vector3 bestEscape = origin;
+            float bestEscapeScore = float.MaxValue;
             int index = 0;
             for (int r = 0; r < SafeRadii.Length; r++)
             {
@@ -1154,6 +1346,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     if (routePenalty >= 120f) continue;
                     float score = ScoreSafetyPoint(ground, player, origin, routePenalty) + index * 0.01f;
                     index++;
+                    score += routePenalty <= 0.1f
+                        ? ScoreRouteExposure(origin, ground, player)
+                        : 420f;
+                    if (score < bestEscapeScore)
+                    {
+                        bestEscapeScore = score;
+                        bestEscape = ground;
+                    }
                     if (score < bestScore)
                     {
                         bestScore = score;
@@ -1161,7 +1361,35 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     }
                 }
             }
+            if (_hasSafePoint && !IsFailedCandidate(_safePoint) && XzDistance(origin, _safePoint) >= 1.1f)
+            {
+                float committedPenalty = AutoBattleRoutePlanner.CandidatePenalty(origin, _safePoint, player.transform.root);
+                if (committedPenalty < 120f)
+                {
+                    float committedScore = ScoreSafetyPoint(_safePoint, player, origin, committedPenalty) +
+                        (committedPenalty <= 0.1f ? ScoreRouteExposure(origin, _safePoint, player) : 420f);
+                    if (committedScore <= bestScore + 180f) return _safePoint;
+                }
+            }
+            if (CountExposure(origin, player) > 0 && XzDistance(best, origin) < 0.5f &&
+                bestEscapeScore < float.MaxValue)
+                return bestEscape;
             return best;
+        }
+
+        private static float ScoreRouteExposure(Vector3 from, Vector3 to, Character player)
+        {
+            float distance = XzDistance(from, to);
+            if (distance < 1.5f) return 0f;
+            int samples = Mathf.Clamp(Mathf.CeilToInt(distance / 2f), 2, 7);
+            float penalty = 0f;
+            for (int i = 1; i < samples; i++)
+            {
+                Vector3 point = Vector3.Lerp(from, to, (float)i / samples);
+                int exposure = CountExposure(point, player);
+                penalty += exposure * 220f;
+            }
+            return penalty;
         }
 
         private static float ScoreSafetyPoint(Vector3 point, Character player, Vector3 origin, float routePenalty)
@@ -1254,7 +1482,348 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     best = point;
                 }
             }
+            if (bestScore == float.MaxValue && currentDistance > 2f)
+            {
+                Vector3 toward = targetPos - playerPos;
+                toward.y = 0f;
+                if (toward.sqrMagnitude > 0.01f)
+                {
+                    toward.Normalize();
+                    float advance = Mathf.Clamp(currentDistance - 3f, 2.5f, 10f);
+                    for (int i = 0; i < 3; i++)
+                    {
+                        Vector3 fallback;
+                        float step = Mathf.Max(2.5f, advance - i * 2.5f);
+                        if (!TryProjectGround(playerPos + toward * step, playerPos.y, 4f, out fallback)) continue;
+                        if (IsFailedCandidate(fallback)) continue;
+                        if (AutoBattleRoutePlanner.CandidatePenalty(playerPos, fallback, player.transform.root) >= 120f) continue;
+                        return fallback;
+                    }
+                }
+            }
             return best;
+        }
+
+        private static void UpdateEnemyTracks(Character player, Camera camera)
+        {
+            if (player == null) return;
+            int hp = player.hp;
+            int shield = 0;
+            try { shield = player.shield; } catch { }
+            if ((_lastPlayerHp > 0 && hp < _lastPlayerHp) || shield < _lastPlayerShield)
+                _recentDamageAt = Time.time;
+            _lastPlayerHp = hp;
+            _lastPlayerShield = shield;
+            if (Time.time < _nextEnemyTrackAt) return;
+            _nextEnemyTrackAt = Time.time + 0.12f;
+
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character target = Enemies[i];
+                if (target == null || target.transform == null) continue;
+                if (target.IsDied)
+                {
+                    if (target.uid != 0) ConfirmedDeadParticipantIds.Add(target.uid);
+                    continue;
+                }
+
+                EnemyTrack track;
+                if (!EnemyTracks.TryGetValue(target.uid, out track))
+                {
+                    track = new EnemyTrack();
+                    track.Uid = target.uid;
+                    track.Target = target;
+                    track.Position = target.transform.position;
+                    track.Distance = XzDistance(player.transform.position, track.Position);
+                    track.LastHp = target.hp;
+                    EnemyTracks[target.uid] = track;
+                }
+
+                float now = Time.time;
+                float distance = XzDistance(player.transform.position, target.transform.position);
+                float dt = track.SampleAt <= 0f ? 0f : now - track.SampleAt;
+                if (dt > 0.02f)
+                {
+                    float instantaneous = (track.Distance - distance) / dt;
+                    track.ClosingSpeed = Mathf.Lerp(track.ClosingSpeed, instantaneous, 0.45f);
+                }
+                if (track.LastHp > 0 && target.hp < track.LastHp) track.LastDamagedAt = now;
+                track.Target = target;
+                track.Position = target.transform.position;
+                track.Distance = distance;
+                track.Hidden = IsTargetHidden(target);
+                track.Invincible = target.invincible_time > 0.03f;
+                track.FacingPlayer = IsEnemyFacingPoint(target, player.transform.position, 0.45f);
+                track.FireLine = SurvivalCombatAdapter.SurvivalHasEmergencyFireLine(player, target, camera);
+                track.Visible = (!track.Hidden || distance <= 6f) && track.FireLine;
+                if (track.Visible) track.LastVisibleAt = now;
+                track.HealthPercent = CharacterHealthPercent(target);
+                track.LastHp = target.hp;
+                track.SampleAt = now;
+            }
+        }
+
+        private static EnemyTrack GetEnemyTrack(Character target)
+        {
+            if (target == null) return null;
+            EnemyTrack track;
+            return EnemyTracks.TryGetValue(target.uid, out track) ? track : null;
+        }
+
+        private static Character SelectEmergencyThreat(Character player, float triggerDistance, out float bestScore)
+        {
+            Character best = null;
+            bestScore = 0f;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character candidate = Enemies[i];
+                if (!IsEmergencyTargetUsable(candidate)) continue;
+                float score = ScoreEmergencyThreat(player, candidate, triggerDistance);
+                if (score < 95f || score <= bestScore) continue;
+                bestScore = score;
+                best = candidate;
+            }
+            return best;
+        }
+
+        private static float ScoreEmergencyThreat(Character player, Character candidate, float triggerDistance)
+        {
+            if (player == null || !IsEmergencyTargetUsable(candidate)) return 0f;
+            EnemyTrack track = GetEnemyTrack(candidate);
+            float distance = track == null
+                ? XzDistance(player.transform.position, candidate.transform.position)
+                : track.Distance;
+            bool hidden = track == null ? IsTargetHidden(candidate) : track.Hidden;
+            if (hidden && distance > 6f) return 0f;
+
+            float score = 0f;
+            if (distance <= 3f) score += 210f;
+            else if (distance <= 6f) score += 145f;
+            else if (distance <= triggerDistance) score += 55f;
+            else if (distance <= triggerDistance + 6f) score += 18f;
+            if (track != null)
+            {
+                if (track.FireLine) score += 30f;
+                if (track.FacingPlayer) score += 35f;
+                if (track.ClosingSpeed > 0.8f) score += Mathf.Min(45f, track.ClosingSpeed * 10f);
+                if (track.Invincible) score += 8f;
+            }
+            if (Time.time - _recentDamageAt <= 1.2f && (track == null || track.FireLine)) score += 20f;
+            if (hidden) score += 60f;
+            return score;
+        }
+
+        private static Character SelectBestTarget(Character player)
+        {
+            Character best = null;
+            float bestScore = float.MaxValue;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character target = Enemies[i];
+                if (!IsAttackTargetUsable(target)) continue;
+                float score = ScoreAttackTarget(player, target, false);
+                if (score >= bestScore) continue;
+                bestScore = score;
+                best = target;
+            }
+            return best;
+        }
+
+        private static Character SelectSearchTarget(Character player)
+        {
+            Character best = SelectBestTarget(player);
+            if (!IsAttackTargetUsable(_searchTarget))
+            {
+                _searchTarget = best;
+                _searchTargetLockedAt = Time.time;
+                _hasAttackPoint = false;
+                return _searchTarget;
+            }
+            if (best == null || best == _searchTarget || Time.time - _searchTargetLockedAt < 1.5f)
+                return _searchTarget;
+            float currentScore = ScoreAttackTarget(player, _searchTarget, false);
+            float bestScore = ScoreAttackTarget(player, best, false);
+            if (bestScore + 18f < currentScore)
+            {
+                _searchTarget = best;
+                _searchTargetLockedAt = Time.time;
+                _hasAttackPoint = false;
+            }
+            return _searchTarget;
+        }
+
+        private static Character SelectBestVisibleTarget(Character player, Camera camera, bool opportunityOnly)
+        {
+            Character best = null;
+            float bestScore = float.MaxValue;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character target = Enemies[i];
+                if (!IsAttackTargetUsable(target)) continue;
+                if (!SurvivalCombatAdapter.SurvivalHasStrictFireLine(player, target, camera)) continue;
+                if (opportunityOnly && !IsSafeOpportunityTarget(player, target)) continue;
+                float score = ScoreAttackTarget(player, target, true);
+                if (score >= bestScore) continue;
+                bestScore = score;
+                best = target;
+            }
+            return best;
+        }
+
+        private static float ScoreAttackTarget(Character player, Character target, bool visible)
+        {
+            EnemyTrack track = GetEnemyTrack(target);
+            float distance = track == null
+                ? XzDistance(player.transform.position, target.transform.position)
+                : track.Distance;
+            float health = track == null ? CharacterHealthPercent(target) : track.HealthPercent;
+            float score = distance * 2.5f + health * 0.12f;
+            if (visible) score -= 75f;
+            if (track != null)
+            {
+                if (Time.time - track.LastDamagedAt <= 2.2f) score -= 28f;
+                if (track.FacingPlayer) score += 12f;
+                if (track.Invincible) score += 1000f;
+            }
+            if (target == _attackTarget) score -= 18f;
+            return score;
+        }
+
+        private static bool ShouldSwitchAttackTarget(Character player, Character current, Character candidate,
+            bool currentVisible)
+        {
+            if (candidate == null || candidate == current) return false;
+            if (Time.time - _attackTargetLockedAt < 1f && currentVisible) return false;
+            float currentScore = ScoreAttackTarget(player, current, currentVisible);
+            float candidateScore = ScoreAttackTarget(player, candidate, true);
+            return candidateScore + (currentVisible ? 20f : 8f) < currentScore;
+        }
+
+        private static bool IsSafeOpportunityTarget(Character player, Character target)
+        {
+            if (player == null || target == null) return false;
+            EnemyTrack track = GetEnemyTrack(target);
+            if (track == null || track.Invincible || track.Hidden || track.FacingPlayer) return false;
+            float distance = track == null
+                ? XzDistance(player.transform.position, target.transform.position)
+                : track.Distance;
+            bool weakened = track.HealthPercent <= 72f || Time.time - track.LastDamagedAt <= 2.5f;
+            if (!weakened || distance > 28f) return false;
+            return CountExposure(player.transform.position, player) == 0 &&
+                CountOpenThirdPartyThreats(player.transform.position, target) == 0;
+        }
+
+        private static int CountOpenThirdPartyThreats(Vector3 point, Character ignoredTarget)
+        {
+            int count = 0;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character enemy = Enemies[i];
+                if (enemy == ignoredTarget || !IsLivingOpponent(enemy) || IsTargetHidden(enemy)) continue;
+                if (XzDistance(point, enemy.transform.position) > 35f) continue;
+                if (!HasBodyCover(enemy, point)) count++;
+            }
+            return count;
+        }
+
+        private static void SetAttackTarget(Character target, string reason)
+        {
+            if (_attackTarget == target) return;
+            int oldUid = _attackTarget == null ? 0 : _attackTarget.uid;
+            int newUid = target == null ? 0 : target.uid;
+            _attackTarget = target;
+            if (target != null) _searchTarget = null;
+            _hasAttackPoint = false;
+            _nextAttackPointAt = 0f;
+            _attackTargetLockedAt = Time.time;
+            _attackEngagementStartedAt = Time.time;
+            _attackLastDamageAt = Time.time;
+            _attackTargetLastVital = CharacterVital(target);
+            _attackTargetVisibleAt = target == null ? 0f : Time.time;
+            FileLogger.Log("SURVIVAL", "attack target " + oldUid + "->" + newUid + " reason=" + reason);
+        }
+
+        private static void MoveEmergency(Character player, Character target, float distance)
+        {
+            if (player == null || target == null) return;
+            Vector3 away = player.transform.position - target.transform.position;
+            away.y = 0f;
+            if (away.sqrMagnitude < 0.01f) away = -player.transform.forward;
+            away.Normalize();
+            Vector3 side = Vector3.Cross(Vector3.up, away);
+            if (((target.uid + Mathf.FloorToInt(Time.time * 0.7f)) & 1) != 0) side = -side;
+            float retreatWeight = distance < 8f ? 0.9f : 0.45f;
+            Vector3[] candidates =
+            {
+                (away * retreatWeight + side).normalized,
+                (away * retreatWeight - side).normalized,
+                away,
+                side,
+                -side
+            };
+            Vector3 move = Vector3.zero;
+            float bestScore = float.MinValue;
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                Vector3 candidate = candidates[i];
+                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, candidate, player.transform.root))
+                    continue;
+                float score = Vector3.Dot(candidate, away) * 3f - i * 0.04f;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                move = candidate;
+            }
+            if (move.sqrMagnitude > 0.01f)
+            {
+                AutoBattleInput.SetMoveWorld(player, move, false);
+                return;
+            }
+
+            AutoBattleInput.ClearMovement();
+            if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(player.transform.position, away, player.transform.root))
+            {
+                AutoBattleInput.PressAction(ActionType.kActionJump, 0.10f);
+                AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
+            }
+        }
+
+        private static void MoveCombatStrafe(Character player, Character target)
+        {
+            if (player == null || target == null) return;
+            Vector3 toTarget = target.transform.position - player.transform.position;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude < 0.01f) return;
+            toTarget.Normalize();
+            Vector3 side = Vector3.Cross(Vector3.up, toTarget);
+            if (((target.uid + Mathf.FloorToInt(Time.time * 0.55f)) & 1) == 0) side = -side;
+            if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, side, player.transform.root)) side = -side;
+            if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, side, player.transform.root))
+            {
+                AutoBattleInput.ClearMovement();
+                return;
+            }
+            AutoBattleInput.SetMoveWorld(player, side, false);
+        }
+
+        private static float CharacterHealthPercent(Character target)
+        {
+            try
+            {
+                int max = target == null ? 0 : target.max_health;
+                if (target != null && target.character_info != null && target.character_info.max_health > max)
+                    max = target.character_info.max_health;
+                return max <= 0 ? 100f : Mathf.Clamp((float)target.hp * 100f / max, 0f, 100f);
+            }
+            catch { return 100f; }
+        }
+
+        private static int CharacterVital(Character target)
+        {
+            if (target == null) return 0;
+            int shield = 0;
+            try { shield = target.shield; } catch { }
+            try { return Math.Max(0, target.hp) + Math.Max(0, shield); }
+            catch { return Math.Max(0, shield); }
         }
 
         private static Character SelectNearestTarget(Character player)
@@ -1296,7 +1865,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool IsAttackTargetUsable(Character target)
         {
             if (!IsLivingOpponent(target) || !Enemies.Contains(target)) return false;
-            try { return !target.GetHidden(); }
+            try { return !target.GetHidden() && target.invincible_time <= 0.03f; }
             catch { return false; }
         }
 
@@ -1419,10 +1988,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             catch { return false; }
         }
 
-        private static bool IsRouteFailure()
+        private static bool IsRouteFailure(string intent)
         {
+            if (!string.Equals(SurvivalCombatAdapter.LastPathIntent, intent, StringComparison.Ordinal)) return false;
             return string.Equals(SurvivalCombatAdapter.LastPath, "no_path", StringComparison.Ordinal) ||
                    string.Equals(SurvivalCombatAdapter.LastPath, "route_null", StringComparison.Ordinal) ||
+                   string.Equals(SurvivalCombatAdapter.LastPath, "empty_route_repath", StringComparison.Ordinal) ||
+                   string.Equals(SurvivalCombatAdapter.LastPath, "stuck_repath", StringComparison.Ordinal) ||
                    string.Equals(SurvivalCombatAdapter.LastPath, "jump_lane_blocked", StringComparison.Ordinal) ||
                    string.Equals(SurvivalCombatAdapter.LastPath, "wall_repath", StringComparison.Ordinal);
         }
@@ -1554,6 +2126,25 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return field == null ? 0 : (int)field.GetValue(instance);
             }
             catch { return 0; }
+        }
+
+        private sealed class EnemyTrack
+        {
+            public int Uid;
+            public Character Target;
+            public Vector3 Position;
+            public float SampleAt;
+            public float Distance;
+            public float ClosingSpeed;
+            public float LastVisibleAt;
+            public float LastDamagedAt;
+            public float HealthPercent;
+            public int LastHp;
+            public bool Hidden;
+            public bool Invincible;
+            public bool FacingPlayer;
+            public bool FireLine;
+            public bool Visible;
         }
 
         private static float XzDistance(Vector3 a, Vector3 b)
