@@ -92,6 +92,7 @@ namespace ASWDEBUG.Patch
             PatchByName(harmony, typeof(LobbyConnection), "ResponseMatching", 0, null, "MatchingResponsePostfix");
             PatchByName(harmony, typeof(LobbyConnection), "ResponseCancelMatching", 0, null, "MatchingCancelResponsePostfix");
             PatchByName(harmony, typeof(UITakeCardManager), "Refresh", 0, null, "CardRefreshPostfix");
+            PatchByName(harmony, typeof(UIJiesuan), "ShowSelf", 0, null, "BalanceShownPostfix");
         }
 
         private static void PatchByName(HarmonyInstance harmony, Type type, string name, int parameterCount, string prefix, string postfix)
@@ -312,6 +313,11 @@ namespace ASWDEBUG.Patch
         private static void CardRefreshPostfix(UITakeCardManager __instance)
         {
             SurvivalBotManager.NotifyCardRefresh(__instance);
+        }
+
+        private static void BalanceShownPostfix(UIJiesuan __instance)
+        {
+            SurvivalBotManager.NotifyBalanceShown(__instance);
         }
     }
 }

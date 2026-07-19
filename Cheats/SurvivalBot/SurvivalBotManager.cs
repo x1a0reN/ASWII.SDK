@@ -69,10 +69,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _hasCliff;
         private static Character _attackTarget;
         private static UITakeCardManager _cardManager;
+        private static UIJiesuan _balanceView;
         private static int _cardCount;
         private static float _nextCardActionAt;
         private static float _cardDetectedAt;
         private static float _nextCardWaitLogAt;
+        private static float _nextBalanceConfirmAt;
         private static bool _cardCloseScheduled;
         private static byte _pendingGmUid;
         private static byte _pendingGmTeam;
@@ -127,6 +129,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             TickCards();
+            TickBalanceConfirmation();
 
             GameApp app = GameApp.Instance;
             bool inSurvival = IsInSurvivalGame(app);
@@ -339,6 +342,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("CARD", "refresh cardCount=" + _cardCount + " active=" + active);
         }
 
+        public static void NotifyBalanceShown(UIJiesuan view)
+        {
+            if (!Enabled || view == null) return;
+            _balanceView = view;
+            _nextBalanceConfirmAt = Time.time + 0.8f;
+            _awaitingReward = true;
+            Phase = SurvivalBotPhase.Balance;
+            StatusText = "结算完成，准备确认";
+            FileLogger.Log("CARD", "balance summary shown; confirm scheduled");
+        }
+
         private static void StartRound(Level level, Character player)
         {
             _roundGeneration++;
@@ -350,6 +364,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _roundEndedByGm = false;
             _awaitingReward = false;
             _cardManager = null;
+            _balanceView = null;
             _roundStartedAt = Time.time;
             _baselineKills = 0;
             _baselineAssists = 0;
@@ -828,6 +843,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             try
             {
                 UIJieSuanTakeCard window = _cardManager.window;
+                if (_cardCount <= 0)
+                {
+                    StatusText = "无可翻牌奖励，等待结算确认";
+                    _nextCardActionAt = Time.time + 0.5f;
+                    return;
+                }
+
                 if (window == null || window.gameObject == null || !window.gameObject.activeInHierarchy)
                 {
                     if (Time.time >= _nextCardWaitLogAt)
@@ -837,16 +859,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                             (Time.time - _cardDetectedAt).ToString("0.0"));
                     }
                     _nextCardActionAt = Time.time + 0.15f;
-                    return;
-                }
-
-                if (_cardCount <= 0)
-                {
-                    window.StopCountdown();
-                    window.CloseTackCardView();
-                    StatusText = "无可翻牌奖励，返回大厅";
-                    FileLogger.Log("CARD", "no card reward; card window closed");
-                    CompleteCardPhase(3f);
                     return;
                 }
 
@@ -895,6 +907,33 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _cardManager = null;
             _awaitingReward = false;
             _nextMatchAt = Time.time + nextMatchDelay;
+        }
+
+        private static void TickBalanceConfirmation()
+        {
+            if (_balanceView == null || Time.time < _nextBalanceConfirmAt) return;
+            try
+            {
+                if (_balanceView.gameObject == null || !_balanceView.gameObject.activeInHierarchy)
+                {
+                    _nextBalanceConfirmAt = Time.time + 0.2f;
+                    return;
+                }
+
+                GameObject button = _balanceView.confirmBtn == null
+                    ? _balanceView.gameObject
+                    : _balanceView.confirmBtn.gameObject;
+                _balanceView.ConfirmJiesuanBtn(button);
+                FileLogger.Log("CARD", "balance summary confirmed");
+                _balanceView = null;
+                CompleteCardPhase(3f);
+                StatusText = "结算已确认，等待返回大厅";
+            }
+            catch (Exception ex)
+            {
+                _nextBalanceConfirmAt = Time.time + 1f;
+                FileLogger.Log("CARD", "balance confirm failed: " + ex.Message);
+            }
         }
 
         private static void CaptureParticipants(GameApp app, Level level, Character player)
