@@ -563,6 +563,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             bool strictLine;
             float distance;
             bool fired = AutoBattleManager.AttackSurvival(player, _attackTarget, camera, out strictLine, out distance);
+            AutoBattleManager.LogCombatState(player, _attackTarget, strictLine, distance, fired);
             if (strictLine)
             {
                 AutoBattleInput.ClearMovement();

@@ -23,6 +23,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _nextWeaponSwitchAt;
         private static float _nextRoleSpecialAt;
         private static float _nextScopeAt;
+        private static float _nextCombatTraceAt;
 
         public static string LastPath = "-";
         public static string LastPathProvider = "-";
@@ -44,6 +45,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _nextWeaponSwitchAt = 0f;
             _nextRoleSpecialAt = 0f;
             _nextScopeAt = 0f;
+            _nextCombatTraceAt = 0f;
             LastPath = reason;
             LastPathProvider = "-";
             LastAction = reason;
@@ -177,18 +179,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             try { if (target.GetHidden()) return false; } catch { return false; }
 
             distance = Vector3.Distance(player.transform.position, target.transform.position);
-            Vector3 aimPoint;
-            strictLine = TryGetStrictAimPoint(player, target, camera, out aimPoint);
-            if (!strictLine)
-            {
-                LastAction = "strict_los_blocked";
-                return false;
-            }
-
             CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
-            if (CurrentRole == "突击/狙击" && distance <= 2.8f &&
-                TryAssaultMelee(player, target, camera, aimPoint)) return true;
-            if (TryUseRoleAttackSkill(player, target, camera, aimPoint, strictLine, distance)) return true;
             EnsureRoleWeapon(player, distance);
             if (Time.time < _nextWeaponSwitchAt)
             {
@@ -197,10 +188,22 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             if (!EnsureSniperScope(player.mWeapon)) return false;
 
+            Vector3 aimPoint;
+            strictLine = TryGetStrictAimPoint(player, target, camera, out aimPoint);
+            if (!strictLine)
+            {
+                LastAction = "strict_los_blocked";
+                return false;
+            }
+
+            if (CurrentRole == "突击/狙击" && distance <= 2.8f &&
+                TryAssaultMelee(player, target, camera, aimPoint)) return true;
+            if (TryUseRoleAttackSkill(player, target, camera, aimPoint, strictLine, distance)) return true;
+
             bool aimReady = AimAt(player, camera, aimPoint);
             bool exact = false;
             try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
-            if (!aimReady || !exact || !CanFire(player, distance))
+            if (!aimReady || !CanFire(player, distance))
             {
                 LastAction = "aim_or_weapon_not_ready";
                 return false;
@@ -212,8 +215,29 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (GetWeaponType(player.mWeapon) == WeaponType.kWeaponTypeRPG ||
                 GetWeaponType(player.mWeapon) == WeaponType.kWeaponTypeBow)
                 _nextRoleSpecialAt = Time.time + 2.4f;
-            LastAction = "fire";
+            LastAction = exact ? "fire_exact" : "fire_strict_line";
             return true;
+        }
+
+        public static void LogCombatState(Character player, Character target, bool strictLine, float distance, bool fired)
+        {
+            if (Time.time < _nextCombatTraceAt) return;
+            _nextCombatTraceAt = Time.time + 1f;
+
+            string weapon = "-";
+            string scope = "-";
+            try
+            {
+                weapon = GetWeaponType(player == null ? null : player.mWeapon).ToString();
+                SniperGunController sniper = player == null ? null : player.mWeapon as SniperGunController;
+                if (sniper != null) scope = sniper.currentSight.ToString();
+            }
+            catch { }
+
+            string targetId = target == null ? "-" : target.uid.ToString();
+            FileLogger.Log("AUTO-BATTLE][COMBAT", "role=" + CurrentRole + " target=" + targetId +
+                " dist=" + distance.ToString("0.0") + " los=" + strictLine + " fired=" + fired +
+                " weapon=" + weapon + " scope=" + scope + " action=" + LastAction + " path=" + LastPath);
         }
 
         public static void LookSurvival(Character player, Camera camera, Vector3 point)
@@ -427,9 +451,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 Transform root = collider.transform == null ? null : collider.transform.root;
                 if (root == playerRoot) continue;
                 if (root == targetRoot) return true;
-                return false;
+                return hits[i].distance >= distance - 0.15f;
             }
-            return false;
+            // The ray ends at a target body point, so no intervening collider means the lane is clear.
+            return true;
         }
 
         private static int CompareHitDistance(RaycastHit a, RaycastHit b)
@@ -560,6 +585,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (sniper.currentSight != 0)
                 {
                     _nextScopeAt = 0f;
+                    LastAction = "sniper_scope_ready";
                     return true;
                 }
 
