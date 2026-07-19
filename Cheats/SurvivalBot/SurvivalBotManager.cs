@@ -745,7 +745,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            if (app.lobby_connection.state != LobbyConnection.State.kInChannel)
+            if (app.lobby_connection.state != LobbyConnection.State.kInLobby)
             {
                 Phase = SurvivalBotPhase.Lobby;
                 StatusText = "等待返回频道大厅";
