@@ -48,6 +48,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _rewardWaitStartedAt;
         private static float _matchStartedAt;
         private static float _nextMatchAt;
+        private static float _nextRoomLoadAt;
         private static float _cancelRequestedAt;
         private static float _nextPunishRefreshAt;
         private static float _nextLobbyTraceAt;
@@ -166,6 +167,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _roundEndedByGm = false;
             _pendingSurvivalMatchRequest = false;
             _nextMatchAt = Time.time + 1f;
+            _nextRoomLoadAt = 0f;
             _nextLobbyTraceAt = 0f;
             _lastLobbyTrace = string.Empty;
             Phase = SurvivalBotPhase.Lobby;
@@ -758,7 +760,35 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             try
             {
                 NewUIRoom roomUi = NewUIRoom.getInstance();
-                if (roomUi != null && roomUi.InMatch)
+                if (roomUi == null)
+                {
+                    if (Time.time >= _nextRoomLoadAt)
+                    {
+                        _nextRoomLoadAt = Time.time + 3f;
+                        UILobby lobby = UILobby.instance;
+                        if (lobby == null)
+                        {
+                            lobby = AssetPrefabManager.GetInstance().LoadSingletonGameObject<UILobby>(
+                                prefabNameEnum.Lobby.ToString());
+                        }
+
+                        if (lobby != null)
+                        {
+                            FileLogger.Log("MATCH", "room UI missing; invoking native StartGameBtn page=" +
+                                lobby.LobbyButtonPage);
+                            lobby.StartGameBtn(null);
+                        }
+                        else
+                        {
+                            FileLogger.Log("MATCH", "room UI missing; lobby view is not ready");
+                        }
+                    }
+                    _nextMatchAt = Time.time + 1f;
+                    StatusText = "正在进入开始游戏界面";
+                    return;
+                }
+
+                if (roomUi.InMatch)
                 {
                     _pendingSurvivalMatchRequest = true;
                     _matching = true;
@@ -775,15 +805,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 {
                     // Automated matching must not stall on the UI verification branch.
                     GlobalStatic.hookNum = "0";
-                    if (roomUi != null)
-                    {
-                        FileLogger.Log("MATCH", "auto match attempt path=room-ui");
-                        roomUi.TeamMatchOnClick(RoomInfo.GameType.kGameTypeChiji);
-                    }
+                    FileLogger.Log("MATCH", "auto match attempt path=room-ui");
+                    roomUi.TeamMatchOnClick(RoomInfo.GameType.kGameTypeChiji);
                 }
                 catch (Exception ex)
                 {
-                    FileLogger.Log("MATCH", "room UI attempt failed; direct fallback error=" + ex.Message);
+                    FileLogger.Log("MATCH", "native room UI attempt failed: " + ex.Message);
                 }
                 finally
                 {
@@ -792,18 +819,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
                 if (!_matching)
                 {
-                    FileLogger.Log("MATCH", "room UI did not send request; direct fallback roomUi=" +
-                        (roomUi == null ? "null" : "ready"));
-                    app.lobby_connection.RequestMatching(
-                        (byte)RoomInfo.GameType.kGameTypeChiji,
-                        (byte)0);
-                }
-
-                if (!_matching)
-                {
                     _nextMatchAt = Time.time + 3f;
-                    StatusText = "匹配请求未发出，准备重试";
-                    FileLogger.Log("MATCH", "request hook was not observed; retry armed");
+                    StatusText = "大厅尚未允许匹配，准备重试";
+                    FileLogger.Log("MATCH", "native room UI did not send request; retry armed");
                 }
             }
             catch (Exception ex)
