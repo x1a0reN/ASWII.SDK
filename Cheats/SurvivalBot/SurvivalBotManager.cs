@@ -594,6 +594,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static void TickHide(Character player, Camera camera)
         {
             Phase = SurvivalBotPhase.Hide;
+            SurvivalCombatAdapter.CloseSurvivalScope(player);
             int exposure = CountExposure(player.transform.position, player);
             if (!_hasSafePoint || Time.time >= _nextSafePointAt ||
                 XzDistance(player.transform.position, _safePoint) < 1.1f)
@@ -631,47 +632,70 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             Phase = SurvivalBotPhase.Attack;
             const string modeName = "攻击模式";
-            if (!IsAttackTargetUsable(_attackTarget)) _attackTarget = SelectNearestTarget(player);
+            _attackTarget = SelectNearestVisibleTarget(player, camera);
             if (_attackTarget == null)
             {
-                AutoBattleInput.ClearMovement();
-                StatusText = modeName + " | 等待可见且未隐身目标";
+                SurvivalCombatAdapter.CloseSurvivalScope(player);
+                Character searchTarget = SelectNearestTarget(player);
+                if (searchTarget == null)
+                {
+                    AutoBattleInput.ClearMovement();
+                    StatusText = modeName + " | 搜敌中 | 无可用目标 | 已关镜";
+                    return;
+                }
+
+                TickAttackSearch(player, camera, searchTarget);
+                StatusText = modeName + " | 搜敌中 | 最近候选 " + SafeName(searchTarget) +
+                    " | 路径 " + SurvivalCombatAdapter.LastPath + " | 已关镜";
                 return;
             }
 
+            _hasAttackPoint = false;
             bool strictLine;
             float distance;
             bool fired = SurvivalCombatAdapter.AttackSurvival(player, _attackTarget, camera, out strictLine, out distance);
             SurvivalCombatAdapter.LogCombatState(player, _attackTarget, strictLine, distance, fired);
-            if (strictLine)
+            if (!strictLine)
             {
+                SurvivalCombatAdapter.CloseSurvivalScope(player);
+                _attackTarget = null;
                 AutoBattleInput.ClearMovement();
+                StatusText = modeName + " | 目标刚失去视线，重新搜敌 | 已关镜";
+                return;
+            }
+
+            AutoBattleInput.ClearMovement();
+            StatusText = modeName + " | 存活 " + RemainingPlayers + " | 目标 " + SafeName(_attackTarget) +
+                " | 距离 " + distance.ToString("0.0") + " | 直线 " + strictLine + " | 开火 " + fired;
+        }
+
+        private static void TickAttackSearch(Character player, Camera camera, Character searchTarget)
+        {
+            if (!_hasAttackPoint || Time.time >= _nextAttackPointAt ||
+                XzDistance(player.transform.position, _attackPoint) < 1.2f)
+            {
+                _attackPoint = SelectAttackPoint(player, searchTarget);
+                _hasAttackPoint = true;
+                _nextAttackPointAt = Time.time + 1.2f;
+            }
+
+            Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _attackPoint, false);
+            if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
+            {
+                MarkCandidateFailed(_attackPoint);
+                _hasAttackPoint = false;
+                _nextAttackPointAt = 0f;
+            }
+            if (move.sqrMagnitude > 0.01f)
+            {
+                AutoBattleInput.SetMoveWorld(player, move, false);
+                if (camera != null)
+                    SurvivalCombatAdapter.LookSurvival(player, camera, player.transform.position + move * 8f + Vector3.up);
             }
             else
             {
-                if (!_hasAttackPoint || Time.time >= _nextAttackPointAt ||
-                    XzDistance(player.transform.position, _attackPoint) < 1.2f)
-                {
-                    _attackPoint = SelectAttackPoint(player, _attackTarget);
-                    _hasAttackPoint = true;
-                    _nextAttackPointAt = Time.time + 1.2f;
-                }
-
-                Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _attackPoint, false);
-                if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
-                {
-                    MarkCandidateFailed(_attackPoint);
-                    _hasAttackPoint = false;
-                    _nextAttackPointAt = 0f;
-                }
-                if (move.sqrMagnitude > 0.01f) AutoBattleInput.SetMoveWorld(player, move, false);
-                else AutoBattleInput.ClearMovement();
-                if (camera != null)
-                    SurvivalCombatAdapter.LookSurvival(player, camera, _attackTarget.transform.position + Vector3.up);
+                AutoBattleInput.ClearMovement();
             }
-
-            StatusText = modeName + " | 存活 " + RemainingPlayers + " | 目标 " + SafeName(_attackTarget) +
-                " | 距离 " + distance.ToString("0.0") + " | 直线 " + strictLine + " | 开火 " + fired;
         }
 
         private static void TickSuicide(GameApp app, Character player, Camera camera)
@@ -1242,6 +1266,24 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     bestDistance = distance;
                     best = target;
                 }
+            }
+            return best;
+        }
+
+        private static Character SelectNearestVisibleTarget(Character player, Camera camera)
+        {
+            if (player == null || camera == null) return null;
+            Character best = null;
+            float bestDistance = float.MaxValue;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character target = Enemies[i];
+                if (!IsAttackTargetUsable(target)) continue;
+                float distance = XzDistance(player.transform.position, target.transform.position);
+                if (distance >= bestDistance) continue;
+                if (!SurvivalCombatAdapter.SurvivalHasStrictFireLine(player, target, camera)) continue;
+                bestDistance = distance;
+                best = target;
             }
             return best;
         }

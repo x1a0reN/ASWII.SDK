@@ -179,26 +179,32 @@ namespace ASWDEBUG.Cheats.AutoBattle
             try { if (target.GetHidden()) return false; } catch { return false; }
 
             distance = Vector3.Distance(player.transform.position, target.transform.position);
+            Vector3 aimPoint;
+            strictLine = TryGetStrictAimPoint(player, target, camera, out aimPoint);
+            if (!strictLine)
+            {
+                CloseSurvivalScope(player);
+                LastAction = "strict_los_blocked_scope_closed";
+                return false;
+            }
+
             CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
+            bool aimReady = SnapLook(player, camera, aimPoint);
             EnsureRoleWeapon(player, distance);
             if (Time.time < _nextWeaponSwitchAt)
             {
                 LastAction = "role_weapon_switch_wait";
                 return false;
             }
-            if (!EnsureSniperScope(player.mWeapon)) return false;
-
-            Vector3 aimPoint;
-            strictLine = TryGetStrictAimPoint(player, target, camera, out aimPoint);
-            if (!strictLine)
+            if (!aimReady)
             {
-                LastAction = "strict_los_blocked";
+                LastAction = "visible_target_aim_failed";
                 return false;
             }
+            if (!EnsureSniperScope(player.mWeapon)) return false;
 
             if (TryUseRoleAttackSkill(player, target, camera, aimPoint, strictLine, distance)) return true;
 
-            bool aimReady = AimAt(player, camera, aimPoint);
             bool exact = false;
             try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
             if (!aimReady || !CanFire(player, distance))
@@ -285,6 +291,41 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             if (player == null || camera == null || player.camera == null) return;
             ApplyLook(player, camera, point, 240f, 3.5f);
+        }
+
+        public static bool CloseSurvivalScope(Character player)
+        {
+            SniperGunController sniper = player == null ? null : player.mWeapon as SniperGunController;
+            if (sniper == null) return true;
+
+            try
+            {
+                if (sniper.currentSight == 0)
+                {
+                    _nextScopeAt = 0f;
+                    return true;
+                }
+
+                if (Time.time >= _nextScopeAt)
+                {
+                    AutoBattleInput.PressAction(ActionType.kActionSecondFire, 0.10f);
+                    _nextScopeAt = Time.time + 0.40f;
+                    LastAction = "sniper_scope_close_request";
+                    FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope close requested");
+                }
+                else
+                {
+                    LastAction = "sniper_scope_close_wait";
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LastAction = "sniper_scope_close_error";
+                FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope close failed ex=" +
+                    ex.GetType().Name + ":" + ex.Message);
+                return false;
+            }
         }
 
         private static void BuildPath(Character player, Vector3 from, Vector3 to)
