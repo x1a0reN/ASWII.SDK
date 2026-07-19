@@ -31,6 +31,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _loaded;
         private static int _tacticsMode;
         private static int _roleStrategyEnabled;
+        private static int _enemyEspEnabled;
         private static int _defenseMode;
         private static int _matchTimeoutIndex;
         private static int _participantCaptureIndex;
@@ -53,6 +54,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static bool RoleStrategyEnabled
         {
             get { EnsureLoaded(); return _roleStrategyEnabled != 0; }
+        }
+
+        public static bool EnemyEspEnabled
+        {
+            get { EnsureLoaded(); return _enemyEspEnabled != 0; }
         }
 
         public static int DefenseMode
@@ -117,6 +123,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             _tacticsMode = Clamp(PlayerPrefs.GetInt(KeyPrefix + "TacticsMode", 0), 0, 2);
             _roleStrategyEnabled = PlayerPrefs.GetInt(KeyPrefix + "RoleStrategyEnabled", 1) == 0 ? 0 : 1;
+            _enemyEspEnabled = PlayerPrefs.GetInt(KeyPrefix + "EnemyEspEnabled", 1) == 0 ? 0 : 1;
             _defenseMode = Clamp(PlayerPrefs.GetInt(KeyPrefix + "DefenseMode", 0), 0, 3);
             _matchTimeoutIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "MatchTimeoutIndex", 1), 0, MatchTimeoutValues.Length - 1);
             _participantCaptureIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "ParticipantCaptureIndex", 1), 0, ParticipantCaptureValues.Length - 1);
@@ -138,6 +145,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             EnsureLoaded();
             SaveIfChanged(ref _roleStrategyEnabled, KeyPrefix + "RoleStrategyEnabled", value ? 1 : 0);
+        }
+
+        public static void SetEnemyEspEnabled(bool value)
+        {
+            EnsureLoaded();
+            SaveIfChanged(ref _enemyEspEnabled, KeyPrefix + "EnemyEspEnabled", value ? 1 : 0);
         }
 
         public static void SetDefenseMode(int value)

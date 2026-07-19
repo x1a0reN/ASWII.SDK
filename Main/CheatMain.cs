@@ -55,6 +55,7 @@ namespace ASWDEBUG.Main
 
         private void OnGUI()
         {
+            EnemyEspUI.Display(CameraMain);
             SurvivalBotUI.Display();
         }
 

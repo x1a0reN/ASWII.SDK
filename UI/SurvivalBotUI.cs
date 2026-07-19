@@ -12,6 +12,7 @@ namespace ASWDEBUG.UI
             None,
             Tactics,
             Role,
+            EnemyEsp,
             Defense,
             MatchTimeout,
             ParticipantCapture,
@@ -28,6 +29,7 @@ namespace ASWDEBUG.UI
 
         private static readonly string[] TacticsNames = { "稳健", "标准", "激进" };
         private static readonly string[] RoleNames = { "自动", "通用" };
+        private static readonly string[] EnabledNames = { "开启", "关闭" };
         private static readonly string[] DefenseNames = { "自动", "隐身优先", "护盾优先", "关闭" };
         private static readonly string[] MatchTimeoutNames = { "5 分钟", "10 分钟", "15 分钟" };
         private static readonly string[] ParticipantCaptureNames = { "3 秒", "5 秒", "8 秒" };
@@ -134,10 +136,11 @@ namespace ASWDEBUG.UI
             y += 33f;
 
             float statusTop = _window.yMax - 53f;
-            _rowStride = Mathf.Clamp((statusTop - y - 2f) / 10f, 17f, RowHeight + 1f);
+            _rowStride = Mathf.Clamp((statusTop - y - 2f) / 11f, 17f, RowHeight + 1f);
 
             DrawDropdownRow(ref y, "战术", DropdownId.Tactics, TacticsNames, SurvivalBotSettings.TacticsMode);
             DrawDropdownRow(ref y, "职业策略", DropdownId.Role, RoleNames, SurvivalBotSettings.RoleStrategyEnabled ? 0 : 1);
+            DrawDropdownRow(ref y, "敌人 ESP", DropdownId.EnemyEsp, EnabledNames, SurvivalBotSettings.EnemyEspEnabled ? 0 : 1);
             DrawDropdownRow(ref y, "保命技能", DropdownId.Defense, DefenseNames, SurvivalBotSettings.DefenseMode);
             DrawDropdownRow(ref y, "匹配超时", DropdownId.MatchTimeout, MatchTimeoutNames, FindNearest(MatchTimeoutValues, SurvivalBotSettings.MatchTimeoutSeconds));
             DrawDropdownRow(ref y, "人数锁定", DropdownId.ParticipantCapture, ParticipantCaptureNames, FindNearest(ParticipantCaptureValues, SurvivalBotSettings.ParticipantCaptureSeconds));
@@ -233,6 +236,7 @@ namespace ASWDEBUG.UI
         {
             if (id == DropdownId.Tactics) SurvivalBotSettings.SetTacticsMode(selected);
             else if (id == DropdownId.Role) SurvivalBotSettings.SetRoleStrategyEnabled(selected == 0);
+            else if (id == DropdownId.EnemyEsp) SurvivalBotSettings.SetEnemyEspEnabled(selected == 0);
             else if (id == DropdownId.Defense) SurvivalBotSettings.SetDefenseMode(selected);
             else if (id == DropdownId.MatchTimeout) SurvivalBotSettings.SetMatchTimeoutSeconds(MatchTimeoutValues[Clamp(selected, 0, MatchTimeoutValues.Length - 1)]);
             else if (id == DropdownId.ParticipantCapture) SurvivalBotSettings.SetParticipantCaptureSeconds(ParticipantCaptureValues[Clamp(selected, 0, ParticipantCaptureValues.Length - 1)]);
