@@ -99,8 +99,11 @@ namespace ASWDEBUG.UI
             DrawPanel(summary, _panelInnerTexture, _borderTexture);
             string phase = PhaseName(SurvivalBotManager.Phase);
             string players = SurvivalBotManager.InitialPlayers + " / " + SurvivalBotManager.RemainingPlayers;
+            string currentRole = SurvivalBotManager.CombatTestEnabled
+                ? AutoBattleManager.CurrentRole
+                : SurvivalCombatAdapter.CurrentRole;
             GUI.Label(new Rect(summary.x + 7f, summary.y, summary.width * 0.62f, summary.height),
-                "阶段  " + phase + "  |  职业  " + AutoBattleManager.CurrentRole, _secondaryLabelStyle);
+                "阶段  " + phase + "  |  职业  " + currentRole, _secondaryLabelStyle);
             GUI.Label(new Rect(summary.x + summary.width * 0.62f, summary.y, summary.width * 0.38f - 7f, summary.height),
                 "初始/存活  " + players, _secondaryLabelStyle);
             y += 29f;

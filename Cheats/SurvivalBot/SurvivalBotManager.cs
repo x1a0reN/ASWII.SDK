@@ -183,7 +183,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _attackTarget = null;
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
-            AutoBattleManager.ResetSurvivalRuntime("combat_test_start");
+            AutoBattleManager.SetEnabled(true, "combat_test_start");
             Phase = SurvivalBotPhase.CombatTest;
             StatusText = "战斗测试已开启，等待进入对局";
             FileLogger.Log("AUTO-BATTLE", "combat test enabled reason=" + reason);
@@ -197,7 +197,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;
             AutoBattleInput.ClearAll();
-            AutoBattleManager.ResetSurvivalRuntime(reason);
+            AutoBattleManager.SetEnabled(false, reason);
+            SurvivalCombatAdapter.ResetSurvivalRuntime(reason);
             CancelActiveSession();
             _roundActive = false;
             _controlStarted = false;
@@ -211,7 +212,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (!CombatTestEnabled) return;
             CombatTestEnabled = false;
             AutoBattleInput.ClearAll();
-            AutoBattleManager.ResetSurvivalRuntime("combat_test_stop");
+            AutoBattleManager.SetEnabled(false, "combat_test_stop");
             _attackTarget = null;
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
@@ -225,7 +226,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             bool cancelMatching = _matching;
             Enabled = false;
             AutoBattleInput.ClearAll();
-            AutoBattleManager.ResetSurvivalRuntime("combat_test_takeover");
+            SurvivalCombatAdapter.ResetSurvivalRuntime("combat_test_takeover");
             _roundActive = false;
             _controlStarted = false;
             _awaitingReward = false;
@@ -314,7 +315,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 Phase = SurvivalBotPhase.Stopped;
                 StatusText = "已停止: 用户取消匹配";
                 AutoBattleInput.ClearAll();
-                AutoBattleManager.ResetSurvivalRuntime("manual_match_cancel");
+                SurvivalCombatAdapter.ResetSurvivalRuntime("manual_match_cancel");
                 FileLogger.Log("MATCH", "manual cancellation stopped survival loop");
                 return;
             }
@@ -377,7 +378,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _failedCandidateUntil = 0f;
             _nextSafePointAt = 0f;
             _nextAttackPointAt = 0f;
-            AutoBattleManager.ResetSurvivalRuntime("round_start");
+            SurvivalCombatAdapter.ResetSurvivalRuntime("round_start");
             CaptureParticipants(GameApp.Instance, level, player);
             Phase = SurvivalBotPhase.CaptureParticipants;
             StatusText = "进入生存对局，等待角色就绪";
@@ -396,7 +397,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _pendingGmTeam = 0;
             _pendingGmGeneration = 0;
             AutoBattleInput.ClearAll();
-            AutoBattleManager.ResetSurvivalRuntime("round_finish");
+            SurvivalCombatAdapter.ResetSurvivalRuntime("round_finish");
             Phase = SurvivalBotPhase.Balance;
             StatusText = "等待结算/返回大厅";
             _awaitingReward = !_roundEndedByGm && !_previousRoundSlept;
@@ -416,25 +417,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            if (player == null || player.IsDied)
+            AutoBattleManager.Tick(level, player, camera);
+            if (player != null)
             {
-                AutoBattleInput.ClearAll();
-                _attackTarget = null;
-                StatusText = player == null ? "战斗测试 | 等待角色" : "战斗测试 | 角色已死亡";
-                return;
+                RefreshEnemies(level, player);
+                RemainingPlayers = CountRemaining(player);
             }
-
-            if (!IsCharacterControlReady(app, player))
-            {
-                AutoBattleInput.ClearAll();
-                StatusText = "战斗测试 | 等待倒计时结束";
-                return;
-            }
-
-            AutoBattleManager.MarkSurvivalActivity(player);
-            RefreshEnemies(level, player);
-            RemainingPlayers = CountRemaining(player);
-            TickAttack(player, camera, true);
+            StatusText = "战斗测试 | " + AutoBattleManager.LastStatus;
         }
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)
@@ -482,7 +471,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     " roster=" + InitialPlayers);
             }
 
-            AutoBattleManager.MarkSurvivalActivity(player);
+            SurvivalCombatAdapter.MarkSurvivalActivity(player);
             RefreshEnemies(level, player);
             RemainingPlayers = CountRemaining(player);
 
@@ -519,7 +508,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _nextSafePointAt = Time.time + SurvivalBotSettings.SafePointRefreshSeconds;
             }
 
-            Vector3 move = AutoBattleManager.NavigateSurvival(player, _safePoint, true);
+            Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _safePoint, true);
             if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
             {
                 MarkCandidateFailed(_safePoint);
@@ -530,28 +519,23 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             else AutoBattleInput.ClearMovement();
 
             if (camera != null && move.sqrMagnitude > 0.01f)
-                AutoBattleManager.LookSurvival(player, camera, player.transform.position + move * 8f + Vector3.up);
+                SurvivalCombatAdapter.LookSurvival(player, camera, player.transform.position + move * 8f + Vector3.up);
 
             if (exposure > 0)
             {
-                AutoBattleManager.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
+                SurvivalCombatAdapter.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
                 _nextSafePointAt = 0f;
             }
 
             StatusText = "躲避模式 | 初始 " + Math.Max(InitialPlayers, ParticipantIds.Count) +
                 " | 存活 " + RemainingPlayers + " | 暴露 " + exposure +
-                " | 路径 " + AutoBattleManager.LastPath;
+                " | 路径 " + SurvivalCombatAdapter.LastPath;
         }
 
         private static void TickAttack(Character player, Camera camera)
         {
-            TickAttack(player, camera, false);
-        }
-
-        private static void TickAttack(Character player, Camera camera, bool combatTest)
-        {
-            Phase = combatTest ? SurvivalBotPhase.CombatTest : SurvivalBotPhase.Attack;
-            string modeName = combatTest ? "战斗测试" : "攻击模式";
+            Phase = SurvivalBotPhase.Attack;
+            const string modeName = "攻击模式";
             if (!IsAttackTargetUsable(_attackTarget)) _attackTarget = SelectNearestTarget(player);
             if (_attackTarget == null)
             {
@@ -562,8 +546,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             bool strictLine;
             float distance;
-            bool fired = AutoBattleManager.AttackSurvival(player, _attackTarget, camera, out strictLine, out distance);
-            AutoBattleManager.LogCombatState(player, _attackTarget, strictLine, distance, fired);
+            bool fired = SurvivalCombatAdapter.AttackSurvival(player, _attackTarget, camera, out strictLine, out distance);
+            SurvivalCombatAdapter.LogCombatState(player, _attackTarget, strictLine, distance, fired);
             if (strictLine)
             {
                 AutoBattleInput.ClearMovement();
@@ -578,7 +562,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     _nextAttackPointAt = Time.time + 1.2f;
                 }
 
-                Vector3 move = AutoBattleManager.NavigateSurvival(player, _attackPoint, false);
+                Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _attackPoint, false);
                 if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
                 {
                     MarkCandidateFailed(_attackPoint);
@@ -588,7 +572,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 if (move.sqrMagnitude > 0.01f) AutoBattleInput.SetMoveWorld(player, move, false);
                 else AutoBattleInput.ClearMovement();
                 if (camera != null)
-                    AutoBattleManager.LookSurvival(player, camera, _attackTarget.transform.position + Vector3.up);
+                    SurvivalCombatAdapter.LookSurvival(player, camera, _attackTarget.transform.position + Vector3.up);
             }
 
             StatusText = modeName + " | 存活 " + RemainingPlayers + " | 目标 " + SafeName(_attackTarget) +
@@ -645,7 +629,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
                 if (edgeDistance > 1.1f)
                 {
-                    Vector3 move = AutoBattleManager.NavigateSurvival(player, _cliffEdge, false);
+                    Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _cliffEdge, false);
                     if (move.sqrMagnitude <= 0.01f && IsRouteFailure())
                     {
                         MarkCandidateFailed(_cliffEdge);
@@ -656,7 +640,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     }
                     if (move.sqrMagnitude > 0.01f) AutoBattleInput.SetMoveWorld(player, move, false);
                     if (camera != null)
-                        AutoBattleManager.LookSurvival(player, camera, player.transform.position + _cliffOutward * 8f);
+                        SurvivalCombatAdapter.LookSurvival(player, camera, player.transform.position + _cliffOutward * 8f);
                     StatusText = "任务完成，前往悬崖 | 距离 " + edgeDistance.ToString("0.0");
                     return;
                 }
@@ -1188,10 +1172,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static bool IsRouteFailure()
         {
-            return string.Equals(AutoBattleManager.LastPath, "no_path", StringComparison.Ordinal) ||
-                   string.Equals(AutoBattleManager.LastPath, "route_null", StringComparison.Ordinal) ||
-                   string.Equals(AutoBattleManager.LastPath, "jump_lane_blocked", StringComparison.Ordinal) ||
-                   string.Equals(AutoBattleManager.LastPath, "wall_repath", StringComparison.Ordinal);
+            return string.Equals(SurvivalCombatAdapter.LastPath, "no_path", StringComparison.Ordinal) ||
+                   string.Equals(SurvivalCombatAdapter.LastPath, "route_null", StringComparison.Ordinal) ||
+                   string.Equals(SurvivalCombatAdapter.LastPath, "jump_lane_blocked", StringComparison.Ordinal) ||
+                   string.Equals(SurvivalCombatAdapter.LastPath, "wall_repath", StringComparison.Ordinal);
         }
 
         private static void MarkCandidateFailed(Vector3 point)

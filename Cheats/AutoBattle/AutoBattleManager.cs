@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace ASWDEBUG.Cheats.AutoBattle
 {
-    public static class AutoBattleManager
+    public static class SurvivalCombatAdapter
     {
         private const float CameraPitchOffset = -11.309932f;
         private const float CornerReachDistance = 0.65f;
