@@ -52,15 +52,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public static string LastAction = "-";
         public static string CurrentRole = "通用";
 
-        private const float TargetRefreshInterval = 0.38f;
-        private const float RepathInterval = 1.05f;
+        private const float TargetRefreshInterval = 0.14f;
+        private const float RepathInterval = 0.32f;
         private const float CornerReachDistance = 0.55f;
         private const float ManualOverrideSeconds = 0.30f;
         private const float LogInterval = 0.55f;
         private const float TargetLostHoldSeconds = 1.65f;
         private const float TargetMinimumLockSeconds = 2.60f;
         private const float TargetSwitchScoreAdvantage = 15.0f;
-        private const int MaxDetailedTargetCandidates = 3;
+        private const int MaxDetailedTargetCandidates = 6;
         private const float AimDiagInterval = 0.35f;
         private const float CloseEngageDistance = 8.0f;
         private const float ForceCloseEngageDistance = 7.5f;
@@ -74,7 +74,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const float RoleSkillInterval = 0.55f;
         private const float SeekRouteMaxDeflection = 30.0f;
         private const float PathLookAheadBlendDistance = 1.5f;
-        private const float SearchPointMinimumHold = 1.10f;
+        private const float SearchPointMinimumHold = 0.55f;
         // CameraObj.updateMove applies a fixed -atan(0.2) pitch after finaly.
         private const float CameraBasePitchOffset = -11.309932f;
         private const float CameraMinActualPitch = -59.309932f;
@@ -214,7 +214,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _stableSearchPointScore;
         private static float _stableSearchPointHoldUntil;
         private static bool _hasStableSearchPoint;
-        private static readonly List<Vector3> FailedSearchPoints = new List<Vector3>(6);
+        private static readonly List<Vector3> FailedSearchPoints = new List<Vector3>(12);
         private static Character _failedSearchTarget;
         private static Vector3 _failedSearchTargetPosition;
         private static bool _currentPathPartial;
@@ -314,6 +314,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (_target == null)
             {
+                TryCloseSniperScope(player, "no_target");
                 if (RunNoTargetRoam(player, cam))
                 {
                     LogMaybe(player, null, LastAction);
@@ -340,6 +341,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool targetInvincible = sense.Invincible;
             if (targetInvincible) _lastFireBlock = "invincible";
             ManageWeapon(player, sense);
+            bool assaultSniper = IsAssaultSniperRole(player);
+            if (assaultSniper && !IsConfirmedSniperAttack(sense))
+                TryCloseSniperScope(player, "seek");
 
             if (ShouldRunHighGroundReposition(player, _target, sense))
             {
@@ -404,7 +408,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return;
             }
 
-            bool assaultSniper = IsAssaultSniperRole(player);
             bool sniperMeleeEmergency = assaultSniper && sense.Distance <= 3.6f;
             bool shouldKite = ShouldKite(player, sense);
             if (assaultSniper && !sniperMeleeEmergency && sense.Distance < 13.0f)
@@ -966,7 +969,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static int CollectDetailedTargetCandidates(Character player, Camera cam)
         {
-            int limit = Characters.Count >= 4 ? 3 : 2;
+            int limit = MaxDetailedTargetCandidates;
             for (int i = 0; i < MaxDetailedTargetCandidates; i++)
             {
                 TargetScanCandidates[i] = null;
@@ -2438,6 +2441,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             Vector3 playerPos = player.transform.position;
             Vector3 targetPos = NormalizeNavigationDestination(player, target.transform.position);
+            PrepareSearchPointFailureContext(target, targetPos);
             CandidatePoints.Clear();
 
             Vector3 fromTarget = playerPos - targetPos;
@@ -2456,18 +2460,23 @@ namespace ASWDEBUG.Cheats.AutoBattle
             CandidatePoints.Add(targetPos + fromTarget * range + side * 5.0f);
             CandidatePoints.Add(targetPos + fromTarget * range - side * 5.0f);
             CandidatePoints.Add(playerPos + fromTarget * 4.0f);
+            CandidatePoints.Add(targetPos + fromTarget * range + side * 10.0f);
+            CandidatePoints.Add(targetPos + fromTarget * range - side * 10.0f);
+            CandidatePoints.Add(targetPos + side * range);
+            CandidatePoints.Add(targetPos - side * range);
+            if (FailedSearchPoints.Count >= CandidatePoints.Count)
+            {
+                FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=sniper_seek result=retry_cycle failedPoints=" + FailedSearchPoints.Count +
+                    " target=" + SafeTargetName(target));
+                FailedSearchPoints.Clear();
+            }
 
             Vector3 best = CandidatePoints[0];
             float bestScore = float.MaxValue;
             for (int i = 0; i < CandidatePoints.Count; i++)
             {
                 Vector3 p = NormalizeNavigationDestination(player, CandidatePoints[i]);
-                float distToTarget = XZDistanceSq(p, targetPos);
-                float score = (p - playerPos).sqrMagnitude * 0.35f;
-                score += Mathf.Abs(Mathf.Sqrt(distToTarget) - range) * 9.0f;
-                score += AutoBattleRoutePlanner.CandidatePenalty(playerPos, p, SafeRoot(player));
-                if (HasClearSegment(p + Vector3.up * 1.25f, sense.AimPoint, target)) score -= 35f;
-                score += CountExposureAtPoint(p, player, target, true) * 18f;
+                float score = ScoreSniperSearchPoint(player, target, sense, p, targetPos, range);
                 if (score < bestScore)
                 {
                     bestScore = score;
@@ -2475,7 +2484,49 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
             }
 
+            if (_hasStableSearchPoint && _stableSearchTarget == target)
+            {
+                Vector3 stable = NormalizeNavigationDestination(player, _stableSearchPoint);
+                float stableTargetDistance = Mathf.Sqrt(XZDistanceSq(stable, targetPos));
+                bool stillRelevant = stableTargetDistance >= 4.0f && stableTargetDistance <= range + 14.0f;
+                float routePenalty = stillRelevant
+                    ? AutoBattleRoutePlanner.CandidatePenalty(playerPos, stable, SafeRoot(player))
+                    : 220f;
+                bool stableFailed = IsFailedSearchPoint(target, stable);
+                if (!stableFailed && routePenalty < 200f)
+                {
+                    float stableScore = ScoreSniperSearchPoint(player, target, sense, stable, targetPos, range);
+                    bool activeRoute = Path.Count > 0 && _pathIndex >= 0 && _pathIndex < Path.Count;
+                    bool meaningfulImprovement = bestScore + 18f < stableScore;
+                    if (Time.time < _stableSearchPointHoldUntil || (activeRoute && !meaningfulImprovement))
+                    {
+                        _stableSearchPoint = stable;
+                        _stableSearchPointScore = stableScore;
+                        return stable;
+                    }
+                }
+            }
+
+            _stableSearchTarget = target;
+            _stableSearchPoint = best;
+            _stableSearchPointScore = bestScore;
+            _stableSearchPointHoldUntil = Time.time + SearchPointMinimumHold;
+            _hasStableSearchPoint = true;
             return best;
+        }
+
+        private static float ScoreSniperSearchPoint(Character player, Character target, TargetSense sense,
+            Vector3 point, Vector3 targetPosition, float range)
+        {
+            Vector3 playerPosition = player.transform.position;
+            float distanceToTarget = Mathf.Sqrt(XZDistanceSq(point, targetPosition));
+            float score = (point - playerPosition).sqrMagnitude * 0.35f;
+            score += Mathf.Abs(distanceToTarget - range) * 9.0f;
+            score += AutoBattleRoutePlanner.CandidatePenalty(playerPosition, point, SafeRoot(player));
+            if (IsFailedSearchPoint(target, point)) score += 500f;
+            if (HasClearSegment(point + Vector3.up * 1.25f, sense.AimPoint, target)) score -= 35f;
+            score += CountExposureAtPoint(point, player, target, true) * 18f;
+            return score;
         }
 
         private static Vector3 SelectSniperCombatPoint(Character player, Character target, TargetSense sense)
@@ -2847,18 +2898,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 float pendingDeltaSq = XZDistanceSq(_destination, dest);
                 float pendingYDelta = Mathf.Abs(_destination.y - dest.y);
-                if (pendingDeltaSq <= 100.0f && pendingYDelta <= 3.5f)
+                if (pendingDeltaSq <= 16.0f && pendingYDelta <= 2.0f)
                     dest = _destination;
             }
             bool firstDestination = !_hasDestination;
             float destDeltaSq = firstDestination ? 999999f : XZDistanceSq(_destination, dest);
             float destYDelta = firstDestination ? 999f : Mathf.Abs(_destination.y - dest.y);
             bool softDestinationChanged = !firstDestination &&
-                                          (destDeltaSq > (tacticalMove ? 9.0f : 25.0f) ||
-                                           destYDelta > 2.0f);
+                                          (destDeltaSq > (tacticalMove ? 4.0f : 6.25f) ||
+                                           destYDelta > 1.25f);
             bool hardDestinationChanged = firstDestination ||
-                                          destDeltaSq > 100.0f ||
-                                          destYDelta > 3.5f;
+                                          destDeltaSq > 36.0f ||
+                                          destYDelta > 2.5f;
             _destination = dest;
             _hasDestination = true;
             if (hardDestinationChanged && (Path.Count == 0 || Time.time >= _nextRepath))
@@ -2868,15 +2919,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
 
             bool needRepath = Path.Count == 0 || _pathIndex >= Path.Count;
-            bool nearingPathEnd = Path.Count > 0 && _pathIndex >= Mathf.Max(0, Path.Count - 2);
-            if (!needRepath && softDestinationChanged && Time.time >= _nextRepath &&
-                (tacticalMove || nearingPathEnd))
+            if (!needRepath && softDestinationChanged && Time.time >= _nextRepath)
                 needRepath = true;
             if ((_pathSearchPending || needRepath) && Time.time >= _nextRepath)
             {
                 _nextRepath = _pathSearchPending
                     ? Time.time
-                    : Time.time + (tacticalMove ? 0.78f : RepathInterval);
+                    : Time.time + (tacticalMove ? 0.24f : RepathInterval);
                 BuildPath(player, player.transform.position, dest, null, SafeRoot(player), tacticalMove);
             }
 
@@ -2909,12 +2958,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
 
             UpdateStuck(player, sense);
-            if (_stuckTime > 1.05f && Time.time >= _nextStuckRecoveryTime)
+            if (_stuckTime > 0.62f && Time.time >= _nextStuckRecoveryTime)
             {
                 State = AutoBattleState.StuckRecovery;
                 _stuckCount++;
                 _stuckTime = 0f;
-                _nextStuckRecoveryTime = Time.time + 0.90f;
+                _nextStuckRecoveryTime = Time.time + 0.45f;
                 if (seekNavigation && sense != null && !sense.StrictFireLineOfSight)
                     MarkCurrentSearchPointFailed(player, sense, "no_progress");
                 ClearCurrentPath();
@@ -3005,7 +3054,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (!jumpEdge && AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, dir, SafeRoot(player)))
             {
                 if (Time.time < _nextWallRecoveryTime) return Vector3.zero;
-                _nextWallRecoveryTime = Time.time + 0.35f;
+                _nextWallRecoveryTime = Time.time + 0.18f;
                 ClearCurrentPath();
                 _nextRepath = 0f;
                 LastPath = "wall_repath";
@@ -3068,7 +3117,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         _stuckTime = 0f;
                         _lastPlayerPos = player == null || player.transform == null ? Vector3.zero : player.transform.position;
                         if (_highGroundRepositionActive) _highGroundLastProgressAt = Time.time;
-                        _nextRepath = Time.time + (tacticalMove ? 0.45f : 0.90f);
+                        _nextRepath = Time.time + (tacticalMove ? 0.22f : 0.32f);
                     }
                     string label = route.Provider + (route.Partial ? " partial " : " ") + Path.Count + " pts";
                     SetPathResult(label, "seq=" + seq + " resumed=" + (resumedPendingSearch ? "1" : "0") +
@@ -3078,7 +3127,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
                 if (route.Corners != null && route.Corners.Count > 0)
                 {
-                    _nextRepath = Time.time + 0.50f;
+                    _nextRepath = Time.time + 0.25f;
                     SetPathResult("path_complete", "seq=" + seq + " resumed=" + (resumedPendingSearch ? "1" : "0") +
                         " trimmed=" + trimmed + " from=" + FormatVec(from) + " to=" + FormatVec(to) + " " + route.Detail,
                         route.Provider.StartsWith("phys_grid"));
@@ -3769,6 +3818,39 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return false;
         }
 
+        private static bool IsConfirmedSniperAttack(TargetSense sense)
+        {
+            return sense != null && sense.Visible && sense.VisibleByGame && sense.OnScreen &&
+                   sense.StrictFireLineOfSight && !sense.Invincible;
+        }
+
+        private static bool TryCloseSniperScope(Character player, string reason)
+        {
+            SniperGunController sniper = player == null ? null : player.mWeapon as SniperGunController;
+            if (sniper == null) return true;
+            try
+            {
+                if (sniper.currentSight == 0)
+                {
+                    _nextSniperScopeTime = 0f;
+                    return true;
+                }
+
+                if (Time.time >= _nextSniperScopeTime)
+                {
+                    AutoBattleInput.PressAction(ActionType.kActionSecondFire, 0.10f);
+                    _nextSniperScopeTime = Time.time + 0.40f;
+                    FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope close requested reason=" + reason);
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope close failed ex=" + ex.GetType().Name + ":" + ex.Message);
+                return false;
+            }
+        }
+
         private static bool TryRunRoleWeaponTactics(Character player, Character target, Camera cam, TargetSense sense, bool assaultSniper, bool sniperMeleeEmergency)
         {
             if (player == null || target == null || sense == null) return false;
@@ -3804,6 +3886,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
                     // No knife or not close enough: keep normal gunfire while movement code creates distance.
                     return false;
+                }
+
+                if (!IsConfirmedSniperAttack(sense))
+                {
+                    TryCloseSniperScope(player, "attack_not_confirmed");
+                    LastAction = "assault_sniper_search_unscoped";
+                    return true;
                 }
 
                 WeaponBase sniper = FindWeaponByType(player, WeaponType.kWeaponTypeSniperGun, true);

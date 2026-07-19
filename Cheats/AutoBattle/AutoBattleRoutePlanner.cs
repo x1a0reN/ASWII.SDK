@@ -40,16 +40,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
     internal static class AutoBattleRoutePlanner
     {
-        private const float CellSize = 1.25f;
-        private const float HeightLayerSize = 0.75f;
-        private const int MaxNodes = 7200;
-        private const int MaxNodesPerSlice = 256;
-        private const int MinSearchSliceMilliseconds = 2;
-        private const int MaxSearchSliceMilliseconds = 8;
-        private const float TargetFrameMilliseconds = 16.0f;
-        private const float MaxRouteRadius = 88f;
+        private const float CellSize = 1.0f;
+        private const float HeightLayerSize = 0.50f;
+        private const int MaxNodes = 14000;
+        private const int MaxNodesPerSlice = 1024;
+        private const int MinSearchSliceMilliseconds = 6;
+        private const int MaxSearchSliceMilliseconds = 20;
+        private const float TargetFrameMilliseconds = 20.0f;
+        private const float MaxRouteRadius = 96f;
         private static float _nextRouteLogTime;
-        private const float GoalTolerance = 1.65f;
+        private const float GoalTolerance = 1.0f;
         private const float GroundRayUp = 4.0f;
         private const float GroundRayDown = 10.0f;
         private const float MaxStepHeight = 1.25f;
@@ -58,6 +58,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static readonly int[] Dx = { 1, -1, 0, 0, 1, 1, -1, -1 };
         private static readonly int[] Dz = { 0, 0, 1, -1, 1, -1, 1, -1 };
         private static readonly float[] MoveCost = { 1f, 1f, 1f, 1f, 1.4142f, 1.4142f, 1.4142f, 1.4142f };
+        private static readonly float[] WalkProbeHeights = { 0.35f, 0.9f, 1.45f };
+        private static readonly float[] JumpProbeHeights = { 0.32f, 1.12f };
 
         private static int _groundMask = int.MinValue;
         private static int _blockMask = int.MinValue;
@@ -287,10 +289,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             float dist = delta.magnitude;
             if (dist < 0.08f) return true;
             Vector3 dir = delta / dist;
-            float[] heights = { 0.35f, 0.9f, 1.45f };
-            for (int i = 0; i < heights.Length; i++)
+            for (int i = 0; i < WalkProbeHeights.Length; i++)
             {
-                Vector3 origin = new Vector3(a.x, Mathf.Min(a.y, b.y), a.z) + Vector3.up * heights[i];
+                Vector3 origin = new Vector3(a.x, Mathf.Min(a.y, b.y), a.z) + Vector3.up * WalkProbeHeights[i];
                 RaycastHit[] hits = Physics.RaycastAll(origin, dir, dist, BlockMask);
                 if (HasNonIgnoredHit(hits, ignoreRoot)) return false;
             }
@@ -497,16 +498,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _sliceBudgetFrame = frame;
                 _frameMillisecondsEma = Mathf.Lerp(_frameMillisecondsEma, frameMilliseconds, 0.18f);
                 float headroom = Mathf.Max(0f, TargetFrameMilliseconds - _frameMillisecondsEma);
-                _sliceBudgetMilliseconds = Mathf.Clamp(2f + headroom * 0.50f,
+                _sliceBudgetMilliseconds = Mathf.Clamp(7f + headroom * 0.65f,
                     MinSearchSliceMilliseconds, MaxSearchSliceMilliseconds);
-                if (frameMilliseconds >= 22f) _sliceBudgetMilliseconds = MinSearchSliceMilliseconds;
-                else if (frameMilliseconds >= 17f) _sliceBudgetMilliseconds = Mathf.Min(3f, _sliceBudgetMilliseconds);
+                if (frameMilliseconds >= 30f) _sliceBudgetMilliseconds = MinSearchSliceMilliseconds;
+                else if (frameMilliseconds >= 22f) _sliceBudgetMilliseconds = Mathf.Min(9f, _sliceBudgetMilliseconds);
                 _sliceSpentMilliseconds = 0f;
             }
 
             frameEma = _frameMillisecondsEma;
             float remaining = Mathf.Max(0f, _sliceBudgetMilliseconds - _sliceSpentMilliseconds);
-            nodeBudget = Mathf.Clamp(Mathf.CeilToInt(remaining * 32f), 64, MaxNodesPerSlice);
+            nodeBudget = Mathf.Clamp(Mathf.CeilToInt(remaining * 64f), 160, MaxNodesPerSlice);
             return remaining;
         }
 
@@ -612,7 +613,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     {
                         long xzKey = Key(nx, nz);
                         int layerCount;
-                        if (job.LayerCounts.TryGetValue(xzKey, out layerCount) && layerCount >= 3)
+                        if (job.LayerCounts.TryGetValue(xzKey, out layerCount) && layerCount >= 5)
                         {
                             job.Stats.RejectGround++;
                             continue;
@@ -1216,7 +1217,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         }
                     }
                     result.Insert(insert, p);
-                    if (result.Count > 3) result.RemoveAt(result.Count - 1);
+                    if (result.Count > 5) result.RemoveAt(result.Count - 1);
                 }
             }
             catch
@@ -1243,7 +1244,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             float distance = XZDistance(from, to);
             if (distance < 0.65f) return true;
-            int samples = Mathf.Clamp(Mathf.CeilToInt(distance / 0.75f), 2, 128);
+            int samples = Mathf.Clamp(Mathf.CeilToInt(distance / 0.55f), 2, 160);
             try
             {
                 for (int i = 1; i < samples; i++)
@@ -1258,7 +1259,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         for (int h = 0; h < hits.Length; h++)
                         {
                             if (IsIgnored(hits[h].collider == null ? null : hits[h].collider.transform, ignoreRoot)) continue;
-                            if (Mathf.Abs(hits[h].point.y - expected.y) <= 0.72f)
+                            if (Mathf.Abs(hits[h].point.y - expected.y) <= 0.65f)
                             {
                                 supported = true;
                                 break;
@@ -1300,10 +1301,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (length > 0.01f)
                 {
                     Vector3 dir = segment / length;
-                    float[] heights = { 0.32f, 1.12f };
-                    for (int h = 0; h < heights.Length; h++)
+                    for (int h = 0; h < JumpProbeHeights.Length; h++)
                     {
-                        RaycastHit[] hits = Physics.RaycastAll(previous + Vector3.up * heights[h], dir, length, BlockMask);
+                        RaycastHit[] hits = Physics.RaycastAll(previous + Vector3.up * JumpProbeHeights[h], dir, length, BlockMask);
                         if (HasNonIgnoredHit(hits, ignoreRoot)) return false;
                     }
                 }
@@ -1605,7 +1605,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             public readonly Dictionary<long, int> LayerCounts = new Dictionary<long, int>(512);
             public readonly MinNodeHeap Open = new MinNodeHeap(384);
             public readonly HashSet<int> HeightLayers = new HashSet<int>();
-            public readonly List<Vector3> Grounds = new List<Vector3>(3);
+            public readonly List<Vector3> Grounds = new List<Vector3>(5);
             public readonly Dictionary<GroundSampleKey, Vector3[]> GroundSamples = new Dictionary<GroundSampleKey, Vector3[]>(512);
             public readonly Dictionary<WalkSampleKey, byte> WalkSamples = new Dictionary<WalkSampleKey, byte>(1024);
             public readonly Dictionary<WalkSampleKey, bool> JumpSamples = new Dictionary<WalkSampleKey, bool>(512);
@@ -1627,10 +1627,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
             public bool Matches(Vector3 from, Vector3 to, Transform ignoreRoot)
             {
                 return IgnoreRoot == ignoreRoot &&
-                       XZDistance(QueryFrom, from) <= 8.0f &&
-                       Mathf.Abs(QueryFrom.y - from.y) <= 4.0f &&
-                       XZDistance(QueryTo, to) <= 0.65f &&
-                       Mathf.Abs(QueryTo.y - to.y) <= 0.75f;
+                       XZDistance(QueryFrom, from) <= 4.0f &&
+                       Mathf.Abs(QueryFrom.y - from.y) <= 2.5f &&
+                       XZDistance(QueryTo, to) <= 0.45f &&
+                       Mathf.Abs(QueryTo.y - to.y) <= 0.50f;
             }
         }
 
