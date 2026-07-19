@@ -105,14 +105,26 @@ namespace ASWDEBUG.UI
                 "初始/存活  " + players, _secondaryLabelStyle);
             y += 29f;
 
-            Rect runButton = new Rect(x, y, width, 27f);
-            string runText = SurvivalBotManager.Enabled ? "停止机器人" : "启动机器人";
+            const float buttonGap = 6f;
+            float modeButtonWidth = (width - buttonGap) * 0.5f;
+            Rect runButton = new Rect(x, y, modeButtonWidth, 27f);
+            string runText = SurvivalBotManager.Enabled ? "生存循环：开" : "生存循环：关";
             if (GUI.Button(runButton, runText, _buttonCenterStyle))
             {
                 SurvivalBotManager.SetEnabled(!SurvivalBotManager.Enabled, "ui");
             }
             if (SurvivalBotManager.Enabled)
                 GUI.DrawTexture(new Rect(runButton.xMax - 5f, runButton.y + 3f, 3f, runButton.height - 6f), _accentTexture);
+
+            Rect combatTestButton = new Rect(runButton.xMax + buttonGap, y, modeButtonWidth, 27f);
+            string combatTestText = SurvivalBotManager.CombatTestEnabled ? "战斗测试：开" : "战斗测试：关";
+            if (GUI.Button(combatTestButton, combatTestText, _buttonCenterStyle))
+            {
+                SurvivalBotManager.SetCombatTestEnabled(!SurvivalBotManager.CombatTestEnabled, "ui");
+            }
+            if (SurvivalBotManager.CombatTestEnabled)
+                GUI.DrawTexture(new Rect(combatTestButton.xMax - 5f, combatTestButton.y + 3f, 3f,
+                    combatTestButton.height - 6f), _accentTexture);
             y += 33f;
 
             float statusTop = _window.yMax - 53f;
@@ -388,6 +400,7 @@ namespace ASWDEBUG.UI
             if (phase == SurvivalBotPhase.Suicide) return "结束对局";
             if (phase == SurvivalBotPhase.Balance) return "结算";
             if (phase == SurvivalBotPhase.GmExit) return "GM 退出";
+            if (phase == SurvivalBotPhase.CombatTest) return "战斗测试";
             return "已停止";
         }
     }

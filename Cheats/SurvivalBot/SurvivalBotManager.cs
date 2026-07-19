@@ -18,6 +18,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         Suicide,
         Balance,
         GmExit,
+        CombatTest,
         Stopped
     }
 
@@ -77,6 +78,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static byte _pendingGmTeam;
 
         public static bool Enabled { get; private set; }
+        public static bool CombatTestEnabled { get; private set; }
         public static SurvivalBotPhase Phase = SurvivalBotPhase.Lobby;
         public static string StatusText = "等待初始化";
         public static int InitialPlayers { get; private set; }
@@ -90,7 +92,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         static SurvivalBotManager()
         {
             SurvivalBotSettings.EnsureLoaded();
-            Enabled = true;
+            Enabled = false;
+            CombatTestEnabled = false;
+            Phase = SurvivalBotPhase.Stopped;
+            StatusText = "等待手动启动";
         }
 
         public static void Tick(Level level, Character player, Camera camera)
@@ -100,11 +105,18 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (NetworkRouteManager.ProxyRequired && NetworkRouteManager.HasError)
             {
                 if (Enabled) Stop("network_proxy_failed");
+                if (CombatTestEnabled) SetCombatTestEnabled(false, "network_proxy_failed");
                 return;
             }
 
             if (Input.GetKeyDown(KeyCode.F8))
                 SetEnabled(!Enabled, "hotkey");
+
+            if (CombatTestEnabled)
+            {
+                TickCombatTest(GameApp.Instance, level, player, camera);
+                return;
+            }
 
             if (!Enabled)
             {
@@ -141,6 +153,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             if (Enabled) return;
+            if (CombatTestEnabled) DisableCombatTest("survival_loop_enabled");
             Enabled = true;
             _consecutiveGmRounds = 0;
             _pendingGmUid = 0;
@@ -156,10 +169,31 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("SURVIVAL", "enabled reason=" + reason);
         }
 
+        public static void SetCombatTestEnabled(bool enabled, string reason)
+        {
+            if (!enabled)
+            {
+                DisableCombatTest(reason);
+                return;
+            }
+
+            if (CombatTestEnabled) return;
+            DisableSurvivalLoopForCombatTest();
+            CombatTestEnabled = true;
+            _attackTarget = null;
+            _hasAttackPoint = false;
+            _nextAttackPointAt = 0f;
+            AutoBattleManager.ResetSurvivalRuntime("combat_test_start");
+            Phase = SurvivalBotPhase.CombatTest;
+            StatusText = "战斗测试已开启，等待进入对局";
+            FileLogger.Log("AUTO-BATTLE", "combat test enabled reason=" + reason);
+        }
+
         public static void Stop(string reason)
         {
-            if (!Enabled && Phase == SurvivalBotPhase.Stopped) return;
+            if (!Enabled && !CombatTestEnabled && Phase == SurvivalBotPhase.Stopped) return;
             Enabled = false;
+            CombatTestEnabled = false;
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;
             AutoBattleInput.ClearAll();
@@ -170,6 +204,49 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _awaitingReward = false;
             _cardManager = null;
             FileLogger.Log("SURVIVAL", StatusText);
+        }
+
+        private static void DisableCombatTest(string reason)
+        {
+            if (!CombatTestEnabled) return;
+            CombatTestEnabled = false;
+            AutoBattleInput.ClearAll();
+            AutoBattleManager.ResetSurvivalRuntime("combat_test_stop");
+            _attackTarget = null;
+            _hasAttackPoint = false;
+            _nextAttackPointAt = 0f;
+            Phase = SurvivalBotPhase.Stopped;
+            StatusText = "战斗测试已关闭";
+            FileLogger.Log("AUTO-BATTLE", "combat test disabled reason=" + reason);
+        }
+
+        private static void DisableSurvivalLoopForCombatTest()
+        {
+            bool cancelMatching = _matching;
+            Enabled = false;
+            AutoBattleInput.ClearAll();
+            AutoBattleManager.ResetSurvivalRuntime("combat_test_takeover");
+            _roundActive = false;
+            _controlStarted = false;
+            _awaitingReward = false;
+            _cardManager = null;
+            _matching = false;
+            _pendingSurvivalMatchRequest = false;
+            _awaitingMatchVerification = false;
+            _cancelPending = false;
+            _matchStartedAt = 0f;
+
+            if (!cancelMatching) return;
+            try
+            {
+                GameApp app = GameApp.Instance;
+                if (app != null && app.lobby_connection != null)
+                    app.lobby_connection.RequestCancelMatching();
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("MATCH", "combat test matching cancel failed: " + ex.Message);
+            }
         }
 
         public static void NotifyRemoteGmCandidate(byte uid, byte team)
@@ -213,16 +290,35 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            NotifyMatchingCancelled();
+            NotifyMatchingCancelled(true);
         }
 
         public static void NotifyMatchingCancelled()
         {
+            NotifyMatchingCancelled(false);
+        }
+
+        private static void NotifyMatchingCancelled(bool retryAllowed)
+        {
+            bool automaticCancel = _cancelPending;
+            bool stopForManualCancel = Enabled && !retryAllowed && !automaticCancel;
             _matching = false;
             _pendingSurvivalMatchRequest = false;
             _awaitingMatchVerification = false;
             _cancelPending = false;
             _matchStartedAt = 0f;
+
+            if (stopForManualCancel)
+            {
+                Enabled = false;
+                Phase = SurvivalBotPhase.Stopped;
+                StatusText = "已停止: 用户取消匹配";
+                AutoBattleInput.ClearAll();
+                AutoBattleManager.ResetSurvivalRuntime("manual_match_cancel");
+                FileLogger.Log("MATCH", "manual cancellation stopped survival loop");
+                return;
+            }
+
             _nextMatchAt = Time.time + 1.5f;
             FileLogger.Log("MATCH", "matching cancelled; retry armed");
         }
@@ -306,6 +402,39 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _awaitingReward = !_roundEndedByGm && !_previousRoundSlept;
             _rewardWaitStartedAt = Time.time;
             _nextMatchAt = Time.time + (_awaitingReward ? 12f : 3f);
+        }
+
+        private static void TickCombatTest(GameApp app, Level level, Character player, Camera camera)
+        {
+            Phase = SurvivalBotPhase.CombatTest;
+            if (app == null || app.channel_connection == null ||
+                app.channel_connection.state != ChannelConnection.State.kInGame)
+            {
+                AutoBattleInput.ClearAll();
+                _attackTarget = null;
+                StatusText = "战斗测试 | 等待进入对局";
+                return;
+            }
+
+            if (player == null || player.IsDied)
+            {
+                AutoBattleInput.ClearAll();
+                _attackTarget = null;
+                StatusText = player == null ? "战斗测试 | 等待角色" : "战斗测试 | 角色已死亡";
+                return;
+            }
+
+            if (!IsCharacterControlReady(app, player))
+            {
+                AutoBattleInput.ClearAll();
+                StatusText = "战斗测试 | 等待倒计时结束";
+                return;
+            }
+
+            AutoBattleManager.MarkSurvivalActivity(player);
+            RefreshEnemies(level, player);
+            RemainingPlayers = CountRemaining(player);
+            TickAttack(player, camera, true);
         }
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)
@@ -416,12 +545,18 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static void TickAttack(Character player, Camera camera)
         {
-            Phase = SurvivalBotPhase.Attack;
+            TickAttack(player, camera, false);
+        }
+
+        private static void TickAttack(Character player, Camera camera, bool combatTest)
+        {
+            Phase = combatTest ? SurvivalBotPhase.CombatTest : SurvivalBotPhase.Attack;
+            string modeName = combatTest ? "战斗测试" : "攻击模式";
             if (!IsAttackTargetUsable(_attackTarget)) _attackTarget = SelectNearestTarget(player);
             if (_attackTarget == null)
             {
                 AutoBattleInput.ClearMovement();
-                StatusText = "攻击模式 | 等待可见且未隐身目标";
+                StatusText = modeName + " | 等待可见且未隐身目标";
                 return;
             }
 
@@ -455,7 +590,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     AutoBattleManager.LookSurvival(player, camera, _attackTarget.transform.position + Vector3.up);
             }
 
-            StatusText = "攻击模式 | 存活 " + RemainingPlayers + " | 目标 " + SafeName(_attackTarget) +
+            StatusText = modeName + " | 存活 " + RemainingPlayers + " | 目标 " + SafeName(_attackTarget) +
                 " | 距离 " + distance.ToString("0.0") + " | 直线 " + strictLine + " | 开火 " + fired;
         }
 
@@ -759,10 +894,27 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 {
                     Character ch = list[i];
                     if (ch == null || ch == player || ch.Is_Viewer) continue;
+                    if (!IsOpponentForCurrentMode(level, player, ch)) continue;
                     if (!Enemies.Contains(ch)) Enemies.Add(ch);
                 }
             }
             catch { }
+        }
+
+        private static bool IsOpponentForCurrentMode(Level level, Character player, Character target)
+        {
+            if (level == null || player == null || target == null) return false;
+            try
+            {
+                if (level.game_type == RoomInfo.GameType.kGameTypeChiji) return true;
+                int playerTeam = player.GetTeam();
+                int targetTeam = target.GetTeam();
+                return playerTeam < 0 || targetTeam < 0 || playerTeam != targetTeam;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static int CountRemaining(Character player)
@@ -920,7 +1072,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static bool IsAttackTargetUsable(Character target)
         {
-            if (!IsLivingOpponent(target)) return false;
+            if (!IsLivingOpponent(target) || !Enemies.Contains(target)) return false;
             try { return !target.GetHidden(); }
             catch { return false; }
         }
