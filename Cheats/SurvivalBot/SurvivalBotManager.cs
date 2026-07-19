@@ -14,6 +14,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         Matching,
         CaptureParticipants,
         Hide,
+        Emergency,
         Attack,
         Suicide,
         Balance,
@@ -69,6 +70,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _hasAttackPoint;
         private static bool _hasCliff;
         private static Character _attackTarget;
+        private static Character _emergencyTarget;
         private static UITakeCardManager _cardManager;
         private static UIJiesuan _balanceView;
         private static int _cardCount;
@@ -187,6 +189,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             DisableSurvivalLoopForCombatTest();
             CombatTestEnabled = true;
             _attackTarget = null;
+            _emergencyTarget = null;
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
             AutoBattleManager.SetEnabled(true, "combat_test_start");
@@ -210,6 +213,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _controlStarted = false;
             _awaitingReward = false;
             _cardManager = null;
+            _emergencyTarget = null;
             FileLogger.Log("SURVIVAL", StatusText);
         }
 
@@ -220,6 +224,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             AutoBattleInput.ClearAll();
             AutoBattleManager.SetEnabled(false, "combat_test_stop");
             _attackTarget = null;
+            _emergencyTarget = null;
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
             Phase = SurvivalBotPhase.Stopped;
@@ -237,6 +242,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _controlStarted = false;
             _awaitingReward = false;
             _cardManager = null;
+            _emergencyTarget = null;
             _matching = false;
             _pendingSurvivalMatchRequest = false;
             _cancelPending = false;
@@ -378,6 +384,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _hasAttackPoint = false;
             _hasCliff = false;
             _attackTarget = null;
+            _emergencyTarget = null;
             _failedCandidateUntil = 0f;
             _nextSafePointAt = 0f;
             _nextAttackPointAt = 0f;
@@ -398,6 +405,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _pendingGmUid = 0;
             _pendingGmTeam = 0;
             _pendingGmGeneration = 0;
+            _emergencyTarget = null;
             AutoBattleInput.ClearAll();
             SurvivalCombatAdapter.ResetSurvivalRuntime("round_finish");
             Phase = SurvivalBotPhase.Balance;
@@ -443,11 +451,16 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             CaptureParticipants(app, level, player);
-            if (_controlStarted && player != null &&
+            if (!_taskCompleted && _controlStarted && player != null &&
                 (player.num_killed > _baselineKills || player.holding_attack_count > _baselineAssists))
+            {
                 _taskCompleted = true;
+                FileLogger.Log("SURVIVAL", "kill/assist objective complete kills=" + player.num_killed +
+                    " assists=" + player.holding_attack_count);
+            }
             if (player != null && player.IsDied)
             {
+                _emergencyTarget = null;
                 AutoBattleInput.ClearAll();
                 Phase = SurvivalBotPhase.Balance;
                 StatusText = "角色已死亡，等待结算";
@@ -455,6 +468,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
             if (!IsCharacterControlReady(app, player))
             {
+                _emergencyTarget = null;
                 AutoBattleInput.ClearAll();
                 Phase = SurvivalBotPhase.CaptureParticipants;
                 StatusText = "等待角色和倒计时就绪 | 初始 " + InitialPlayers;
@@ -484,18 +498,97 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 FileLogger.Log("SURVIVAL", "participants locked initial=" + InitialPlayers);
             }
 
+            int initial = Math.Max(InitialPlayers, ParticipantIds.Count);
+            int threshold = Math.Max(1, initial / 2);
+            bool rankSecured = _participantLocked && RemainingPlayers <= threshold;
+
             if (_taskCompleted)
             {
-                TickSuicide(app, player, camera);
+                ClearEmergencyTarget("objective_complete");
+                if (rankSecured)
+                {
+                    TickSuicide(app, player, camera);
+                }
+                else
+                {
+                    TickHide(player, camera);
+                    StatusText = "任务已完成，等待排名进入前半 | 存活 " + RemainingPlayers +
+                        " / 前半线 " + threshold + " | 路径 " + SurvivalCombatAdapter.LastPath;
+                }
                 return;
             }
 
-            int initial = Math.Max(InitialPlayers, ParticipantIds.Count);
-            int threshold = Math.Max(1, initial / 2);
             if (!_participantLocked || RemainingPlayers > threshold)
+            {
+                if (TickEmergencyCounterattack(player, camera)) return;
                 TickHide(player, camera);
+            }
             else
+            {
+                ClearEmergencyTarget("attack_phase");
                 TickAttack(player, camera);
+            }
+        }
+
+        private static bool TickEmergencyCounterattack(Character player, Camera camera)
+        {
+            if (player == null || camera == null) return false;
+
+            float triggerDistance = SurvivalBotSettings.EmergencyDistance;
+            float releaseDistance = triggerDistance + 2f;
+            bool strictLine = false;
+            float distance = float.MaxValue;
+
+            if (IsAttackTargetUsable(_emergencyTarget))
+            {
+                distance = XzDistance(player.transform.position, _emergencyTarget.transform.position);
+                strictLine = distance <= releaseDistance &&
+                    SurvivalCombatAdapter.SurvivalHasStrictFireLine(player, _emergencyTarget, camera);
+            }
+
+            if (!strictLine)
+            {
+                ClearEmergencyTarget("threat_lost");
+                float bestDistance = triggerDistance;
+                for (int i = 0; i < Enemies.Count; i++)
+                {
+                    Character candidate = Enemies[i];
+                    if (!IsAttackTargetUsable(candidate)) continue;
+                    float candidateDistance = XzDistance(player.transform.position, candidate.transform.position);
+                    if (candidateDistance > bestDistance) continue;
+                    if (!SurvivalCombatAdapter.SurvivalHasStrictFireLine(player, candidate, camera)) continue;
+                    bestDistance = candidateDistance;
+                    _emergencyTarget = candidate;
+                }
+
+                if (_emergencyTarget == null) return false;
+                distance = bestDistance;
+                FileLogger.Log("SURVIVAL", "emergency counterattack start uid=" + _emergencyTarget.uid +
+                    " dist=" + distance.ToString("0.0") + " trigger=" + triggerDistance.ToString("0.0"));
+            }
+
+            bool fired = SurvivalCombatAdapter.AttackEmergency(player, _emergencyTarget, camera,
+                out strictLine, out distance);
+            if (!strictLine)
+            {
+                ClearEmergencyTarget("strict_line_lost");
+                return false;
+            }
+
+            Phase = SurvivalBotPhase.Emergency;
+            AutoBattleInput.ClearMovement();
+            SurvivalCombatAdapter.LogCombatState(player, _emergencyTarget, true, distance, fired);
+            StatusText = "近敌反击 | 目标 " + SafeName(_emergencyTarget) + " | 距离 " +
+                distance.ToString("0.0") + " / " + triggerDistance.ToString("0.0") + " | 开火 " + fired;
+            return true;
+        }
+
+        private static void ClearEmergencyTarget(string reason)
+        {
+            if (_emergencyTarget != null)
+                FileLogger.Log("SURVIVAL", "emergency counterattack stop uid=" + _emergencyTarget.uid +
+                    " reason=" + reason);
+            _emergencyTarget = null;
         }
 
         private static void TickHide(Character player, Camera camera)

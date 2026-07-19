@@ -16,6 +16,7 @@ namespace ASWDEBUG.UI
             MatchTimeout,
             ParticipantCapture,
             Separation,
+            EmergencyDistance,
             SafePointRefresh,
             SuicideFallback,
             GmStopRounds
@@ -31,6 +32,7 @@ namespace ASWDEBUG.UI
         private static readonly string[] MatchTimeoutNames = { "5 分钟", "10 分钟", "15 分钟" };
         private static readonly string[] ParticipantCaptureNames = { "3 秒", "5 秒", "8 秒" };
         private static readonly string[] SeparationNames = { "9 米", "11 米", "13 米", "15 米", "18 米" };
+        private static readonly string[] EmergencyDistanceNames = { "6 米", "8 米", "10 米", "12 米" };
         private static readonly string[] SafePointRefreshNames = { "0.8 秒", "1.0 秒", "1.35 秒", "2.0 秒" };
         private static readonly string[] SuicideFallbackNames = { "15 秒", "25 秒", "40 秒" };
         private static readonly string[] GmStopRoundNames = { "1 局", "2 局", "3 局" };
@@ -38,6 +40,7 @@ namespace ASWDEBUG.UI
         private static readonly float[] MatchTimeoutValues = { 300f, 600f, 900f };
         private static readonly float[] ParticipantCaptureValues = { 3f, 5f, 8f };
         private static readonly float[] SeparationValues = { 9f, 11f, 13f, 15f, 18f };
+        private static readonly float[] EmergencyDistanceValues = { 6f, 8f, 10f, 12f };
         private static readonly float[] SafePointRefreshValues = { 0.8f, 1f, 1.35f, 2f };
         private static readonly float[] SuicideFallbackValues = { 15f, 25f, 40f };
 
@@ -131,7 +134,7 @@ namespace ASWDEBUG.UI
             y += 33f;
 
             float statusTop = _window.yMax - 53f;
-            _rowStride = Mathf.Clamp((statusTop - y - 2f) / 9f, 17f, RowHeight + 1f);
+            _rowStride = Mathf.Clamp((statusTop - y - 2f) / 10f, 17f, RowHeight + 1f);
 
             DrawDropdownRow(ref y, "战术", DropdownId.Tactics, TacticsNames, SurvivalBotSettings.TacticsMode);
             DrawDropdownRow(ref y, "职业策略", DropdownId.Role, RoleNames, SurvivalBotSettings.RoleStrategyEnabled ? 0 : 1);
@@ -139,6 +142,7 @@ namespace ASWDEBUG.UI
             DrawDropdownRow(ref y, "匹配超时", DropdownId.MatchTimeout, MatchTimeoutNames, FindNearest(MatchTimeoutValues, SurvivalBotSettings.MatchTimeoutSeconds));
             DrawDropdownRow(ref y, "人数锁定", DropdownId.ParticipantCapture, ParticipantCaptureNames, FindNearest(ParticipantCaptureValues, SurvivalBotSettings.ParticipantCaptureSeconds));
             DrawDropdownRow(ref y, "躲避距离", DropdownId.Separation, SeparationNames, FindNearest(SeparationValues, SurvivalBotSettings.DesiredSeparation));
+            DrawDropdownRow(ref y, "近敌反击", DropdownId.EmergencyDistance, EmergencyDistanceNames, FindNearest(EmergencyDistanceValues, SurvivalBotSettings.EmergencyDistance));
             DrawDropdownRow(ref y, "躲避刷新", DropdownId.SafePointRefresh, SafePointRefreshNames, FindNearest(SafePointRefreshValues, SurvivalBotSettings.SafePointRefreshSeconds));
             DrawDropdownRow(ref y, "自杀兜底", DropdownId.SuicideFallback, SuicideFallbackNames, FindNearest(SuicideFallbackValues, SurvivalBotSettings.SuicideFallbackSeconds));
             DrawDropdownRow(ref y, "GM 停机", DropdownId.GmStopRounds, GmStopRoundNames, SurvivalBotSettings.GmStopRounds - 1);
@@ -233,6 +237,7 @@ namespace ASWDEBUG.UI
             else if (id == DropdownId.MatchTimeout) SurvivalBotSettings.SetMatchTimeoutSeconds(MatchTimeoutValues[Clamp(selected, 0, MatchTimeoutValues.Length - 1)]);
             else if (id == DropdownId.ParticipantCapture) SurvivalBotSettings.SetParticipantCaptureSeconds(ParticipantCaptureValues[Clamp(selected, 0, ParticipantCaptureValues.Length - 1)]);
             else if (id == DropdownId.Separation) SurvivalBotSettings.SetDesiredSeparation(SeparationValues[Clamp(selected, 0, SeparationValues.Length - 1)]);
+            else if (id == DropdownId.EmergencyDistance) SurvivalBotSettings.SetEmergencyDistance(EmergencyDistanceValues[Clamp(selected, 0, EmergencyDistanceValues.Length - 1)]);
             else if (id == DropdownId.SafePointRefresh) SurvivalBotSettings.SetSafePointRefreshSeconds(SafePointRefreshValues[Clamp(selected, 0, SafePointRefreshValues.Length - 1)]);
             else if (id == DropdownId.SuicideFallback) SurvivalBotSettings.SetSuicideFallbackSeconds(SuicideFallbackValues[Clamp(selected, 0, SuicideFallbackValues.Length - 1)]);
             else if (id == DropdownId.GmStopRounds) SurvivalBotSettings.SetGmStopRounds(Clamp(selected, 0, 2) + 1);
@@ -399,6 +404,7 @@ namespace ASWDEBUG.UI
             if (phase == SurvivalBotPhase.Matching) return "匹配";
             if (phase == SurvivalBotPhase.CaptureParticipants) return "人数锁定";
             if (phase == SurvivalBotPhase.Hide) return "躲避";
+            if (phase == SurvivalBotPhase.Emergency) return "近敌反击";
             if (phase == SurvivalBotPhase.Attack) return "攻击";
             if (phase == SurvivalBotPhase.Suicide) return "结束对局";
             if (phase == SurvivalBotPhase.Balance) return "结算";

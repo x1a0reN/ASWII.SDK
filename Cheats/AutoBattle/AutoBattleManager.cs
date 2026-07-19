@@ -219,6 +219,56 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return true;
         }
 
+        public static bool AttackEmergency(Character player, Character target, Camera camera, out bool strictLine,
+            out float distance)
+        {
+            strictLine = false;
+            distance = 99999f;
+            if (player == null || target == null || camera == null || target.IsDied || target.Is_Viewer) return false;
+            try { if (target.GetHidden()) return false; } catch { return false; }
+
+            distance = Vector3.Distance(player.transform.position, target.transform.position);
+            CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
+
+            Vector3 aimPoint;
+            strictLine = TryGetStrictAimPoint(player, target, camera, out aimPoint);
+            if (!strictLine)
+            {
+                LastAction = "emergency_strict_los_blocked";
+                return false;
+            }
+
+            EnsureEmergencyWeapon(player, distance);
+            if (Time.time < _nextWeaponSwitchAt)
+            {
+                LastAction = "emergency_weapon_switch_wait";
+                return false;
+            }
+            if (!EnsureSniperScope(player.mWeapon)) return false;
+
+            WeaponType activeType = GetWeaponType(player.mWeapon);
+            if (activeType == WeaponType.kWeaponTypeRPG && distance <= 12f)
+            {
+                LastAction = "emergency_rpg_too_close";
+                return false;
+            }
+
+            bool aimReady = ApplyLook(player, camera, aimPoint, 1440f, 1.2f);
+            bool exact = false;
+            try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
+            if (!aimReady || !CanFire(player, distance))
+            {
+                LastAction = aimReady ? "emergency_weapon_not_ready" : "emergency_strong_lock";
+                return false;
+            }
+
+            if (Time.time < _nextFireAt) return false;
+            AutoBattleInput.RequestFire(0.14f);
+            _nextFireAt = Time.time + Mathf.Min(0.08f, FireInterval(player.mWeapon));
+            LastAction = exact ? "emergency_fire_exact" : "emergency_fire_strict_line";
+            return true;
+        }
+
         public static void LogCombatState(Character player, Character target, bool strictLine, float distance, bool fired)
         {
             if (Time.time < _nextCombatTraceAt) return;
@@ -484,6 +534,67 @@ namespace ASWDEBUG.Cheats.AutoBattle
             player.camera.finaly = Mathf.Clamp(CameraPitchOffset - nextPitch, -75f, 48f);
             return Mathf.Abs(Mathf.DeltaAngle(nextYaw, desiredYaw)) <= tolerance &&
                    Mathf.Abs(nextPitch - desiredPitch) <= tolerance;
+        }
+
+        private static void EnsureEmergencyWeapon(Character player, float distance)
+        {
+            if (player == null || player.weaponlist == null || Time.time < _nextWeaponSwitchAt) return;
+            if (IsEmergencyWeaponSuitable(player.mWeapon, distance)) return;
+
+            WeaponBase best = null;
+            float bestScore = float.MinValue;
+            for (int i = 0; i < player.weaponlist.Count; i++)
+            {
+                WeaponBase weapon = player.weaponlist[i];
+                if (!IsReadyGun(weapon)) continue;
+                WeaponType type = GetWeaponType(weapon);
+                if (type == WeaponType.kWeaponTypeRPG) continue;
+
+                float score = weapon.clip;
+                if (type == WeaponType.kWeaponTypeShotGun) score += distance <= 9f ? 150f : 85f;
+                else if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
+                         type == WeaponType.kWeaponTypeDualWeapon) score += 135f;
+                else if (type == WeaponType.kWeaponTypePistol) score += 75f;
+                else if (type == WeaponType.kWeaponTypeSniperGun) score += distance >= 8f ? 80f : -80f;
+                else if (type == WeaponType.kWeaponTypeBow) score += distance >= 10f ? 35f : -100f;
+
+                if (CurrentRole == "重装" && type == WeaponType.kWeaponTypeMachineGun) score += 35f;
+                else if (CurrentRole == "医疗/守护" &&
+                         (type == WeaponType.kWeaponTypeDualWeapon || type == WeaponType.kWeaponTypePistol)) score += 25f;
+                else if (CurrentRole == "突击/狙击")
+                {
+                    if (type == WeaponType.kWeaponTypeSniperGun && distance >= 8f) score += 30f;
+                    if (type == WeaponType.kWeaponTypeShotGun || type == WeaponType.kWeaponTypeSubMachineGun) score += 25f;
+                }
+
+                if (score <= bestScore) continue;
+                bestScore = score;
+                best = weapon;
+            }
+
+            if (best != null && best != player.mWeapon)
+            {
+                try
+                {
+                    player.ChangeWeapon(Convert.ToInt32(best.info.slot));
+                    _nextWeaponSwitchAt = Time.time + 0.32f;
+                    LastAction = "emergency_weapon_switch";
+                }
+                catch { }
+            }
+            else if (player.mWeapon != null && player.mWeapon.clip <= 0 && !player.mWeapon.reloading)
+            {
+                try { player.mWeapon.Reload(); } catch { }
+            }
+        }
+
+        private static bool IsEmergencyWeaponSuitable(WeaponBase weapon, float distance)
+        {
+            if (!IsReadyGun(weapon)) return false;
+            WeaponType type = GetWeaponType(weapon);
+            if (type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) return false;
+            if (type == WeaponType.kWeaponTypeSniperGun && distance < 8f) return false;
+            return true;
         }
 
         private static void EnsureRoleWeapon(Character player, float distance)
