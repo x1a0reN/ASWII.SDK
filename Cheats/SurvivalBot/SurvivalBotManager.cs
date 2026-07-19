@@ -518,9 +518,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
+            if (TickEmergencyCounterattack(player, camera)) return;
+
             if (!_participantLocked || RemainingPlayers > threshold)
             {
-                if (TickEmergencyCounterattack(player, camera)) return;
                 TickHide(player, camera);
             }
             else
@@ -539,11 +540,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             bool strictLine = false;
             float distance = float.MaxValue;
 
-            if (IsAttackTargetUsable(_emergencyTarget))
+            if (IsEmergencyTargetUsable(_emergencyTarget))
             {
                 distance = XzDistance(player.transform.position, _emergencyTarget.transform.position);
-                strictLine = distance <= releaseDistance &&
-                    SurvivalCombatAdapter.SurvivalHasStrictFireLine(player, _emergencyTarget, camera);
+                float currentLimit = IsTargetHidden(_emergencyTarget) ? 6f : releaseDistance;
+                strictLine = distance <= currentLimit &&
+                    SurvivalCombatAdapter.SurvivalHasEmergencyFireLine(player, _emergencyTarget, camera);
             }
 
             if (!strictLine)
@@ -553,10 +555,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 for (int i = 0; i < Enemies.Count; i++)
                 {
                     Character candidate = Enemies[i];
-                    if (!IsAttackTargetUsable(candidate)) continue;
+                    if (!IsEmergencyTargetUsable(candidate)) continue;
                     float candidateDistance = XzDistance(player.transform.position, candidate.transform.position);
-                    if (candidateDistance > bestDistance) continue;
-                    if (!SurvivalCombatAdapter.SurvivalHasStrictFireLine(player, candidate, camera)) continue;
+                    float candidateLimit = IsTargetHidden(candidate) ? 6f : triggerDistance;
+                    if (candidateDistance > candidateLimit || candidateDistance > bestDistance) continue;
+                    if (!SurvivalCombatAdapter.SurvivalHasEmergencyFireLine(player, candidate, camera)) continue;
                     bestDistance = candidateDistance;
                     _emergencyTarget = candidate;
                 }
@@ -564,7 +567,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 if (_emergencyTarget == null) return false;
                 distance = bestDistance;
                 FileLogger.Log("SURVIVAL", "emergency counterattack start uid=" + _emergencyTarget.uid +
-                    " dist=" + distance.ToString("0.0") + " trigger=" + triggerDistance.ToString("0.0"));
+                    " dist=" + distance.ToString("0.0") + " trigger=" + triggerDistance.ToString("0.0") +
+                    " hidden=" + IsTargetHidden(_emergencyTarget));
             }
 
             bool fired = SurvivalCombatAdapter.AttackEmergency(player, _emergencyTarget, camera,
@@ -579,7 +583,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             AutoBattleInput.ClearMovement();
             SurvivalCombatAdapter.LogCombatState(player, _emergencyTarget, true, distance, fired);
             StatusText = "近敌反击 | 目标 " + SafeName(_emergencyTarget) + " | 距离 " +
-                distance.ToString("0.0") + " / " + triggerDistance.ToString("0.0") + " | 开火 " + fired;
+                distance.ToString("0.0") + " / " + triggerDistance.ToString("0.0") + " | 隐身 " +
+                IsTargetHidden(_emergencyTarget) + " | 开火 " + fired;
             return true;
         }
 
@@ -1292,6 +1297,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             if (!IsLivingOpponent(target) || !Enemies.Contains(target)) return false;
             try { return !target.GetHidden(); }
+            catch { return false; }
+        }
+
+        private static bool IsEmergencyTargetUsable(Character target)
+        {
+            return IsLivingOpponent(target) && Enemies.Contains(target);
+        }
+
+        private static bool IsTargetHidden(Character target)
+        {
+            try { return target != null && target.GetHidden(); }
             catch { return false; }
         }
 

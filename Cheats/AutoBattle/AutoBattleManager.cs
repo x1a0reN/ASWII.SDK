@@ -171,6 +171,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return TryGetStrictAimPoint(player, target, camera, out aimPoint);
         }
 
+        public static bool SurvivalHasEmergencyFireLine(Character player, Character target, Camera camera)
+        {
+            Vector3 aimPoint;
+            return TryGetEmergencyAimPoint(player, target, camera, out aimPoint);
+        }
+
         public static bool AttackSurvival(Character player, Character target, Camera camera, out bool strictLine, out float distance)
         {
             strictLine = false;
@@ -203,8 +209,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             if (!EnsureSniperScope(player.mWeapon)) return false;
 
-            if (TryUseRoleAttackSkill(player, target, camera, aimPoint, strictLine, distance)) return true;
-
             bool exact = false;
             try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
             if (!aimReady || !CanFire(player, distance))
@@ -229,13 +233,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
             strictLine = false;
             distance = 99999f;
             if (player == null || target == null || camera == null || target.IsDied || target.Is_Viewer) return false;
-            try { if (target.GetHidden()) return false; } catch { return false; }
 
             distance = Vector3.Distance(player.transform.position, target.transform.position);
+            bool hidden;
+            try { hidden = target.GetHidden(); }
+            catch { return false; }
+            if (hidden && XzDistance(player.transform.position, target.transform.position) > 6f)
+            {
+                LastAction = "emergency_hidden_out_of_range";
+                return false;
+            }
             CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
 
             Vector3 aimPoint;
-            strictLine = TryGetStrictAimPoint(player, target, camera, out aimPoint);
+            strictLine = TryGetEmergencyAimPoint(player, target, camera, out aimPoint);
             if (!strictLine)
             {
                 LastAction = "emergency_strict_los_blocked";
@@ -262,7 +273,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (Time.time < _nextFireAt) return false;
             AutoBattleInput.RequestFire(0.14f);
             _nextFireAt = Time.time + Mathf.Min(0.08f, FireInterval(player.mWeapon));
-            LastAction = exact ? "emergency_fire_exact" : "emergency_fire_strict_line";
+            LastAction = hidden ? "emergency_fire_hidden_close" :
+                exact ? "emergency_fire_exact" : "emergency_fire_strict_line";
             return true;
         }
 
@@ -412,35 +424,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool TryUseRoleAttackSkill(Character player, Character target, Camera camera, Vector3 aimPoint,
-            bool strictLine, float distance)
-        {
-            if (player == null || target == null) return false;
-            if (CurrentRole == "医疗/守护")
-            {
-                float hp = HealthPercent(player);
-                if (hp <= 58f && TryUseSkill(player, 0, "medic_heal_self")) return true;
-                if (hp <= 72f && TryUseSkill(player, 14, "medic_capsule_self")) return true;
-                if (strictLine)
-                {
-                    if (!AimAt(player, camera, aimPoint))
-                    {
-                        LastAction = "medic_arrow_rain_aim";
-                        return true;
-                    }
-                    if (TryUseSkill(player, 9, "medic_arrow_rain")) return true;
-                }
-            }
-            else if (CurrentRole == "重装")
-            {
-                if (distance <= 28f && TryUseSkill(player, 1, "heavy_shield_contact")) return false;
-                if (distance <= 35f && AimAt(player, camera, aimPoint) &&
-                    TryUseSkill(player, 4, "heavy_gallop_contact")) return false;
-                if (HealthPercent(player) <= 70f && TryUseSkill(player, 7, "heavy_tenacity_lowhp")) return false;
-            }
-            return false;
-        }
-
         private static void TryUseRoleMaintenance(Character player)
         {
             if (player == null || Time.time < _nextSkillAt || !SurvivalBotSettings.RoleStrategyEnabled) return;
@@ -458,9 +441,21 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static bool TryGetStrictAimPoint(Character player, Character target, Camera camera, out Vector3 aimPoint)
         {
+            return TryGetAimPoint(player, target, camera, false, out aimPoint);
+        }
+
+        private static bool TryGetEmergencyAimPoint(Character player, Character target, Camera camera,
+            out Vector3 aimPoint)
+        {
+            return TryGetAimPoint(player, target, camera, true, out aimPoint);
+        }
+
+        private static bool TryGetAimPoint(Character player, Character target, Camera camera, bool allowHidden,
+            out Vector3 aimPoint)
+        {
             aimPoint = Vector3.zero;
             if (player == null || target == null || target.transform == null || camera == null) return false;
-            try { if (target.GetHidden()) return false; } catch { return false; }
+            try { if (!allowHidden && target.GetHidden()) return false; } catch { return false; }
 
             Vector3 origin = camera.transform.position;
             Vector3[] points =
@@ -506,11 +501,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static int CompareHitDistance(RaycastHit a, RaycastHit b)
         {
             return a.distance.CompareTo(b.distance);
-        }
-
-        private static bool AimAt(Character player, Camera camera, Vector3 point)
-        {
-            return ApplyLook(player, camera, point, 520f, 1.7f);
         }
 
         private static bool ApplyLook(Character player, Camera camera, Vector3 point, float speed, float tolerance)
@@ -584,7 +574,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 try
                 {
                     player.ChangeWeapon(Convert.ToInt32(best.info.slot));
-                    _nextWeaponSwitchAt = Time.time + 0.32f;
+                    _nextWeaponSwitchAt = Time.time + 0.15f;
                     LastAction = "emergency_weapon_switch";
                 }
                 catch { }
@@ -639,7 +629,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 try
                 {
                     player.ChangeWeapon(Convert.ToInt32(best.info.slot));
-                    _nextWeaponSwitchAt = Time.time + 0.55f;
+                    _nextWeaponSwitchAt = Time.time + 0.15f;
                     LastAction = "role_weapon_switch";
                 }
                 catch { }
@@ -708,7 +698,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 {
                     // SniperGunController toggles its sight on GetKeyDown, not while the key is held.
                     AutoBattleInput.PressAction(ActionType.kActionSecondFire, 0.10f);
-                    _nextScopeAt = Time.time + 0.40f;
+                    _nextScopeAt = Time.time + 0.18f;
                     LastAction = "sniper_scope_request";
                     FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope requested");
                 }
