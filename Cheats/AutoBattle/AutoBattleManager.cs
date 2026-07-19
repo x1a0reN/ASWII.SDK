@@ -196,8 +196,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return false;
             }
 
-            if (CurrentRole == "突击/狙击" && distance <= 2.8f &&
-                TryAssaultMelee(player, target, camera, aimPoint)) return true;
             if (TryUseRoleAttackSkill(player, target, camera, aimPoint, strictLine, distance)) return true;
 
             bool aimReady = AimAt(player, camera, aimPoint);
@@ -245,13 +243,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return false;
             }
             if (!EnsureSniperScope(player.mWeapon)) return false;
-
-            WeaponType activeType = GetWeaponType(player.mWeapon);
-            if (activeType == WeaponType.kWeaponTypeRPG && distance <= 12f)
-            {
-                LastAction = "emergency_rpg_too_close";
-                return false;
-            }
 
             bool aimReady = ApplyLook(player, camera, aimPoint, 1440f, 1.2f);
             bool exact = false;
@@ -406,10 +397,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     TryUseSkill(player, 4, "heavy_gallop_contact")) return false;
                 if (HealthPercent(player) <= 70f && TryUseSkill(player, 7, "heavy_tenacity_lowhp")) return false;
             }
-            else if (CurrentRole == "突击/狙击" && distance <= 4.2f)
-            {
-                if (TryUseSkill(player, 11, "assault_spurt_melee")) return true;
-            }
             return false;
         }
 
@@ -426,38 +413,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 TryUseSkill(player, 7, "heavy_tenacity_lowhp");
             }
-        }
-
-        private static bool TryAssaultMelee(Character player, Character target, Camera camera, Vector3 aimPoint)
-        {
-            WeaponBase knife = FindWeapon(player, WeaponType.kWeaponTypeKnife);
-            if (knife == null) return false;
-            if (player.mWeapon != knife)
-            {
-                if (Time.time < _nextWeaponSwitchAt) return true;
-                try
-                {
-                    player.ChangeWeapon(Convert.ToInt32(knife.info.slot));
-                    _nextWeaponSwitchAt = Time.time + 0.55f;
-                    LastAction = "assault_knife_switch";
-                }
-                catch { }
-                return true;
-            }
-
-            bool aimReady = AimAt(player, camera, aimPoint);
-            bool exact = false;
-            try { exact = AutoFire.IsCrosshairOnEnemyExact(target); } catch { }
-            if (!aimReady || !exact || Time.time < _nextFireAt) return true;
-            try
-            {
-                if (!knife.cool_down_ready || !knife.info.cool_down_ready || (float)knife.info.cooling > 0f) return true;
-            }
-            catch { return true; }
-            AutoBattleInput.RequestFire(0.11f);
-            _nextFireAt = Time.time + 0.22f;
-            LastAction = "assault_knife_fire";
-            return true;
         }
 
         private static bool TryGetStrictAimPoint(Character player, Character target, Camera camera, out Vector3 aimPoint)
@@ -548,7 +503,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 WeaponBase weapon = player.weaponlist[i];
                 if (!IsReadyGun(weapon)) continue;
                 WeaponType type = GetWeaponType(weapon);
-                if (type == WeaponType.kWeaponTypeRPG) continue;
 
                 float score = weapon.clip;
                 if (type == WeaponType.kWeaponTypeShotGun) score += distance <= 9f ? 150f : 85f;
@@ -556,6 +510,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                          type == WeaponType.kWeaponTypeDualWeapon) score += 135f;
                 else if (type == WeaponType.kWeaponTypePistol) score += 75f;
                 else if (type == WeaponType.kWeaponTypeSniperGun) score += distance >= 8f ? 80f : -80f;
+                else if (type == WeaponType.kWeaponTypeRPG) score += CurrentRole == "重装" ? 175f : 95f;
                 else if (type == WeaponType.kWeaponTypeBow) score += distance >= 10f ? 35f : -100f;
 
                 if (CurrentRole == "重装" && type == WeaponType.kWeaponTypeMachineGun) score += 35f;
@@ -592,7 +547,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             if (!IsReadyGun(weapon)) return false;
             WeaponType type = GetWeaponType(weapon);
-            if (type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) return false;
+            if (type == WeaponType.kWeaponTypeBow) return false;
             if (type == WeaponType.kWeaponTypeSniperGun && distance < 8f) return false;
             return true;
         }
@@ -772,18 +727,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             catch { }
             return false;
-        }
-
-        private static WeaponBase FindWeapon(Character player, WeaponType type)
-        {
-            try
-            {
-                if (player == null || player.weaponlist == null) return null;
-                for (int i = 0; i < player.weaponlist.Count; i++)
-                    if (GetWeaponType(player.weaponlist[i]) == type) return player.weaponlist[i];
-            }
-            catch { }
-            return null;
         }
 
         private static bool HasSkill(Character player, int subType)
