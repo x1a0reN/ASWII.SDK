@@ -33,7 +33,7 @@ public sealed class SurvivalBotBootstrap : MonoBehaviour
         try { _hooksReady = HarmonyLoader.Install(); }
         catch (Exception ex)
         {
-            FileLogger.Log("BOOT", "hook install failed: " + ex.GetType().Name);
+            FileLogger.Log("BOOT", "hook install failed: " + ex.GetType().Name + ": " + ex.Message);
             try { NetworkRouteManager.PrepareClientRole(); } catch { }
             NetworkRouteManager.ReportHookFailure();
             _hooksReady = false;

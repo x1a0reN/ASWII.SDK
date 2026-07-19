@@ -64,21 +64,23 @@ namespace ASWDEBUG.Patch
 
         private static void PatchInput(HarmonyInstance harmony)
         {
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetAxis", new Type[] { typeof(string) }), "InputAxisPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetAxisRaw", new Type[] { typeof(string) }), "InputAxisPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetButton", new Type[] { typeof(string) }), "InputButtonPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetButtonDown", new Type[] { typeof(string) }), "InputButtonDownPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetMouseButton", new Type[] { typeof(int) }), "InputMouseButtonPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetMouseButtonDown", new Type[] { typeof(int) }), "InputMouseButtonDownPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetKey", new Type[] { typeof(KeyCode) }), "InputKeyPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetKey", new Type[] { typeof(string) }), "InputKeyStringPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetKeyDown", new Type[] { typeof(KeyCode) }), "InputKeyDownPrefix");
-            Patch(harmony, AccessTools.Method(typeof(Input), "GetKeyDown", new Type[] { typeof(string) }), "InputKeyDownStringPrefix");
+            int installed = 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetAxis", new Type[] { typeof(string) }), "InputAxisPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetAxisRaw", new Type[] { typeof(string) }), "InputAxisPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetButton", new Type[] { typeof(string) }), "InputButtonPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetButtonDown", new Type[] { typeof(string) }), "InputButtonDownPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetMouseButton", new Type[] { typeof(int) }), "InputMouseButtonPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetMouseButtonDown", new Type[] { typeof(int) }), "InputMouseButtonDownPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetKey", new Type[] { typeof(KeyCode) }), "InputKeyPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetKey", new Type[] { typeof(string) }), "InputKeyStringPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetKeyDown", new Type[] { typeof(KeyCode) }), "InputKeyDownPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, AccessTools.Method(typeof(Input), "GetKeyDown", new Type[] { typeof(string) }), "InputKeyDownStringPrefix", null) ? 1 : 0;
 
             PropertyInfo anyKey = typeof(Input).GetProperty("anyKey", BindingFlags.Public | BindingFlags.Static);
             PropertyInfo anyKeyDown = typeof(Input).GetProperty("anyKeyDown", BindingFlags.Public | BindingFlags.Static);
-            Patch(harmony, anyKey == null ? null : anyKey.GetGetMethod(), "InputAnyKeyPrefix");
-            Patch(harmony, anyKeyDown == null ? null : anyKeyDown.GetGetMethod(), "InputAnyKeyDownPrefix");
+            installed += TryPatch(harmony, anyKey == null ? null : anyKey.GetGetMethod(), "InputAnyKeyPrefix", null) ? 1 : 0;
+            installed += TryPatch(harmony, anyKeyDown == null ? null : anyKeyDown.GetGetMethod(), "InputAnyKeyDownPrefix", null) ? 1 : 0;
+            FileLogger.Log("PATCH", "managed input hooks installed=" + installed + "; Unity internal-call targets are skipped");
         }
 
         private static void PatchGameHooks(HarmonyInstance harmony)
@@ -105,7 +107,34 @@ namespace ASWDEBUG.Patch
                 }
             }
 
-            Patch(harmony, selected, prefix, postfix);
+            TryPatch(harmony, selected, prefix, postfix);
+        }
+
+        private static bool TryPatch(HarmonyInstance harmony, MethodBase original, string prefix, string postfix)
+        {
+            if (original == null)
+            {
+                FileLogger.Log("PATCH", "target missing for prefix=" + prefix + " postfix=" + postfix);
+                return false;
+            }
+
+            try
+            {
+                MethodInfo method = original as MethodInfo;
+                if (method != null && method.GetMethodBody() == null)
+                {
+                    FileLogger.Log("PATCH", "target has no managed body; skipped: " + method.DeclaringType.FullName + "." + method.Name);
+                    return false;
+                }
+
+                Patch(harmony, original, prefix, postfix);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("PATCH", "hook skipped for prefix=" + prefix + " postfix=" + postfix + ": " + ex.GetType().Name + ": " + ex.Message);
+                return false;
+            }
         }
 
         private static void Patch(HarmonyInstance harmony, MethodBase original, string prefix)
