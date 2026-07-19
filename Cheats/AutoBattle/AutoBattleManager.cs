@@ -22,6 +22,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _nextSkillAt;
         private static float _nextWeaponSwitchAt;
         private static float _nextRoleSpecialAt;
+        private static float _nextScopeAt;
 
         public static string LastPath = "-";
         public static string LastPathProvider = "-";
@@ -42,6 +43,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _nextSkillAt = 0f;
             _nextWeaponSwitchAt = 0f;
             _nextRoleSpecialAt = 0f;
+            _nextScopeAt = 0f;
             LastPath = reason;
             LastPathProvider = "-";
             LastAction = reason;
@@ -193,9 +195,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 LastAction = "role_weapon_switch_wait";
                 return false;
             }
-            if (CurrentRole == "突击/狙击" && player.mWeapon != null &&
-                GetWeaponType(player.mWeapon) == WeaponType.kWeaponTypeSniperGun)
-                AutoBattleInput.HoldAction(ActionType.kActionSecondFire, 0.24f);
+            if (!EnsureSniperScope(player.mWeapon)) return false;
 
             bool aimReady = AimAt(player, camera, aimPoint);
             bool exact = false;
@@ -548,6 +548,47 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (type == WeaponType.kWeaponTypePistol) return UnityEngine.Random.Range(0.09f, 0.15f);
             if (type == WeaponType.kWeaponTypeShotGun) return UnityEngine.Random.Range(0.16f, 0.26f);
             return UnityEngine.Random.Range(0.10f, 0.18f);
+        }
+
+        private static bool EnsureSniperScope(WeaponBase weapon)
+        {
+            SniperGunController sniper = weapon as SniperGunController;
+            if (sniper == null) return true;
+
+            try
+            {
+                if (sniper.currentSight != 0)
+                {
+                    _nextScopeAt = 0f;
+                    return true;
+                }
+
+                if (sniper.reloading)
+                {
+                    LastAction = "sniper_scope_reload_wait";
+                    return false;
+                }
+
+                if (Time.time >= _nextScopeAt)
+                {
+                    // SniperGunController toggles its sight on GetKeyDown, not while the key is held.
+                    AutoBattleInput.PressAction(ActionType.kActionSecondFire, 0.10f);
+                    _nextScopeAt = Time.time + 0.40f;
+                    LastAction = "sniper_scope_request";
+                    FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope requested");
+                }
+                else
+                {
+                    LastAction = "sniper_scope_wait";
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LastAction = "sniper_scope_error";
+                FileLogger.Log("AUTO-BATTLE][ROLE", "sniper scope failed ex=" + ex.GetType().Name + ":" + ex.Message);
+                return false;
+            }
         }
 
         private static bool IsWeaponSuitable(WeaponBase weapon, WeaponType preferred, float distance)
