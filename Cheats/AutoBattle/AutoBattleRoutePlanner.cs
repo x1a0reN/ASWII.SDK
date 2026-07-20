@@ -305,8 +305,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             string rainDetail = IsGameNavigationReady ? "ready" : RuntimeRainNavMesh.Detail;
             const string unityDetail = "disabled";
 
-            if (!capabilities.RequireRainPath &&
-                HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot))
+            if (!capabilities.RequireRainPath && CanFollowSegment(from, to, ignoreRoot))
             {
                 _physicsSearchJob = null;
                 points = new List<Vector3>(1);
@@ -947,16 +946,14 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 float heightError = Mathf.Abs(current.Pos.y - job.Goal.y);
                 float goalHorizontal = XZDistance(current.Pos, job.Goal);
                 if (goalHorizontal <= GoalTolerance && heightError <= 0.65f &&
-                    (goalHorizontal <= 0.30f ||
-                     (HasWalkSegment(current.Pos, job.Goal, ignoreRoot) && HasGroundSupportSegment(current.Pos, job.Goal, ignoreRoot))))
+                    (goalHorizontal <= 0.30f || CanFollowSegment(current.Pos, job.Goal, ignoreRoot)))
                 {
                     job.Found = current;
                     break;
                 }
 
                 if (goalHorizontal > 0.30f && heightError <= MaxStepHeight &&
-                    HasWalkSegment(current.Pos, job.Goal, ignoreRoot) &&
-                    HasGroundSupportSegment(current.Pos, job.Goal, ignoreRoot))
+                    CanFollowSegment(current.Pos, job.Goal, ignoreRoot))
                 {
                     job.Found = current;
                     break;
@@ -1000,26 +997,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool complete = job.Found != null || job.Open.Count == 0 || job.Expanded >= MaxNodes;
             if (!complete)
             {
-                if (job.Best != null && job.Best != job.First && job.Slices >= 2 &&
-                    XZDistance(job.First.Pos, job.Best.Pos) >= 1.25f)
-                {
-                    List<RouteStep> frontier = SmoothPath(Reconstruct(job.Best), ignoreRoot);
-                    if (frontier.Count > 0)
-                    {
-                        return FromSteps("phys_grid_2_5d_frontier", true, frontier,
-                            "result=frontier nodes=" + job.Expanded +
-                            " layers=" + job.HeightLayers.Count +
-                            " jumps=" + CountJumpSteps(frontier) +
-                            " corners=" + frontier.Count +
-                            " slices=" + job.Slices +
-                            " sliceMs=" + job.LastSliceMilliseconds +
-                            " sliceBudgetMs=" + job.LastSliceBudgetMilliseconds.ToString("0.0") +
-                            " frameMs=" + frameMilliseconds.ToString("0.0") +
-                            " frameEma=" + frameEma.ToString("0.0") +
-                            " endDist=" + XZDistance(frontier[frontier.Count - 1].Pos, job.Goal).ToString("0.0") +
-                            " reason=searching_frontier");
-                    }
-                }
                 return Pending("phys_grid_2_5d_pending",
                     PendingDetail(job, frameMilliseconds, frameEma, "searching"));
             }
@@ -1041,8 +1018,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             List<RouteStep> rawPath = Reconstruct(end);
             if (!partial && (XZDistance(rawPath[rawPath.Count - 1].Pos, job.Goal) > 0.10f || Mathf.Abs(rawPath[rawPath.Count - 1].Pos.y - job.Goal.y) > 0.10f) &&
                 Mathf.Abs(rawPath[rawPath.Count - 1].Pos.y - job.Goal.y) <= MaxStepHeight &&
-                HasWalkSegment(rawPath[rawPath.Count - 1].Pos, job.Goal, ignoreRoot) &&
-                HasGroundSupportSegment(rawPath[rawPath.Count - 1].Pos, job.Goal, ignoreRoot))
+                CanFollowSegment(rawPath[rawPath.Count - 1].Pos, job.Goal, ignoreRoot))
             {
                 rawPath.Add(new RouteStep(job.Goal, false));
             }
@@ -1772,8 +1748,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 for (int j = raw.Count - 1; j > index + 1; j--)
                 {
                     if (ContainsJumpStep(raw, index + 1, j)) continue;
-                    if (HasWalkSegment(raw[index].Pos, raw[j].Pos, ignoreRoot) &&
-                        HasGroundSupportSegment(raw[index].Pos, raw[j].Pos, ignoreRoot))
+                    if (CanFollowSegment(raw[index].Pos, raw[j].Pos, ignoreRoot))
                     {
                         best = j;
                         break;
@@ -1844,7 +1819,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
 
             job.Stats.WalkCacheMisses++;
-            walkClear = HasWalkSegment(from, to, ignoreRoot);
+            walkClear = HasWalkSegment(from, to, ignoreRoot) &&
+                        HasNavigationBodyClearance(from, to, ignoreRoot, NavigationBodyRadius, false);
             groundSupported = HasGroundSupportSegment(from, to, ignoreRoot);
             value = (byte)((walkClear ? 1 : 0) | (groundSupported ? 2 : 0));
             job.WalkSamples[key] = value;

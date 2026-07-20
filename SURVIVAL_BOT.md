@@ -19,7 +19,9 @@ terrain colliders after the scene reaches `Level.State.kReady`. RAIN paths are
 sanitized, surface-smoothed, and moved away from tight wall corners before they reach
 the follower. A physically blocked RAIN segment is retained when its complete jump
 arc and landing are valid; only non-walkable and non-jumpable segments fall back to
-the 2.5D grid. Runtime graphs are cached both in memory and on disk.
+the 2.5D grid. The 2.5D search publishes only a completed route, not its changing
+search frontier, and uses the same body-width clearance checks as the follower.
+Runtime graphs are cached both in memory and on disk.
 Map exit only unregisters the in-memory graph; returning to the same map registers
 it immediately. A later game process loads the validated graph from
 `Application.persistentDataPath/ASWDEBUG/NavMeshCache`. The wrapper verifies the
