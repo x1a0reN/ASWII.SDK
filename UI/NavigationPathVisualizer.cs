@@ -32,6 +32,9 @@ namespace ASWDEBUG.UI
         private static int[] _markerTriangles;
         private static float _nextRefreshAt;
         private static float _nextErrorLogAt;
+        private static float _nextResourceAttemptAt;
+        private static bool _shaderFailureLogged;
+        private static bool _shaderReadyLogged;
 
         internal static int VisiblePointCount { get; private set; }
 
@@ -102,6 +105,9 @@ namespace ASWDEBUG.UI
             _markerVertices = null;
             _markerColors = null;
             _markerTriangles = null;
+            _nextResourceAttemptAt = 0f;
+            _shaderFailureLogged = false;
+            _shaderReadyLogged = false;
             SourceRoute.Clear();
             GroundRoute.Clear();
         }
@@ -110,13 +116,28 @@ namespace ASWDEBUG.UI
         {
             if (_line != null && _markerRenderer != null && _markerMesh != null && _material != null) return true;
 
-            Shader shader = Shader.Find("Particles/Additive");
-            if (shader == null) shader = Shader.Find("Particles/Alpha Blended");
-            if (shader == null) shader = Shader.Find("Unlit/Transparent");
+            float now = Time.realtimeSinceStartup;
+            if (now < _nextResourceAttemptAt) return false;
+            _nextResourceAttemptAt = now + 2f;
+
+            string shaderSource;
+            Shader shader = FindGuideShader(out shaderSource);
             if (shader == null)
             {
-                FileLogger.Log("AUTO-BATTLE][PATH-VIS", "disabled reason=shader_missing");
+                if (!_shaderFailureLogged)
+                {
+                    _shaderFailureLogged = true;
+                    FileLogger.Log("AUTO-BATTLE][PATH-VIS",
+                        "waiting reason=shader_missing builtins_and_scene_materials");
+                }
                 return false;
+            }
+
+            _shaderFailureLogged = false;
+            if (!_shaderReadyLogged)
+            {
+                _shaderReadyLogged = true;
+                FileLogger.Log("AUTO-BATTLE][PATH-VIS", "ready shader=" + shader.name + " source=" + shaderSource);
             }
 
             _material = new Material(shader);
@@ -151,6 +172,62 @@ namespace ASWDEBUG.UI
             filter.sharedMesh = _markerMesh;
             _markerRenderer.sharedMaterial = _material;
             return true;
+        }
+
+        private static Shader FindGuideShader(out string source)
+        {
+            string[] preferredNames =
+            {
+                "Legacy Shaders/Particles/Additive",
+                "Mobile/Particles/Additive",
+                "Particles/Additive",
+                "Particles/Alpha Blended",
+                "Sprites/Default",
+                "Unlit/Color",
+                "Unlit/Transparent",
+                "UI/Default"
+            };
+            for (int i = 0; i < preferredNames.Length; i++)
+            {
+                Shader shader = Shader.Find(preferredNames[i]);
+                if (shader == null) continue;
+                source = "builtin:" + preferredNames[i];
+                return shader;
+            }
+
+            Shader fallback = null;
+            UnityEngine.Object[] renderers = UnityEngine.Object.FindObjectsOfType(typeof(Renderer));
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                Renderer renderer = renderers[i] as Renderer;
+                if (renderer == null) continue;
+                Material[] materials = renderer.sharedMaterials;
+                if (materials == null) continue;
+                for (int j = 0; j < materials.Length; j++)
+                {
+                    Material material = materials[j];
+                    if (material == null || material.shader == null) continue;
+                    Shader candidate = material.shader;
+                    if (fallback == null && material.HasProperty("_Color")) fallback = candidate;
+
+                    string name = candidate.name ?? string.Empty;
+                    if (name.IndexOf("Particle", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        name.IndexOf("Additive", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        name.IndexOf("Unlit", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        name.IndexOf("Transparent", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        name.IndexOf("Sprite", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    source = "scene_material:" + SafeOneLine(material.name, 60);
+                    return candidate;
+                }
+            }
+
+            if (fallback != null)
+            {
+                source = "scene_color_fallback";
+                return fallback;
+            }
+            source = "none";
+            return null;
         }
 
         private static void BuildGroundRoute(Vector3 playerPosition)

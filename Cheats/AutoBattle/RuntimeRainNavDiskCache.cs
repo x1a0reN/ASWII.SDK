@@ -22,7 +22,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
     {
         internal const int SchemaVersion = 1;
         internal const int RainGraphVersion = 4;
-        private const int MaxCacheBytes = 128 * 1024 * 1024;
+        // Maximum-detail maps can legitimately serialize well beyond the runtime profile size.
+        private const int MaxCacheBytes = 512 * 1024 * 1024;
         private const int MaxMetadataBytes = 4096;
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("ASWRNAV1");
         private static string _contentFingerprint;

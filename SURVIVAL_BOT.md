@@ -26,6 +26,18 @@ build. Plugin shutdown releases memory graphs without deleting the disk cache. T
 first build uses RAIN's automatic half-CPU worker count and a `0.25` cell size so
 the pre-round wait is used for maximum generation throughput and path detail.
 
+`Map Bake` is a separate scene-only cache generation mode. It can be enabled before
+or after entering a manually opened map and never starts matching, movement, target
+selection, aiming, firing, rank handling, suicide, cards, or rematching. If the map
+does not already have a compatible maximum-detail cache, it builds the complete
+RAIN graph with a `0.10` cell size, `0.10` maximum vertex error, `2` metre maximum
+segments, and all available CPU workers. Collider discovery and graph generation
+have no fixed timeout in this mode. The finished graph is serialized to the normal
+disk-cache directory; later normal bot modes prefer this maximum-detail cache and
+fall back to the runtime profile only when it is absent. Enabling the mode on a map
+that already has a compatible cache validates and registers that cache instead of
+rebuilding it.
+
 Forced hunt does not select a standoff or interception point. It follows the live
 enemy position directly in open space, falls back to global routing only when
 blocked or crossing levels, and keeps pursuit movement active while ranged fire is
@@ -40,6 +52,9 @@ to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs
 While any bot mode is active, the remaining route is rendered in world space as
 a terrain-snapped red/orange guide line with waypoint markers. The next point is
 yellow and the final destination is green; world geometry occludes the guide.
+The renderer tries compatible built-in shaders first, then reuses a compatible
+shader from a loaded scene material, so stripped legacy shader names do not disable
+the guide or produce per-frame log spam.
 
 `Open Room Test` is a separate direct-combat mode for manually created rooms. It
 never starts matching or runs rank, suicide, reward-card, or rematch behavior. It

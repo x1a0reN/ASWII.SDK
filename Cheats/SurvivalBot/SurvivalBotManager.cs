@@ -21,6 +21,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         GmExit,
         CombatTest,
         RoomTest,
+        MapBake,
         Stopped
     }
 
@@ -116,6 +117,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static bool Enabled { get; private set; }
         public static bool CombatTestEnabled { get; private set; }
         public static bool RoomTestEnabled { get; private set; }
+        public static bool MapBakeEnabled { get; private set; }
         public static SurvivalBotPhase Phase = SurvivalBotPhase.Lobby;
         public static string StatusText = "等待初始化";
         public static int InitialPlayers { get; private set; }
@@ -132,6 +134,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Enabled = false;
             CombatTestEnabled = false;
             RoomTestEnabled = false;
+            MapBakeEnabled = false;
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "等待手动启动";
         }
@@ -139,6 +142,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static void Tick(Level level, Character player, Camera camera)
         {
             AutoBattleInput.BeginFrame();
+
+            // Map baking is a local, read-only scene operation and must not depend on the game proxy.
+            if (MapBakeEnabled)
+            {
+                TickMapBake(level, player);
+                return;
+            }
 
             if (NetworkRouteManager.ProxyRequired && NetworkRouteManager.HasError)
             {
@@ -161,7 +171,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 TickRoomTest(GameApp.Instance, level, player, camera);
                 return;
             }
-
             if (!Enabled)
             {
                 AutoBattleInput.ClearAll();
@@ -199,6 +208,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (Enabled) return;
             if (CombatTestEnabled) DisableCombatTest("survival_loop_enabled");
             if (RoomTestEnabled) DisableRoomTest("survival_loop_enabled");
+            if (MapBakeEnabled) DisableMapBake("survival_loop_enabled");
             Enabled = true;
             _consecutiveGmRounds = 0;
             _pendingGmUid = 0;
@@ -226,6 +236,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (CombatTestEnabled) return;
             if (RoomTestEnabled) DisableRoomTest("combat_test_enabled");
+            if (MapBakeEnabled) DisableMapBake("combat_test_enabled");
             DisableSurvivalLoopForCombatTest();
             CombatTestEnabled = true;
             _attackTarget = null;
@@ -251,6 +262,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (RoomTestEnabled) return;
             if (CombatTestEnabled) DisableCombatTest("room_test_enabled");
+            if (MapBakeEnabled) DisableMapBake("room_test_enabled");
             DisableSurvivalLoopForCombatTest();
             RoomTestEnabled = true;
             _attackTarget = null;
@@ -266,12 +278,35 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("AUTO-BATTLE", "room test enabled reason=" + reason);
         }
 
+        public static void SetMapBakeEnabled(bool enabled, string reason)
+        {
+            if (!enabled)
+            {
+                DisableMapBake(reason);
+                return;
+            }
+
+            if (MapBakeEnabled) return;
+            if (CombatTestEnabled) DisableCombatTest("map_bake_enabled");
+            if (RoomTestEnabled) DisableRoomTest("map_bake_enabled");
+            DisableSurvivalLoopForCombatTest();
+            MapBakeEnabled = true;
+            AutoBattleInput.ClearAll();
+            AutoBattleManager.SetEnabled(false, "map_bake_start");
+            SurvivalCombatAdapter.ResetSurvivalRuntime("map_bake_start");
+            Phase = SurvivalBotPhase.MapBake;
+            StatusText = "地图建图已开启，等待进入地图";
+            FileLogger.Log("AUTO-BATTLE][NAVMESH", "map bake enabled reason=" + reason);
+        }
+
         public static void Stop(string reason)
         {
-            if (!Enabled && !CombatTestEnabled && !RoomTestEnabled && Phase == SurvivalBotPhase.Stopped) return;
+            if (!Enabled && !CombatTestEnabled && !RoomTestEnabled && !MapBakeEnabled &&
+                Phase == SurvivalBotPhase.Stopped) return;
             Enabled = false;
             CombatTestEnabled = false;
             RoomTestEnabled = false;
+            MapBakeEnabled = false;
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;
             AutoBattleInput.ClearAll();
@@ -314,6 +349,20 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "开房测试已关闭";
             FileLogger.Log("AUTO-BATTLE", "room test disabled reason=" + reason);
+        }
+
+        private static void DisableMapBake(string reason)
+        {
+            if (!MapBakeEnabled) return;
+            MapBakeEnabled = false;
+            AutoBattleInput.ClearAll();
+            RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
+            if (snapshot.State == RuntimeRainNavState.WaitingScene ||
+                snapshot.State == RuntimeRainNavState.Building)
+                AutoBattleRoutePlanner.DeactivateNavigation("map_bake_disabled:" + reason);
+            Phase = SurvivalBotPhase.Stopped;
+            StatusText = "地图建图已关闭";
+            FileLogger.Log("AUTO-BATTLE][NAVMESH", "map bake disabled reason=" + reason);
         }
 
         private static void DisableSurvivalLoopForCombatTest()
@@ -584,6 +633,38 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (player.IsDied) return false;
             RefreshEnemies(level, player);
             return Enemies.Count > 0;
+        }
+
+        private static void TickMapBake(Level level, Character player)
+        {
+            Phase = SurvivalBotPhase.MapBake;
+            AutoBattleInput.ClearAll();
+            if (level == null || level.state != Level.State.kReady)
+            {
+                StatusText = "地图建图 | 等待地图加载";
+                return;
+            }
+
+            RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
+            if (snapshot.State == RuntimeRainNavState.Ready)
+            {
+                StatusText = "地图建图 | 已完成并可复用 | " + snapshot.MapName +
+                    " | 节点 " + snapshot.GraphSize + " | 缓存 " + snapshot.CacheStatus;
+                return;
+            }
+            if (snapshot.State == RuntimeRainNavState.Failed)
+            {
+                StatusText = "地图建图 | 生成失败 | " + snapshot.Detail;
+                return;
+            }
+            if (snapshot.State == RuntimeRainNavState.Building)
+            {
+                StatusText = "地图建图 | 极限精度生成中 " +
+                    (snapshot.Progress01 * 100f).ToString("0.0") + "% | 已用 " +
+                    snapshot.ElapsedSeconds.ToString("0") + " 秒 | 不限时";
+                return;
+            }
+            StatusText = "地图建图 | 准备 " + snapshot.MapName + " | " + snapshot.Detail;
         }
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)

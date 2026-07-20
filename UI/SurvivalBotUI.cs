@@ -104,17 +104,18 @@ namespace ASWDEBUG.UI
             DrawPanel(summary, _panelInnerTexture, _borderTexture);
             string phase = PhaseName(SurvivalBotManager.Phase);
             string players = SurvivalBotManager.InitialPlayers + " / " + SurvivalBotManager.RemainingPlayers;
-            string currentRole = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled
-                ? AutoBattleManager.CurrentRole
-                : SurvivalCombatAdapter.CurrentRole;
+            string currentRole = SurvivalBotManager.MapBakeEnabled ? "不接管" :
+                SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled
+                    ? AutoBattleManager.CurrentRole
+                    : SurvivalCombatAdapter.CurrentRole;
             GUI.Label(new Rect(summary.x + 7f, summary.y, summary.width * 0.62f, summary.height),
                 "阶段  " + phase + "  |  职业  " + currentRole, _secondaryLabelStyle);
             GUI.Label(new Rect(summary.x + summary.width * 0.62f, summary.y, summary.width * 0.38f - 7f, summary.height),
                 "初始/存活  " + players, _secondaryLabelStyle);
             y += 29f;
 
-            const float buttonGap = 5f;
-            float modeButtonWidth = (width - buttonGap * 2f) / 3f;
+            const float buttonGap = 4f;
+            float modeButtonWidth = (width - buttonGap * 3f) / 4f;
             Rect runButton = new Rect(x, y, modeButtonWidth, 27f);
             string runText = SurvivalBotManager.Enabled ? "生存循环：开" : "生存循环：关";
             if (GUI.Button(runButton, runText, _buttonCenterStyle))
@@ -143,6 +144,16 @@ namespace ASWDEBUG.UI
             if (SurvivalBotManager.RoomTestEnabled)
                 GUI.DrawTexture(new Rect(roomTestButton.xMax - 5f, roomTestButton.y + 3f, 3f,
                     roomTestButton.height - 6f), _accentTexture);
+
+            Rect mapBakeButton = new Rect(roomTestButton.xMax + buttonGap, y, modeButtonWidth, 27f);
+            string mapBakeText = SurvivalBotManager.MapBakeEnabled ? "地图建图：开" : "地图建图：关";
+            if (GUI.Button(mapBakeButton, mapBakeText, _buttonCenterStyle))
+            {
+                SurvivalBotManager.SetMapBakeEnabled(!SurvivalBotManager.MapBakeEnabled, "ui");
+            }
+            if (SurvivalBotManager.MapBakeEnabled)
+                GUI.DrawTexture(new Rect(mapBakeButton.xMax - 5f, mapBakeButton.y + 3f, 3f,
+                    mapBakeButton.height - 6f), _accentTexture);
             y += 33f;
 
             float statusTop = _window.yMax - 53f;
@@ -208,11 +219,15 @@ namespace ASWDEBUG.UI
                 return;
             }
 
+            string timeLimit = snapshot.TimeoutSeconds <= 0f
+                ? snapshot.ElapsedSeconds.ToString("0.0") + " 秒 / 不限时"
+                : snapshot.ElapsedSeconds.ToString("0.0") + " / " +
+                    snapshot.TimeoutSeconds.ToString("0") + " 秒";
             string buildLine = "构建  碰撞体 " + snapshot.ColliderCount + "  |  节点 " + snapshot.GraphSize +
-                "  |  " + snapshot.ElapsedSeconds.ToString("0.0") + " / " +
-                snapshot.TimeoutSeconds.ToString("0") + " 秒";
+                "  |  " + timeLimit;
             string boundsLine = "参数  范围 " + FormatBounds(snapshot.BoundsSize) + "  |  网格 " +
-                snapshot.CellSize.ToString("0.00") + " 米  |  Worker " + snapshot.WorkerCount;
+                snapshot.CellSize.ToString("0.00") + " 米  |  Worker " + snapshot.WorkerCount +
+                "  |  " + (snapshot.Profile == "max_detail" ? "极限精度" : "运行精度");
             bool directCombatTest = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled;
             string provider = directCombatTest
                 ? AutoBattleManager.LastPathProvider
@@ -545,6 +560,7 @@ namespace ASWDEBUG.UI
             if (phase == SurvivalBotPhase.GmExit) return "GM 退出";
             if (phase == SurvivalBotPhase.CombatTest) return "战斗测试";
             if (phase == SurvivalBotPhase.RoomTest) return "开房测试";
+            if (phase == SurvivalBotPhase.MapBake) return "地图建图";
             return "已停止";
         }
     }

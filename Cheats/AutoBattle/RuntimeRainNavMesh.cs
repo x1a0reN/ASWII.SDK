@@ -24,6 +24,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public string CacheSource;
         public string CacheStatus;
         public string CacheFileName;
+        public string Profile;
         public float Progress01;
         public float ElapsedSeconds;
         public float TimeoutSeconds;
@@ -43,8 +44,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const float ColliderWaitSeconds = 20f;
         private const float BuildTimeoutSeconds = 75f;
         private const float RuntimeCellSize = 0.25f;
-        private const string GeneratorSignature =
+        private const float BakeCellSize = 0.10f;
+        private const string RuntimeGeneratorSignature =
             "v1|autoGrid=1|slope=50|height=1.80|radius=0.45|step=0.85|cell=0.25|vertex=0.22|segment=4";
+        private const string BakeGeneratorSignature =
+            "v2|maxDetail=1|autoGrid=1|slope=50|height=1.80|radius=0.45|step=0.85|cell=0.10|vertex=0.10|segment=2";
 
         private static RuntimeRainNavState _state;
         private static string _mapName = string.Empty;
@@ -72,6 +76,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static int _graphSize;
         private static long _cacheBytes;
         private static Vector3 _boundsSize;
+        private static bool _highDetail;
+        private static int _workerCount;
         private static readonly Dictionary<string, CachedNavMeshEntry> CachedMaps =
             new Dictionary<string, CachedNavMeshEntry>(StringComparer.OrdinalIgnoreCase);
 
@@ -105,6 +111,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
             get { return _detail; }
         }
 
+        internal static bool IsHighDetail
+        {
+            get { return _highDetail; }
+        }
+
+        internal static string CurrentMapName
+        {
+            get { return _mapName; }
+        }
+
         internal static RAIN.Navigation.Graph.RAINNavigationGraph OwnedGraph
         {
             get { return IsReady && _navMesh != null ? _navMesh.Graph : null; }
@@ -123,13 +139,14 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 CacheSource = _cacheSource,
                 CacheStatus = _cacheStatus,
                 CacheFileName = _cacheFileName,
+                Profile = _highDetail ? "max_detail" : "runtime",
                 Progress01 = Mathf.Clamp01(_progress),
                 ElapsedSeconds = elapsed,
-                TimeoutSeconds = BuildTimeoutSeconds,
-                CellSize = RuntimeCellSize,
+                TimeoutSeconds = _highDetail ? 0f : BuildTimeoutSeconds,
+                CellSize = _highDetail ? BakeCellSize : RuntimeCellSize,
                 ColliderCount = _colliderCount,
                 GraphSize = _graphSize,
-                WorkerCount = Math.Max(1, Environment.ProcessorCount / 2),
+                WorkerCount = _workerCount > 0 ? _workerCount : Math.Max(1, Environment.ProcessorCount / 2),
                 CacheCount = CachedMaps.Count,
                 Generation = _generation,
                 CacheBytes = _cacheBytes,
@@ -137,12 +154,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
             };
         }
 
-        internal static void PrepareMap(string mapName, bool runtimeRequired)
+        internal static void PrepareMap(string mapName, bool runtimeRequired, bool highDetail)
         {
             Deactivate("map_change");
             _generation++;
             _mapName = (mapName ?? string.Empty).Trim().ToLowerInvariant();
             _lastMapName = _mapName;
+            _highDetail = highDetail;
+            _workerCount = highDetail ? Math.Max(1, Environment.ProcessorCount) :
+                Math.Max(1, Environment.ProcessorCount / 2);
             _requested = runtimeRequired && !string.IsNullOrEmpty(_mapName);
             _state = _requested ? RuntimeRainNavState.WaitingScene : RuntimeRainNavState.Idle;
             _detail = _requested ? "waiting_scene" : "native_or_empty";
@@ -165,7 +185,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 : "-";
 
             CachedNavMeshEntry cached;
-            if (_requested && TryGetCachedMap(_mapName, out cached))
+            if (_requested && TryGetCachedMap(_mapName, _highDetail, out cached))
             {
                 _activeCache = cached;
                 _host = cached.Host;
@@ -174,7 +194,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 ApplyCacheTelemetry(cached, "memory", "memory_hit");
                 _detail = "cached_waiting_scene nodes=" + cached.GraphSize;
             }
-            else if (_requested && TryLoadDiskMap(_mapName, out cached))
+            else if (_requested && TryLoadPreferredDiskMap(_mapName, _highDetail, out cached))
             {
                 _activeCache = cached;
                 _host = cached.Host;
@@ -186,6 +206,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_prepare generation=" + _generation +
                 " map=" + SafeMap(_mapName) + " requested=" + (_requested ? "1" : "0") +
                 " cached=" + (_reusePending ? "1" : "0") + " source=" + _cacheSource +
+                " profile=" + (_highDetail ? "max_detail" : "runtime") +
                 " cacheStatus=" + SafeOneLine(_cacheStatus, 80));
         }
 
@@ -199,9 +220,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return;
             }
 
-            if (!navigationActive || level == null || player == null || player.transform == null)
+            bool playerRequired = !_highDetail;
+            if (!navigationActive || level == null ||
+                (playerRequired && (player == null || player.transform == null)))
             {
-                _detail = navigationActive ? "waiting_level_player" : "waiting_activation";
+                _detail = navigationActive ? (playerRequired ? "waiting_level_player" : "waiting_level") :
+                    "waiting_activation";
                 return;
             }
             if (level.state != Level.State.kReady)
@@ -239,7 +263,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 _detail = "waiting_terrain_colliders";
                 _nextAttemptAt = now + 0.50f;
-                if (now - _waitStartedAt >= ColliderWaitSeconds)
+                if (!_highDetail && now - _waitStartedAt >= ColliderWaitSeconds)
                     Fail("terrain_colliders_timeout");
                 return;
             }
@@ -319,8 +343,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 size.z = Mathf.Max(8f, size.z + 8f);
 
                 _host = CreateHost(bounds.center, size);
-                _navMesh = CreateNavMesh(_host, terrainMask);
-                _navMesh.StartCreatingContours(-1);
+                _navMesh = CreateNavMesh(_host, terrainMask, _highDetail);
+                _navMesh.StartCreatingContours(_highDetail ? _workerCount : -1);
 
                 _state = RuntimeRainNavState.Building;
                 _buildStartedAt = Time.realtimeSinceStartup;
@@ -335,7 +359,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_build_started generation=" + _generation +
                     " map=" + SafeMap(_mapName) + " colliders=" + colliderCount +
                     " center=" + FormatVector(bounds.center) + " size=" + FormatVector(size) +
-                    " cell=" + _navMesh.CellSize.ToString("0.00") + " workers=auto_half_cpu");
+                    " cell=" + _navMesh.CellSize.ToString("0.00") + " workers=" + _workerCount +
+                    " profile=" + (_highDetail ? "max_detail" : "runtime") +
+                    " timeout=" + (_highDetail ? "unlimited" : BuildTimeoutSeconds.ToString("0")));
             }
             catch (Exception ex)
             {
@@ -354,7 +380,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return host;
         }
 
-        private static RainNavMesh CreateNavMesh(GameObject host, int terrainMask)
+        private static RainNavMesh CreateNavMesh(GameObject host, int terrainMask, bool highDetail)
         {
             RainNavMesh navMesh = new RainNavMesh();
             navMesh.MountPoint = host.transform;
@@ -368,19 +394,28 @@ namespace ASWDEBUG.Cheats.AutoBattle
             navMesh.WalkableHeight = 1.80f;
             navMesh.WalkableRadius = 0.45f;
             navMesh.StepHeight = 0.85f;
-            navMesh.CellSize = RuntimeCellSize;
-            navMesh.MaxVertexError = 0.22f;
-            navMesh.MaxSegmentLength = 4f;
+            navMesh.CellSize = highDetail ? BakeCellSize : RuntimeCellSize;
+            navMesh.MaxVertexError = highDetail ? 0.10f : 0.22f;
+            navMesh.MaxSegmentLength = highDetail ? 2f : 4f;
             return navMesh;
         }
 
-        private static bool TryLoadDiskMap(string mapName, out CachedNavMeshEntry cached)
+        private static bool TryLoadPreferredDiskMap(string mapName, bool requireHighDetail,
+            out CachedNavMeshEntry cached)
+        {
+            if (TryLoadDiskMap(mapName, true, out cached)) return true;
+            if (requireHighDetail) return false;
+            return TryLoadDiskMap(mapName, false, out cached);
+        }
+
+        private static bool TryLoadDiskMap(string mapName, bool highDetail, out CachedNavMeshEntry cached)
         {
             cached = null;
             RuntimeRainNavCacheRecord record;
             string status;
             string rainIdentity = GetRainIdentity();
-            if (!RuntimeRainNavDiskCache.TryLoad(mapName, rainIdentity, GeneratorSignature, out record, out status))
+            string signature = highDetail ? BakeGeneratorSignature : RuntimeGeneratorSignature;
+            if (!RuntimeRainNavDiskCache.TryLoad(mapName, rainIdentity, signature, out record, out status))
             {
                 _cacheStatus = status;
                 FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_miss map=" + SafeMap(mapName) +
@@ -393,7 +428,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             try
             {
                 host = CreateHost(record.BoundsCenter, record.BoundsSize);
-                navMesh = CreateNavMesh(host, TerrainMask);
+                navMesh = CreateNavMesh(host, TerrainMask, highDetail);
                 string capability;
                 if (!ProbeDiskCacheCapabilities(navMesh, out capability))
                 {
@@ -411,11 +446,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     return false;
                 }
 
+                CachedNavMeshEntry previous;
+                if (CachedMaps.TryGetValue(mapName, out previous) && previous != null && previous.NavMesh != navMesh)
+                    ReleaseCacheEntry(previous, "disk_cache_replace");
                 cached = new CachedNavMeshEntry(mapName, host, navMesh, graphSize, _generation,
-                    record.ColliderCount, record.BoundsSize, record.FileBytes);
+                    record.ColliderCount, record.BoundsSize, record.FileBytes, highDetail);
                 CachedMaps[mapName] = cached;
                 FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_hit map=" + SafeMap(mapName) +
                     " nodes=" + graphSize + " bytes=" + record.FileBytes +
+                    " profile=" + (highDetail ? "max_detail" : "runtime") +
                     " file=" + SafeOneLine(record.FilePath, 180));
                 return true;
             }
@@ -471,6 +510,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _colliderCount = cached.ColliderCount;
             _boundsSize = cached.BoundsSize;
             _cacheBytes = cached.CacheBytes;
+            _highDetail = cached.HighDetail;
+            _workerCount = _highDetail ? Math.Max(1, Environment.ProcessorCount) :
+                Math.Max(1, Environment.ProcessorCount / 2);
         }
 
         private static string GetRainIdentity()
@@ -565,13 +607,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool TryGetCachedMap(string mapName, out CachedNavMeshEntry cached)
+        private static bool TryGetCachedMap(string mapName, bool requireHighDetail, out CachedNavMeshEntry cached)
         {
             cached = null;
             CachedNavMeshEntry candidate;
             if (!CachedMaps.TryGetValue(mapName, out candidate) || candidate == null) return false;
             if (candidate.Host != null && candidate.NavMesh != null && candidate.NavMesh.Graph != null &&
-                candidate.NavMesh.Graph.Size > 0)
+                candidate.NavMesh.Graph.Size > 0 && (!requireHighDetail || candidate.HighDetail))
             {
                 cached = candidate;
                 return true;
@@ -594,7 +636,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             try
             {
                 _progress = Mathf.Clamp01(_navMesh.CreatingProgress);
-                if (now - _buildStartedAt >= BuildTimeoutSeconds)
+                if (!_highDetail && now - _buildStartedAt >= BuildTimeoutSeconds)
                 {
                     Fail("build_timeout progress=" + _progress.ToString("0.000"));
                     return;
@@ -610,7 +652,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         _nextLogAt = now + 1f;
                         FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_building generation=" + _generation +
                             " map=" + SafeMap(_mapName) + " progress=" + _progress.ToString("0.000") +
-                            " wait=" + (now - _buildStartedAt).ToString("0.0"));
+                            " wait=" + (now - _buildStartedAt).ToString("0.0") +
+                            " profile=" + (_highDetail ? "max_detail" : "runtime"));
                     }
                     return;
                 }
@@ -639,11 +682,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     ReleaseCacheEntry(oldCache, "cache_replace");
                 }
                 _activeCache = new CachedNavMeshEntry(_mapName, _host, _navMesh, graphSize, _generation,
-                    _colliderCount, _boundsSize, _cacheBytes);
+                    _colliderCount, _boundsSize, _cacheBytes, _highDetail);
                 CachedMaps[_mapName] = _activeCache;
                 FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_ready generation=" + _generation +
                     " map=" + SafeMap(_mapName) + " nodes=" + graphSize +
                     " build=" + _lastBuildSeconds.ToString("0.0") +
+                    " profile=" + (_highDetail ? "max_detail" : "runtime") +
                     " cached=1 disk=" + SafeOneLine(_cacheStatus, 80) +
                     " cacheCount=" + CachedMaps.Count);
             }
@@ -671,7 +715,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 string path;
                 long fileBytes;
                 string status;
-                bool saved = RuntimeRainNavDiskCache.TrySave(_mapName, GetRainIdentity(), GeneratorSignature,
+                string signature = _highDetail ? BakeGeneratorSignature : RuntimeGeneratorSignature;
+                bool saved = RuntimeRainNavDiskCache.TrySave(_mapName, GetRainIdentity(), signature,
                     _host.transform.position, _boundsSize, _colliderCount, graphSize, payload,
                     out fileBytes, out path, out status);
                 _cacheStatus = status;
@@ -716,6 +761,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     if (colliderCount == 0) bounds = colliderBounds;
                     else bounds.Encapsulate(colliderBounds);
                     colliderCount++;
+                    if (_highDetail)
+                    {
+                        FileLogger.Log("AUTO-BATTLE][NAVMESH", "bake_collider index=" + colliderCount +
+                            " type=" + collider.GetType().Name +
+                            " name=" + SafeOneLine(collider.gameObject.name, 72) +
+                            " root=" + (root == null ? "-" : SafeOneLine(root.name, 72)) +
+                            " layer=" + collider.gameObject.layer +
+                            " center=" + FormatVector(colliderBounds.center) +
+                            " size=" + FormatVector(colliderBounds.size));
+                    }
                 }
                 return colliderCount > 0 && bounds.size.x > 1f && bounds.size.z > 1f;
             }
@@ -829,9 +884,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             public readonly int ColliderCount;
             public readonly Vector3 BoundsSize;
             public readonly long CacheBytes;
+            public readonly bool HighDetail;
 
             public CachedNavMeshEntry(string mapName, GameObject host, RainNavMesh navMesh,
-                int graphSize, int generation, int colliderCount, Vector3 boundsSize, long cacheBytes)
+                int graphSize, int generation, int colliderCount, Vector3 boundsSize, long cacheBytes,
+                bool highDetail)
             {
                 MapName = mapName;
                 Host = host;
@@ -841,6 +898,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 ColliderCount = colliderCount;
                 BoundsSize = boundsSize;
                 CacheBytes = cacheBytes;
+                HighDetail = highDetail;
             }
         }
 

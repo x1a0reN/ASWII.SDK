@@ -1,4 +1,5 @@
 using ASWDEBUG.Logger;
+using ASWDEBUG.Cheats.SurvivalBot;
 using RAIN.Navigation;
 using RAIN.Navigation.Graph;
 using RAIN.Navigation.Pathfinding;
@@ -126,11 +127,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             string normalized = (mapName ?? string.Empty).Trim().ToLowerInvariant();
             bool original = loadNavmesh;
             bool declared = ManifestDeclaresNavMesh(normalized);
+            bool bakeMode = SurvivalBotManager.MapBakeEnabled;
 
             if (declared && !loadNavmesh)
                 loadNavmesh = true;
 
-            RuntimeRainNavMesh.PrepareMap(normalized, !declared);
+            RuntimeRainNavMesh.PrepareMap(normalized, bakeMode || !declared, bakeMode);
 
             _navMapName = normalized;
             _navResourceDeclared = declared;
@@ -145,7 +147,28 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 " original=" + (original ? "1" : "0") +
                 " native=" + (loadNavmesh ? "1" : "0") +
                 " runtime=" + (RuntimeRainNavMesh.Requested ? "1" : "0") +
+                " bake=" + (bakeMode ? "1" : "0") +
                 " forced=" + (!original && loadNavmesh ? "1" : "0"));
+        }
+
+        internal static void EnsureMapBake(Level level)
+        {
+            if (level == null || string.IsNullOrEmpty(level.map_name)) return;
+            string normalized = level.map_name.Trim().ToLowerInvariant();
+            if (RuntimeRainNavMesh.Requested && RuntimeRainNavMesh.IsHighDetail &&
+                string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            RuntimeRainNavMesh.PrepareMap(normalized, true, true);
+            _navMapName = normalized;
+            _navResourceDeclared = ManifestDeclaresNavMesh(normalized);
+            _navLoadRequested = true;
+            _navLoadStartedAt = Time.realtimeSinceStartup;
+            _nextNavProbeTime = 0f;
+            _physicsSearchJob = null;
+            _rainSearchJob = null;
+            SetNavigationState(AutoBattleNavResourceState.Loading,
+                "map=" + SafeMap(normalized) + " provider=runtime profile=max_detail source=map_bake");
         }
 
         private static bool ManifestDeclaresNavMesh(string mapName)
