@@ -50,7 +50,13 @@ names are discovered from the installed `FileInfo.xml`. The action uses the nati
 creating or joining a server match. Native navigation loading stays disabled so the
 maximum-detail runtime graph is built. AFK auto-leave is disabled for this private
 scene, and local `SyncPlayerData` packets are suppressed until the scene exits, so
-the scene can remain open until disk serialization completes.
+the scene can remain open until disk serialization completes. The selector displays
+the localized `LevelInfo.show_name` supplied by the game's own channel level table;
+internal `levelXX` resource keys are not shown in the UI. Immediately before
+`Level.LoadMap`, direct baking restores the selected scene key if the level script
+redirected it to a shared scene. After a non-empty disk cache is confirmed, the
+loader automatically changes back to `Lobby`, allowing the
+native `FightState.OnExit -> Level.OnExit` path to destroy the temporary map scene.
 
 Forced hunt does not select a standoff or interception point. It follows the live
 enemy position directly in open space, falls back to global routing only when

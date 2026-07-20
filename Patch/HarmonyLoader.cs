@@ -248,8 +248,9 @@ namespace ASWDEBUG.Patch
             return !AutoBattleInput.TryAnyKeyDown(ref __result);
         }
 
-        private static void LevelLoadMapPrefix(string name, ref bool load_navmesh)
+        private static void LevelLoadMapPrefix(ref string name, ref bool load_navmesh)
         {
+            MapBakeSceneLoader.OverrideDirectSceneName(ref name);
             AutoBattleRoutePlanner.PrepareNavigationLoad(name, ref load_navmesh);
         }
 

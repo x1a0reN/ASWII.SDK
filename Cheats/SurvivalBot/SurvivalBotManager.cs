@@ -659,8 +659,38 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
             if (snapshot.State == RuntimeRainNavState.Ready)
             {
-                StatusText = "地图建图 | 已完成并可复用 | " + snapshot.MapName +
+                if (MapBakeSceneLoader.DirectSceneActive &&
+                    (level == null || !MapBakeSceneLoader.IsExpectedDirectScene(level.map_name) ||
+                     !MapBakeSceneLoader.IsExpectedDirectScene(snapshot.MapName)))
+                {
+                    StatusText = "地图建图 | 正在校验目标场景，未接受其他场景的缓存";
+                    return;
+                }
+
+                string displayName = MapBakeSceneLoader.DisplayNameFor(snapshot.MapName);
+                StatusText = "地图建图 | 已完成并可复用 | " + displayName +
                     " | 节点 " + snapshot.GraphSize + " | 缓存 " + snapshot.CacheStatus;
+                if (MapBakeSceneLoader.DirectSceneActive)
+                {
+                    if (snapshot.CacheBytes <= 0L)
+                    {
+                        StatusText = "地图建图 | 图已生成但磁盘缓存未保存，不自动退出 | " +
+                            snapshot.CacheStatus;
+                        return;
+                    }
+
+                    string returnDetail;
+                    if (MapBakeSceneLoader.TryReturnToLobby(out returnDetail))
+                    {
+                        MapBakeEnabled = false;
+                        Phase = SurvivalBotPhase.Stopped;
+                        StatusText = "地图建图 | " + returnDetail;
+                    }
+                    else if (!string.IsNullOrEmpty(returnDetail))
+                    {
+                        StatusText = "地图建图 | " + returnDetail;
+                    }
+                }
                 return;
             }
             if (snapshot.State == RuntimeRainNavState.Failed)
@@ -685,7 +715,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 StatusText = "地图建图 | 等待地图加载";
                 return;
             }
-            StatusText = "地图建图 | 准备 " + snapshot.MapName + " | " + snapshot.Detail;
+            StatusText = "地图建图 | 准备 " + MapBakeSceneLoader.DisplayNameFor(snapshot.MapName) +
+                " | " + snapshot.Detail;
         }
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)

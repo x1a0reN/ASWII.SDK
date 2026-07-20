@@ -16,6 +16,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             "FilePath=\"Prefab/Scene/([^\"]+)\\.scene\"", RegexOptions.IgnoreCase);
 
         private static string[] _availableMaps;
+        private static string[] _displayNames;
         private static string _selectedMap;
         private static string _pendingMap = string.Empty;
         private static string _activeMap = string.Empty;
@@ -23,6 +24,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _directSceneActive;
         private static bool _autoLeaveCaptured;
         private static int _savedAutoLeaveTime;
+        private static float _nextLocalizationRefreshAt;
+        private static bool _returnRequested;
 
         internal static string[] AvailableMaps
         {
@@ -33,6 +36,16 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
         }
 
+        internal static string[] AvailableMapDisplayNames
+        {
+            get
+            {
+                EnsureMapsLoaded();
+                RefreshLocalizedNames();
+                return _displayNames;
+            }
+        }
+
         internal static string SelectedMap
         {
             get
@@ -40,6 +53,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 EnsureMapsLoaded();
                 return _selectedMap;
             }
+        }
+
+        internal static string SelectedMapDisplayName
+        {
+            get { return DisplayNameFor(SelectedMap); }
         }
 
         internal static bool IsTransitioning
@@ -102,7 +120,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             _pendingMap = _selectedMap;
             _transitioning = true;
-            StatusText = "准备直接加载 " + _selectedMap;
+            _returnRequested = false;
+            StatusText = "准备直接加载 " + SelectedMapDisplayName;
             detail = StatusText;
             FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_requested map=" + _selectedMap);
             return true;
@@ -143,7 +162,68 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _directSceneActive = false;
             _transitioning = false;
             _activeMap = string.Empty;
+            _returnRequested = false;
             RestoreAutoLeave();
+        }
+
+        internal static bool TryReturnToLobby(out string detail)
+        {
+            detail = string.Empty;
+            if (!_directSceneActive || _returnRequested) return false;
+            try
+            {
+                GameStateManager manager = ASSingleton<GameStateManager>.Instance;
+                if (manager == null)
+                {
+                    detail = "返回大厅失败：游戏状态不存在";
+                    return false;
+                }
+
+                _returnRequested = true;
+                detail = "建图缓存已保存，正在销毁场景并返回大厅";
+                StatusText = detail;
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "auto_return_requested map=" + Safe(_activeMap));
+                manager.ChangeState(GameStateType.Lobby);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _returnRequested = false;
+                detail = "返回大厅失败：" + ex.GetType().Name;
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "auto_return_failed=" + ex.GetType().Name +
+                    ":" + Safe(ex.Message));
+                return false;
+            }
+        }
+
+        internal static void OverrideDirectSceneName(ref string mapName)
+        {
+            if (!_directSceneActive || string.IsNullOrEmpty(_activeMap) ||
+                string.Equals(mapName, _activeMap, StringComparison.OrdinalIgnoreCase)) return;
+
+            string configuredMap = mapName;
+            mapName = _activeMap;
+            FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_scene_override configured=" +
+                Safe(configuredMap) + " selected=" + _activeMap);
+        }
+
+        internal static bool IsExpectedDirectScene(string mapName)
+        {
+            return _directSceneActive && !string.IsNullOrEmpty(_activeMap) &&
+                string.Equals(mapName, _activeMap, StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static string DisplayNameFor(string mapName)
+        {
+            EnsureMapsLoaded();
+            RefreshLocalizedNames();
+            if (string.IsNullOrEmpty(mapName)) return "-";
+            for (int i = 0; i < _availableMaps.Length; i++)
+            {
+                if (string.Equals(_availableMaps[i], mapName, StringComparison.OrdinalIgnoreCase))
+                    return _displayNames[i];
+            }
+            return "地图资源（编号 " + ParseMapId(mapName ?? string.Empty) + "）";
         }
 
         private static void Launch(string mapName)
@@ -176,7 +256,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 loading.player_id = player == null ? 0u : player.uid;
 
                 manager.ChangeState(GameStateType.GameLoading);
-                StatusText = "正在直接加载 " + mapName;
+                StatusText = "正在直接加载 " + DisplayNameFor(mapName);
                 FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_started map=" + mapName +
                     " mapId=" + ParseMapId(mapName) + " player=" + loading.player_id +
                     " autoLeave=0 nativeNav=0");
@@ -218,11 +298,54 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (maps.Count == 0) maps.Add("level33");
             maps.Sort(StringComparer.OrdinalIgnoreCase);
             _availableMaps = maps.ToArray();
+            _displayNames = new string[_availableMaps.Length];
+            for (int i = 0; i < _availableMaps.Length; i++)
+                _displayNames[i] = "地图资源（编号 " + ParseMapId(_availableMaps[i]) + "）";
             string saved = PlayerPrefs.GetString(SelectedMapKey, "level33").Trim().ToLowerInvariant();
             _selectedMap = maps.Contains(saved) ? saved : (maps.Contains("level33") ? "level33" : maps[0]);
-            StatusText = "目标地图 " + _selectedMap;
+            RefreshLocalizedNames(true);
+            StatusText = "目标地图 " + DisplayNameFor(_selectedMap);
             FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "map_list_ready count=" + maps.Count +
                 " selected=" + _selectedMap);
+        }
+
+        private static void RefreshLocalizedNames()
+        {
+            RefreshLocalizedNames(false);
+        }
+
+        private static void RefreshLocalizedNames(bool force)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (!force && now < _nextLocalizationRefreshAt) return;
+            _nextLocalizationRefreshAt = now + 1f;
+
+            LobbyConnection lobby = GameApp.Instance == null ? null : GameApp.Instance.lobby_connection;
+            if (lobby == null || lobby.level_list == null || lobby.level_list.Count == 0) return;
+            for (int i = 0; i < lobby.level_list.Count; i++)
+            {
+                LevelInfo info = lobby.level_list[i];
+                if (info == null || string.IsNullOrEmpty(info.name) || string.IsNullOrEmpty(info.show_name)) continue;
+                string key = info.name.Trim().ToLowerInvariant();
+                string localized = info.show_name.valueByThisKey();
+                if (string.IsNullOrEmpty(localized) || !ContainsChinese(localized)) continue;
+                for (int j = 0; j < _availableMaps.Length; j++)
+                {
+                    if (!string.Equals(_availableMaps[j], key, StringComparison.OrdinalIgnoreCase)) continue;
+                    _displayNames[j] = localized;
+                    break;
+                }
+            }
+        }
+
+        private static bool ContainsChinese(string value)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c >= '\u3400' && c <= '\u9fff') return true;
+            }
+            return false;
         }
 
         private static void CaptureAndDisableAutoLeave()

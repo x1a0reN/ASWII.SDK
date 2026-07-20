@@ -203,7 +203,8 @@ namespace ASWDEBUG.UI
             float textWidth = panel.width - 14f;
             string header = "导航  " + NavigationStageName(snapshot) + "  " +
                 (snapshot.Progress01 * 100f).ToString("0.0") + "%  |  " +
-                (string.IsNullOrEmpty(snapshot.MapName) ? "-" : snapshot.MapName) + "  #" + snapshot.Generation;
+                (string.IsNullOrEmpty(snapshot.MapName) ? "-" :
+                    MapBakeSceneLoader.DisplayNameFor(snapshot.MapName)) + "  #" + snapshot.Generation;
             GUI.Label(new Rect(textX, panel.y + 1f, textWidth, 18f),
                 ClipToWidth(header, _secondaryLabelStyle, textWidth), _secondaryLabelStyle);
 
@@ -214,7 +215,8 @@ namespace ASWDEBUG.UI
                 GUI.DrawTexture(new Rect(progressTrack.x, progressTrack.y, fillWidth, progressTrack.height), _accentTexture);
 
             string cacheLine = "缓存  " + CacheStateName(snapshot) + "  |  " +
-                FormatBytes(snapshot.CacheBytes) + "  |  " + snapshot.CacheFileName +
+                FormatBytes(snapshot.CacheBytes) + "  |  " +
+                MapBakeSceneLoader.DisplayNameFor(snapshot.MapName) +
                 "  |  内存 " + snapshot.CacheCount;
             if (compact)
             {
@@ -287,7 +289,7 @@ namespace ASWDEBUG.UI
 
         private static void DrawMapBakeLaunchRow(ref float y, float x, float width)
         {
-            string[] maps = MapBakeSceneLoader.AvailableMaps;
+            string[] maps = MapBakeSceneLoader.AvailableMapDisplayNames;
             int selected = MapBakeSceneLoader.SelectedMapIndex();
             Rect row = new Rect(x, y, width, 27f);
             GUI.Label(new Rect(row.x + 4f, row.y, 58f, row.height), "建图地图", _labelStyle);
