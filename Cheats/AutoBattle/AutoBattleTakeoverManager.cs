@@ -607,6 +607,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             LastTarget = SafeTargetName(patrolTarget);
             Vector3 destination = patrolTarget.transform.position;
+            if (!AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(player.transform.position, 3.5f))
+            {
+                AutoBattleInput.ClearMovement();
+                ClearCurrentPath();
+                _hasDestination = false;
+                _nextRepath = 0f;
+                State = AutoBattleState.StuckRecovery;
+                LastPath = "rain_off_graph_wait";
+                LastPathProvider = "rain_navmesh_off_graph";
+                LastAction = "等待 RAIN 安全点回滚";
+                LastStatus = "玩家已离开 RAIN 图，停止切换目标并等待回滚";
+                LogMaybe(player, null, "rain_off_graph_wait");
+                return;
+            }
             float horizontal = Mathf.Sqrt(XZDistanceSq(player.transform.position, destination));
             float vertical = Mathf.Abs(player.transform.position.y - destination.y);
             if (horizontal <= 1.85f && vertical <= 2.4f)
@@ -3101,6 +3115,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _stuckCount++;
                 _stuckTime = 0f;
                 _nextStuckRecoveryTime = Time.time + 0.45f;
+                bool rainRecovery = !string.IsNullOrEmpty(LastPathProvider) &&
+                                    LastPathProvider.StartsWith("rain_navmesh", StringComparison.Ordinal);
+                Vector3 routeForward = player.transform.forward;
+                if (Path.Count > 0 && _pathIndex >= 0 && _pathIndex < Path.Count)
+                    routeForward = Path[_pathIndex] - player.transform.position;
+                routeForward.y = 0f;
                 if (seekNavigation && sense != null && !sense.StrictFireLineOfSight)
                     MarkCurrentSearchPointFailed(player, sense, "no_progress");
                 ClearCurrentPath();
@@ -3114,11 +3134,25 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (side.sqrMagnitude < 0.01f) side = Vector3.right;
                 forward.Normalize();
                 side.Normalize();
-                if (SafeIsOnGround(player) && AutoBattleRoutePlanner.ShouldJumpForwardObstacle(player.transform.position, forward, SafeRoot(player)))
+                if (!rainRecovery && SafeIsOnGround(player) &&
+                    AutoBattleRoutePlanner.ShouldJumpForwardObstacle(player.transform.position, forward, SafeRoot(player)))
                 {
                     AutoBattleInput.PressAction(ActionType.kActionJump, 0.12f);
                     AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
                     LastPath += " jump_obstacle";
+                }
+                Vector3 rainClearanceDirection;
+                string rainClearanceDetail;
+                if (rainRecovery && AutoBattleRoutePlanner.TryFindRainClearanceDirection(
+                    player.transform.position,
+                    routeForward.sqrMagnitude > 0.01f ? routeForward : forward,
+                    SafeRoot(player), out rainClearanceDirection, out rainClearanceDetail))
+                {
+                    LastPath += " rain_clearance";
+                    LastPathDetail = rainClearanceDetail + " dest=" + FormatVec(dest);
+                    FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=rain_navmesh recovery=corner_clearance " +
+                        rainClearanceDetail + " pos=" + FormatVec(player.transform.position));
+                    return rainClearanceDirection;
                 }
                 Vector3 escape = _stuckCount % 3 == 0
                     ? -forward

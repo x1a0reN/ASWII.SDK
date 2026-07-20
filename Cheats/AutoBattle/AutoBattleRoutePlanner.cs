@@ -56,6 +56,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const float GroundRayDown = 10.0f;
         private const float MaxStepHeight = 1.25f;
         private const float NavLoadTimeout = 8.0f;
+        private const bool RainOnlyRoutingEnabled = true;
+        private const float MaxWalkableRampGrade = 0.92f;
+        private const float RainCornerClearanceRadius = 0.62f;
 
         private static readonly int[] Dx = { 1, -1, 0, 0, 1, 1, -1, -1 };
         private static readonly int[] Dz = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -90,6 +93,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
         internal static bool IsGameNavigationReady
         {
             get { return _navState == AutoBattleNavResourceState.Ready; }
+        }
+
+        internal static bool RainOnlyRouting
+        {
+            get { return RainOnlyRoutingEnabled; }
         }
 
         internal static bool IsPointOnOwnedRainGraph(Vector3 point, float tolerance)
@@ -240,6 +248,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             AutoBattleRouteResult route;
             List<Vector3> points;
             if (capabilities == null) capabilities = new AutoBattleRouteCapabilities();
+            if (RainOnlyRoutingEnabled) capabilities.RequireRainPath = true;
             const string astarDetail = "disabled";
             string rainDetail = IsGameNavigationReady ? "ready" : RuntimeRainNavMesh.Detail;
             const string unityDetail = "disabled";
@@ -261,6 +270,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 bool rainPartial;
                 if (TryBuildRainPath(from, to, out points, out rainDetail, out rainPending, out rainPartial))
                 {
+                    string optimizeDetail;
+                    points = OptimizeRainPath(from, points, ignoreRoot, out optimizeDetail);
+                    rainDetail += " " + optimizeDetail;
                     string validationDetail = "not_checked";
                     bool physicsValidated = !rainPartial && ValidateRainPath(from, points, ignoreRoot, out validationDetail);
                     bool trustedRuntimeGraph = !rainPartial &&
@@ -322,18 +334,282 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 Vector3 point = route.Corners[i];
                 float horizontal = XZDistance(previous, point);
-                bool walkable = HasWalkSegment(previous, point, ignoreRoot) &&
-                                HasGroundSupportSegment(previous, point, ignoreRoot);
-                bool unsupported = horizontal > 0.65f && !HasGroundSupportSegment(previous, point, ignoreRoot);
+                bool walkable = CanTraverseWalkableSurface(previous, point, ignoreRoot);
+                float rise = point.y - previous.y;
                 bool jump = capabilities.AllowJump &&
-                            !walkable &&
-                            (point.y - previous.y > 0.62f ||
-                             (unsupported && horizontal <= 4.2f && point.y - previous.y > -3.2f));
+                             !walkable &&
+                             rise > 0.72f &&
+                             horizontal <= 4.2f &&
+                             TryJumpSegment(previous, point, capabilities, ignoreRoot);
                 if (i < route.JumpFlags.Count) route.JumpFlags[i] = jump;
                 if (jump) jumps++;
                 previous = point;
             }
             if (jumps > 0) route.Detail += " inferredJumps=" + jumps;
+        }
+
+        private static List<Vector3> OptimizeRainPath(Vector3 from, List<Vector3> raw,
+            Transform ignoreRoot, out string detail)
+        {
+            Stopwatch timer = Stopwatch.StartNew();
+            int rawCount = raw == null ? 0 : raw.Count;
+            List<Vector3> clean = new List<Vector3>(rawCount);
+            if (raw != null)
+            {
+                for (int i = 0; i < raw.Count; i++)
+                {
+                    Vector3 point = raw[i];
+                    if (!IsFinite(point)) continue;
+                    if (clean.Count > 0 && XZDistance(clean[clean.Count - 1], point) < 0.18f &&
+                        Mathf.Abs(clean[clean.Count - 1].y - point.y) < 0.28f)
+                        continue;
+                    clean.Add(point);
+                }
+            }
+
+            List<Vector3> simplified = new List<Vector3>(clean.Count);
+            Vector3 anchor = from;
+            int cursor = 0;
+            while (cursor < clean.Count)
+            {
+                int selected = cursor;
+                int furthest = Mathf.Min(clean.Count - 1, cursor + 14);
+                for (int candidate = furthest; candidate > cursor; candidate--)
+                {
+                    if (!CanTraverseWalkableSurface(anchor, clean[candidate], ignoreRoot)) continue;
+                    selected = candidate;
+                    break;
+                }
+                simplified.Add(clean[selected]);
+                anchor = clean[selected];
+                cursor = selected + 1;
+            }
+
+            int adjustedCorners = 0;
+            for (int i = 1; i + 1 < simplified.Count; i++)
+            {
+                Vector3 incoming = simplified[i] - simplified[i - 1];
+                Vector3 outgoing = simplified[i + 1] - simplified[i];
+                incoming.y = 0f;
+                outgoing.y = 0f;
+                if (incoming.sqrMagnitude < 0.36f || outgoing.sqrMagnitude < 0.36f) continue;
+                incoming.Normalize();
+                outgoing.Normalize();
+                if (Vector3.Dot(incoming, outgoing) > 0.86f) continue;
+
+                Vector3 expanded;
+                if (TryExpandRainCorner(simplified[i - 1], simplified[i], simplified[i + 1],
+                    ignoreRoot, out expanded))
+                {
+                    simplified[i] = expanded;
+                    adjustedCorners++;
+                }
+            }
+
+            timer.Stop();
+            detail = "opt=rain raw=" + rawCount + " clean=" + clean.Count +
+                     " smooth=" + simplified.Count + " corners=" + adjustedCorners +
+                     " optMs=" + timer.ElapsedMilliseconds;
+            return simplified;
+        }
+
+        private static bool TryExpandRainCorner(Vector3 previous, Vector3 corner, Vector3 next,
+            Transform ignoreRoot, out Vector3 expanded)
+        {
+            expanded = corner;
+            float baselineClearance = MeasureWallClearance(corner, ignoreRoot);
+            float bestScore = baselineClearance * 3f;
+            bool found = false;
+            const int directions = 12;
+            for (int ring = 0; ring < 2; ring++)
+            {
+                float radius = RainCornerClearanceRadius + ring * 0.28f;
+                for (int i = 0; i < directions; i++)
+                {
+                    float angle = i * (360f / directions) * Mathf.Deg2Rad;
+                    Vector3 raw = corner + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+                    Vector3 candidate;
+                    if (!TrySnapToGroundNear(raw, corner.y, 1.25f, out candidate, false)) continue;
+                    if (!IsPointOnOwnedRainGraph(candidate, 1.0f)) continue;
+                    if (!HasStandingSpace(candidate, ignoreRoot)) continue;
+                    if (!CanTraverseWalkableSurface(previous, candidate, ignoreRoot) ||
+                        !CanTraverseWalkableSurface(candidate, next, ignoreRoot))
+                        continue;
+
+                    float clearance = MeasureWallClearance(candidate, ignoreRoot);
+                    float detour = XZDistance(previous, candidate) + XZDistance(candidate, next) -
+                                   XZDistance(previous, corner) - XZDistance(corner, next);
+                    float score = clearance * 3f - radius * 0.35f - Mathf.Max(0f, detour) * 0.18f;
+                    if (score <= bestScore + 0.12f) continue;
+                    bestScore = score;
+                    expanded = candidate;
+                    found = true;
+                }
+            }
+            return found;
+        }
+
+        public static bool CanTraverseWalkableSurface(Vector3 from, Vector3 to, Transform ignoreRoot)
+        {
+            if (HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot))
+                return true;
+            return IsContinuousWalkableRamp(from, to, ignoreRoot);
+        }
+
+        public static bool TryFindRainClearanceDirection(Vector3 from, Vector3 desiredDirection,
+            Transform ignoreRoot, out Vector3 direction, out string detail)
+        {
+            direction = Vector3.zero;
+            detail = "rain_clearance=none";
+            desiredDirection.y = 0f;
+            if (desiredDirection.sqrMagnitude < 0.01f) return false;
+            desiredDirection.Normalize();
+
+            float[] angles = { 48f, -48f, 72f, -72f, 96f, -96f, 132f, -132f, 180f };
+            float bestScore = float.MinValue;
+            float bestAngle = 0f;
+            for (int i = 0; i < angles.Length; i++)
+            {
+                Vector3 candidateDirection = Quaternion.Euler(0f, angles[i], 0f) * desiredDirection;
+                Vector3 raw = from + candidateDirection * 1.65f;
+                Vector3 grounded;
+                if (!TrySnapToGroundNear(raw, from.y, 1.35f, out grounded, false)) continue;
+                if (!IsPointOnOwnedRainGraph(grounded, 1.0f)) continue;
+                if (!CanTraverseWalkableSurface(from, grounded, ignoreRoot)) continue;
+
+                Vector3 move = grounded - from;
+                move.y = 0f;
+                if (move.sqrMagnitude < 0.16f) continue;
+                move.Normalize();
+                float score = Vector3.Dot(move, desiredDirection) * 1.4f +
+                              MeasureWallClearance(grounded, ignoreRoot) * 0.8f;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                bestAngle = angles[i];
+                direction = move;
+            }
+
+            if (direction.sqrMagnitude < 0.01f) return false;
+            detail = "rain_clearance=ok angle=" + bestAngle.ToString("0") +
+                     " score=" + bestScore.ToString("0.00");
+            return true;
+        }
+
+        private static bool IsContinuousWalkableRamp(Vector3 from, Vector3 to, Transform ignoreRoot)
+        {
+            float horizontal = XZDistance(from, to);
+            if (horizontal < 0.18f || horizontal > 14f) return false;
+            float grade = Mathf.Abs(to.y - from.y) / horizontal;
+            if (grade > MaxWalkableRampGrade) return false;
+
+            int samples = Mathf.Clamp(Mathf.CeilToInt(horizontal / 0.42f), 2, 40);
+            Vector3 previousGround = Vector3.zero;
+            bool hasPrevious = false;
+            for (int i = 0; i <= samples; i++)
+            {
+                float t = (float)i / samples;
+                Vector3 expected = Vector3.Lerp(from, to, t);
+                Vector3 ground;
+                Vector3 normal;
+                if (!TryFindRampGround(expected, ignoreRoot, out ground, out normal)) return false;
+                if (normal.y < 0.52f) return false;
+                if (i > 0 && i < samples && i % 3 == 0 && !HasStandingSpace(ground, ignoreRoot))
+                    return false;
+                if (hasPrevious)
+                {
+                    float run = XZDistance(previousGround, ground);
+                    if (run < 0.08f || Mathf.Abs(ground.y - previousGround.y) > run * 1.08f + 0.20f)
+                        return false;
+                    if (HasWallBetweenGroundPoints(previousGround, ground, ignoreRoot)) return false;
+                }
+                previousGround = ground;
+                hasPrevious = true;
+            }
+            return true;
+        }
+
+        private static bool TryFindRampGround(Vector3 expected, Transform ignoreRoot,
+            out Vector3 ground, out Vector3 normal)
+        {
+            ground = expected;
+            normal = Vector3.zero;
+            try
+            {
+                RaycastHit[] hits = Physics.RaycastAll(expected + Vector3.up * 1.25f,
+                    Vector3.down, 2.5f, GroundMask);
+                float bestDelta = 0.9f;
+                bool found = false;
+                for (int i = 0; hits != null && i < hits.Length; i++)
+                {
+                    RaycastHit hit = hits[i];
+                    if (hit.collider == null || hit.collider.isTrigger ||
+                        IsIgnored(hit.collider.transform, ignoreRoot) || hit.normal.y < 0.35f)
+                        continue;
+                    float delta = Mathf.Abs(hit.point.y - expected.y);
+                    if (delta > bestDelta) continue;
+                    bestDelta = delta;
+                    ground = hit.point;
+                    normal = hit.normal;
+                    found = true;
+                }
+                return found;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasWallBetweenGroundPoints(Vector3 from, Vector3 to, Transform ignoreRoot)
+        {
+            Vector3 segment = to - from;
+            float distance = segment.magnitude;
+            if (distance < 0.08f) return false;
+            Vector3 direction = segment / distance;
+            float[] heights = { 0.42f, 1.05f };
+            for (int h = 0; h < heights.Length; h++)
+            {
+                RaycastHit[] hits = Physics.RaycastAll(from + Vector3.up * heights[h],
+                    direction, distance, BlockMask);
+                for (int i = 0; hits != null && i < hits.Length; i++)
+                {
+                    RaycastHit hit = hits[i];
+                    if (hit.collider == null || hit.collider.isTrigger ||
+                        IsIgnored(hit.collider.transform, ignoreRoot))
+                        continue;
+                    if (hit.normal.y < 0.48f) return true;
+                }
+            }
+            return false;
+        }
+
+        private static float MeasureWallClearance(Vector3 point, Transform ignoreRoot)
+        {
+            const float maxDistance = 1.35f;
+            float clearance = maxDistance;
+            try
+            {
+                for (int i = 0; i < 12; i++)
+                {
+                    float angle = i * 30f * Mathf.Deg2Rad;
+                    Vector3 direction = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
+                    RaycastHit[] hits = Physics.RaycastAll(point + Vector3.up * 0.92f,
+                        direction, maxDistance, BlockMask);
+                    for (int h = 0; hits != null && h < hits.Length; h++)
+                    {
+                        RaycastHit hit = hits[h];
+                        if (hit.collider == null || hit.collider.isTrigger ||
+                            IsIgnored(hit.collider.transform, ignoreRoot) || hit.normal.y >= 0.48f)
+                            continue;
+                        clearance = Mathf.Min(clearance, hit.distance);
+                    }
+                }
+            }
+            catch
+            {
+                return 0f;
+            }
+            return clearance;
         }
 
         private static bool HasDeepSameLevelDetour(List<Vector3> points, Vector3 from, Vector3 to, out float dropDepth)
@@ -385,12 +661,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (dir.sqrMagnitude < 0.01f) return false;
             dir.Normalize();
             Vector3 to = from + dir * 1.05f;
-            return !HasWalkSegment(from, to, ignoreRoot) || !HasGroundSupportSegment(from, to, ignoreRoot);
+            return !CanTraverseWalkableSurface(from, to, ignoreRoot);
         }
 
         public static bool CanFollowSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
         {
-            return HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot);
+            return CanTraverseWalkableSurface(from, to, ignoreRoot);
         }
 
         public static bool ShouldJumpForwardObstacle(Vector3 from, Vector3 dir, Transform ignoreRoot)

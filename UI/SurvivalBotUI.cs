@@ -262,7 +262,7 @@ namespace ASWDEBUG.UI
             string path = directCombatTest
                 ? AutoBattleManager.LastPath
                 : SurvivalCombatAdapter.LastPath;
-            string pathLine = "路径  " + provider + "  |  导航点 " +
+            string pathLine = "路径  RAIN 专用 · " + provider + "  |  导航点 " +
                 NavigationPathVisualizer.VisiblePointCount + "  |  " + intent + "  |  " + path;
             string detailLine = SurvivalBotManager.Level33TestEnabled
                 ? "测试  Bot " + LocalNavigationCombatTest.AliveBotCount + "/" +
