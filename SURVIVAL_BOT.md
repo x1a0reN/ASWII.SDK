@@ -37,9 +37,15 @@ Press `Delete` to show or hide the project-style configuration panel. Its naviga
 card shows build phase, progress, elapsed time, colliders, graph nodes, bounds,
 worker count, cache source/status/size, and the active route provider. Press `F8`
 to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs`.
-While either bot mode is active, the remaining route is rendered in world space as
+While any bot mode is active, the remaining route is rendered in world space as
 a terrain-snapped red/orange guide line with waypoint markers. The next point is
 yellow and the final destination is green; world geometry occludes the guide.
+
+`Open Room Test` is a separate direct-combat mode for manually created rooms. It
+never starts matching or runs rank, suicide, reward-card, or rematch behavior. It
+waits for a ready `Level`, local player, camera, and either the normal in-game
+connection state or a live opponent in the loaded room, then enables the existing
+role-aware target selection, routing, aiming, and firing strategy.
 
 ## Second-client network route
 

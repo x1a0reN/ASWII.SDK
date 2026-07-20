@@ -20,6 +20,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         Balance,
         GmExit,
         CombatTest,
+        RoomTest,
         Stopped
     }
 
@@ -114,6 +115,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         public static bool Enabled { get; private set; }
         public static bool CombatTestEnabled { get; private set; }
+        public static bool RoomTestEnabled { get; private set; }
         public static SurvivalBotPhase Phase = SurvivalBotPhase.Lobby;
         public static string StatusText = "等待初始化";
         public static int InitialPlayers { get; private set; }
@@ -129,6 +131,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             SurvivalBotSettings.EnsureLoaded();
             Enabled = false;
             CombatTestEnabled = false;
+            RoomTestEnabled = false;
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "等待手动启动";
         }
@@ -141,6 +144,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 if (Enabled) Stop("network_proxy_failed");
                 if (CombatTestEnabled) SetCombatTestEnabled(false, "network_proxy_failed");
+                if (RoomTestEnabled) SetRoomTestEnabled(false, "network_proxy_failed");
                 return;
             }
 
@@ -150,6 +154,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (CombatTestEnabled)
             {
                 TickCombatTest(GameApp.Instance, level, player, camera);
+                return;
+            }
+            if (RoomTestEnabled)
+            {
+                TickRoomTest(GameApp.Instance, level, player, camera);
                 return;
             }
 
@@ -189,6 +198,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (Enabled) return;
             if (CombatTestEnabled) DisableCombatTest("survival_loop_enabled");
+            if (RoomTestEnabled) DisableRoomTest("survival_loop_enabled");
             Enabled = true;
             _consecutiveGmRounds = 0;
             _pendingGmUid = 0;
@@ -215,6 +225,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             if (CombatTestEnabled) return;
+            if (RoomTestEnabled) DisableRoomTest("combat_test_enabled");
             DisableSurvivalLoopForCombatTest();
             CombatTestEnabled = true;
             _attackTarget = null;
@@ -230,11 +241,37 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("AUTO-BATTLE", "combat test enabled reason=" + reason);
         }
 
+        public static void SetRoomTestEnabled(bool enabled, string reason)
+        {
+            if (!enabled)
+            {
+                DisableRoomTest(reason);
+                return;
+            }
+
+            if (RoomTestEnabled) return;
+            if (CombatTestEnabled) DisableCombatTest("room_test_enabled");
+            DisableSurvivalLoopForCombatTest();
+            RoomTestEnabled = true;
+            _attackTarget = null;
+            _searchTarget = null;
+            _searchTargetLockedAt = 0f;
+            _attackTargetVisibleAt = 0f;
+            _emergencyTarget = null;
+            _hasAttackPoint = false;
+            ResetAttackSearchRuntime();
+            AutoBattleManager.SetEnabled(true, "room_test_start");
+            Phase = SurvivalBotPhase.RoomTest;
+            StatusText = "开房测试已开启，等待进入对局";
+            FileLogger.Log("AUTO-BATTLE", "room test enabled reason=" + reason);
+        }
+
         public static void Stop(string reason)
         {
-            if (!Enabled && !CombatTestEnabled && Phase == SurvivalBotPhase.Stopped) return;
+            if (!Enabled && !CombatTestEnabled && !RoomTestEnabled && Phase == SurvivalBotPhase.Stopped) return;
             Enabled = false;
             CombatTestEnabled = false;
+            RoomTestEnabled = false;
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;
             AutoBattleInput.ClearAll();
@@ -262,6 +299,21 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "战斗测试已关闭";
             FileLogger.Log("AUTO-BATTLE", "combat test disabled reason=" + reason);
+        }
+
+        private static void DisableRoomTest(string reason)
+        {
+            if (!RoomTestEnabled) return;
+            RoomTestEnabled = false;
+            AutoBattleInput.ClearAll();
+            AutoBattleManager.SetEnabled(false, "room_test_stop");
+            _attackTarget = null;
+            _emergencyTarget = null;
+            _hasAttackPoint = false;
+            ResetAttackSearchRuntime();
+            Phase = SurvivalBotPhase.Stopped;
+            StatusText = "开房测试已关闭";
+            FileLogger.Log("AUTO-BATTLE", "room test disabled reason=" + reason);
         }
 
         private static void DisableSurvivalLoopForCombatTest()
@@ -489,6 +541,49 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 RemainingPlayers = CountRemaining(player);
             }
             StatusText = "战斗测试 | " + AutoBattleManager.LastStatus;
+        }
+
+        private static void TickRoomTest(GameApp app, Level level, Character player, Camera camera)
+        {
+            Phase = SurvivalBotPhase.RoomTest;
+            if (!IsRoomTestRuntimeReady(level, player, camera))
+            {
+                AutoBattleInput.ClearAll();
+                AutoBattleManager.Tick(null, null, null);
+                _attackTarget = null;
+                StatusText = "开房测试 | 等待本地角色进入可操作对局";
+                return;
+            }
+
+            AutoBattleManager.Tick(level, player, camera);
+            RefreshEnemies(level, player);
+            RemainingPlayers = CountRemaining(player);
+            string connection = "local-ready";
+            try
+            {
+                if (app != null && app.channel_connection != null)
+                    connection = app.channel_connection.state.ToString() + "/" +
+                        app.channel_connection.game_state.ToString();
+            }
+            catch { }
+            StatusText = "开房测试 | " + AutoBattleManager.LastStatus + " | " + connection;
+        }
+
+        private static bool IsRoomTestRuntimeReady(Level level, Character player, Camera camera)
+        {
+            if (level == null || player == null || player.transform == null || camera == null) return false;
+            if (level.state != Level.State.kReady || player.Is_Viewer) return false;
+            try
+            {
+                GameApp app = GameApp.Instance;
+                if (app != null && app.channel_connection != null &&
+                    app.channel_connection.state == ChannelConnection.State.kInGame)
+                    return true;
+            }
+            catch { }
+            if (player.IsDied) return false;
+            RefreshEnemies(level, player);
+            return Enemies.Count > 0;
         }
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)

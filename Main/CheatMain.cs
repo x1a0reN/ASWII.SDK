@@ -47,7 +47,8 @@ namespace ASWDEBUG.Main
             try
             {
                 AutoBattleRoutePlanner.TickNavigation(level, player,
-                    SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled);
+                    SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled ||
+                    SurvivalBotManager.RoomTestEnabled);
                 SurvivalBotManager.Tick(level, player, CameraMain);
                 NavigationPathVisualizer.Tick(level, player);
             }

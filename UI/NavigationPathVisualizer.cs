@@ -37,7 +37,8 @@ namespace ASWDEBUG.UI
 
         internal static void Tick(Level level, Character player)
         {
-            if (!SurvivalBotManager.Enabled && !SurvivalBotManager.CombatTestEnabled)
+            if (!SurvivalBotManager.Enabled && !SurvivalBotManager.CombatTestEnabled &&
+                !SurvivalBotManager.RoomTestEnabled)
             {
                 Hide();
                 return;
@@ -54,7 +55,7 @@ namespace ASWDEBUG.UI
 
             try
             {
-                bool hasRoute = SurvivalBotManager.CombatTestEnabled
+                bool hasRoute = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled
                     ? AutoBattleManager.CopyActiveRoute(SourceRoute)
                     : SurvivalCombatAdapter.CopyActiveRoute(SourceRoute);
                 if (!hasRoute || SourceRoute.Count == 0 || !EnsureResources())

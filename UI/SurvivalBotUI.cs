@@ -104,7 +104,7 @@ namespace ASWDEBUG.UI
             DrawPanel(summary, _panelInnerTexture, _borderTexture);
             string phase = PhaseName(SurvivalBotManager.Phase);
             string players = SurvivalBotManager.InitialPlayers + " / " + SurvivalBotManager.RemainingPlayers;
-            string currentRole = SurvivalBotManager.CombatTestEnabled
+            string currentRole = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled
                 ? AutoBattleManager.CurrentRole
                 : SurvivalCombatAdapter.CurrentRole;
             GUI.Label(new Rect(summary.x + 7f, summary.y, summary.width * 0.62f, summary.height),
@@ -113,8 +113,8 @@ namespace ASWDEBUG.UI
                 "初始/存活  " + players, _secondaryLabelStyle);
             y += 29f;
 
-            const float buttonGap = 6f;
-            float modeButtonWidth = (width - buttonGap) * 0.5f;
+            const float buttonGap = 5f;
+            float modeButtonWidth = (width - buttonGap * 2f) / 3f;
             Rect runButton = new Rect(x, y, modeButtonWidth, 27f);
             string runText = SurvivalBotManager.Enabled ? "生存循环：开" : "生存循环：关";
             if (GUI.Button(runButton, runText, _buttonCenterStyle))
@@ -133,6 +133,16 @@ namespace ASWDEBUG.UI
             if (SurvivalBotManager.CombatTestEnabled)
                 GUI.DrawTexture(new Rect(combatTestButton.xMax - 5f, combatTestButton.y + 3f, 3f,
                     combatTestButton.height - 6f), _accentTexture);
+
+            Rect roomTestButton = new Rect(combatTestButton.xMax + buttonGap, y, modeButtonWidth, 27f);
+            string roomTestText = SurvivalBotManager.RoomTestEnabled ? "开房测试：开" : "开房测试：关";
+            if (GUI.Button(roomTestButton, roomTestText, _buttonCenterStyle))
+            {
+                SurvivalBotManager.SetRoomTestEnabled(!SurvivalBotManager.RoomTestEnabled, "ui");
+            }
+            if (SurvivalBotManager.RoomTestEnabled)
+                GUI.DrawTexture(new Rect(roomTestButton.xMax - 5f, roomTestButton.y + 3f, 3f,
+                    roomTestButton.height - 6f), _accentTexture);
             y += 33f;
 
             float statusTop = _window.yMax - 53f;
@@ -203,13 +213,14 @@ namespace ASWDEBUG.UI
                 snapshot.TimeoutSeconds.ToString("0") + " 秒";
             string boundsLine = "参数  范围 " + FormatBounds(snapshot.BoundsSize) + "  |  网格 " +
                 snapshot.CellSize.ToString("0.00") + " 米  |  Worker " + snapshot.WorkerCount;
-            string provider = SurvivalBotManager.CombatTestEnabled
+            bool directCombatTest = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled;
+            string provider = directCombatTest
                 ? AutoBattleManager.LastPathProvider
                 : SurvivalCombatAdapter.LastPathProvider;
-            string intent = SurvivalBotManager.CombatTestEnabled
+            string intent = directCombatTest
                 ? AutoBattleManager.State.ToString()
                 : SurvivalCombatAdapter.LastPathIntent;
-            string path = SurvivalBotManager.CombatTestEnabled
+            string path = directCombatTest
                 ? AutoBattleManager.LastPath
                 : SurvivalCombatAdapter.LastPath;
             string pathLine = "路径  " + provider + "  |  导航点 " +
@@ -533,6 +544,7 @@ namespace ASWDEBUG.UI
             if (phase == SurvivalBotPhase.Balance) return "结算";
             if (phase == SurvivalBotPhase.GmExit) return "GM 退出";
             if (phase == SurvivalBotPhase.CombatTest) return "战斗测试";
+            if (phase == SurvivalBotPhase.RoomTest) return "开房测试";
             return "已停止";
         }
     }
