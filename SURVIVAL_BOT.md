@@ -17,7 +17,9 @@ is direct physics, validated RAIN path, then the 2.5D grid. Maps that do not shi
 native navigation prefab, including `level33`, build an owned RAIN graph from active
 terrain colliders after the scene reaches `Level.State.kReady`. RAIN paths are
 sanitized, surface-smoothed, and moved away from tight wall corners before they reach
-the follower. Runtime graphs are cached both in memory and on disk.
+the follower. A physically blocked RAIN segment is retained when its complete jump
+arc and landing are valid; only non-walkable and non-jumpable segments fall back to
+the 2.5D grid. Runtime graphs are cached both in memory and on disk.
 Map exit only unregisters the in-memory graph; returning to the same map registers
 it immediately. A later game process loads the validated graph from
 `Application.persistentDataPath/ASWDEBUG/NavMeshCache`. The wrapper verifies the

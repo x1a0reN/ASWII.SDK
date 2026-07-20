@@ -218,6 +218,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _highGroundGlanceUntil;
         private static float _highGroundGlanceSign;
         private static float _nextPathJumpTime;
+        private static float _obstacleJumpForwardUntil;
         private static Character _occludedSeekTarget;
         private static float _occludedSeekYawOffset;
         private static float _nextOccludedSeekOffsetRefresh;
@@ -736,6 +737,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _combatMoveDir = Vector3.zero;
             _nextCombatJumpTime = 0f;
             _nextPathJumpTime = 0f;
+            _obstacleJumpForwardUntil = 0f;
             _stableRouteLookDir = Vector3.zero;
             _pendingRouteLookDir = Vector3.zero;
             _pendingRouteLookSince = 0f;
@@ -3096,7 +3098,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (side.sqrMagnitude < 0.01f) side = Vector3.right;
                 forward.Normalize();
                 side.Normalize();
-                if (!rainRecovery && SafeIsOnGround(player) &&
+                if (SafeIsOnGround(player) &&
                     AutoBattleRoutePlanner.ShouldJumpForwardObstacle(player.transform.position, forward, SafeRoot(player)))
                 {
                     AutoBattleInput.PressAction(ActionType.kActionJump, 0.12f);
@@ -3190,6 +3192,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (!jumpEdge && AutoBattleRoutePlanner.HasForwardBlock(
                 player.transform.position, dir, SafeRoot(player)))
             {
+                if (Time.time < _obstacleJumpForwardUntil) return dir;
+                if (SafeIsOnGround(player) && Time.time >= _nextPathJumpTime &&
+                    AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
+                        player.transform.position, dir, SafeRoot(player)))
+                {
+                    AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
+                    AutoBattleInput.HoldAction(ActionType.kActionJump, 0.24f);
+                    _nextPathJumpTime = Time.time + 0.45f;
+                    _obstacleJumpForwardUntil = Time.time + 0.34f;
+                    LastPath = "wall_jump_obstacle";
+                    FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=follow jump=obstacle_forward corner=" +
+                        (_pathIndex + 1) + "/" + Path.Count + " dist=" + d.ToString("0.0"));
+                    return dir;
+                }
                 if (Time.time < _nextWallRecoveryTime) return Vector3.zero;
                 _nextWallRecoveryTime = Time.time + 0.18f;
                 ClearCurrentPath();
@@ -3198,12 +3214,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 LastPathDetail = "wallAhead=1 dest=" + FormatVec(dest);
                 FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=follow result=partial nodes=0 corners=0 rejectGround=0 rejectBlock=1 frontier=1 reason=wall_ahead dest=" + FormatVec(dest));
                 _wallAheadCount++;
-                if (SafeIsOnGround(player) && AutoBattleRoutePlanner.ShouldJumpForwardObstacle(player.transform.position, dir, SafeRoot(player)))
-                {
-                    AutoBattleInput.PressAction(ActionType.kActionJump, 0.10f);
-                    AutoBattleInput.HoldAction(ActionType.kActionJump, 0.18f);
-                    LastPath = "wall_repath jump_obstacle";
-                }
                 Vector3 side = Vector3.Cross(Vector3.up, dir).normalized *
                                ((_wallAheadCount % 2 == 0) ? 1f : -1f);
                 Vector3 escape = side - dir * 0.55f;

@@ -326,11 +326,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     points = OptimizeRainPath(from, points, ignoreRoot, out optimizeDetail);
                     rainDetail += " " + optimizeDetail;
                     string validationDetail = "not_checked";
-                    bool physicsValidated = !rainPartial && ValidateRainPath(from, points, ignoreRoot, out validationDetail);
+                    List<bool> validatedJumpFlags = new List<bool>();
+                    bool physicsValidated = !rainPartial && ValidateRainPath(from, points, capabilities,
+                        ignoreRoot, out validatedJumpFlags, out validationDetail);
                     if (physicsValidated)
                     {
                         _physicsSearchJob = null;
-                        route = FromPoints("rain_navmesh", false, points, rainDetail + " validate=ok");
+                        route = FromPoints("rain_navmesh", false, points,
+                            rainDetail + " validate=" + validationDetail);
+                        for (int i = 0; i < route.JumpFlags.Count && i < validatedJumpFlags.Count; i++)
+                            route.JumpFlags[i] = validatedJumpFlags[i];
                         AnnotateBuiltInJumpFlags(route, from, capabilities, ignoreRoot);
                         LogRoute(route);
                         return route;
@@ -382,11 +387,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 float horizontal = XZDistance(previous, point);
                 bool walkable = CanTraverseWalkableSurface(previous, point, ignoreRoot);
                 float rise = point.y - previous.y;
-                bool jump = capabilities.AllowJump &&
-                             !walkable &&
-                             rise > 0.72f &&
-                             horizontal <= 4.2f &&
-                             TryJumpSegment(previous, point, capabilities, ignoreRoot);
+                bool jump = i < route.JumpFlags.Count && route.JumpFlags[i];
+                jump = jump || (capabilities.AllowJump &&
+                                !walkable &&
+                                rise > 0.72f &&
+                                horizontal <= 4.2f &&
+                                TryJumpSegment(previous, point, capabilities, ignoreRoot));
                 if (i < route.JumpFlags.Count) route.JumpFlags[i] = jump;
                 if (jump) jumps++;
                 previous = point;
@@ -1430,8 +1436,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool ValidateRainPath(Vector3 from, List<Vector3> points, Transform ignoreRoot, out string detail)
+        private static bool ValidateRainPath(Vector3 from, List<Vector3> points,
+            AutoBattleRouteCapabilities capabilities, Transform ignoreRoot,
+            out List<bool> jumpFlags, out string detail)
         {
+            jumpFlags = new List<bool>(points == null ? 0 : points.Count);
+            for (int i = 0; points != null && i < points.Count; i++) jumpFlags.Add(false);
             detail = "empty";
             if (points == null || points.Count == 0) return false;
             if (!IsFinite(from))
@@ -1440,6 +1450,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return false;
             }
             Vector3 previous = from;
+            int jumps = 0;
             for (int i = 0; i < points.Count; i++)
             {
                 Vector3 target = points[i];
@@ -1457,19 +1468,37 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
                 int segments = Mathf.Clamp(Mathf.CeilToInt(horizontal / 0.9f), 1, 96);
                 Vector3 segmentStart = previous;
+                int blockedSegment = 0;
                 for (int segment = 1; segment <= segments; segment++)
                 {
                     Vector3 segmentEnd = Vector3.Lerp(previous, target, (float)segment / segments);
                     if (!CanFollowSegment(segmentStart, segmentEnd, ignoreRoot))
                     {
-                        detail = "blocked waypoint=" + i + " segment=" + segment + "/" + segments;
-                        return false;
+                        blockedSegment = segment;
+                        break;
                     }
                     segmentStart = segmentEnd;
                 }
+                if (blockedSegment > 0)
+                {
+                    Vector3 jumpDirection = target - previous;
+                    jumpDirection.y = 0f;
+                    float rise = target.y - previous.y;
+                    bool lowObstacle = ShouldJumpForwardObstacle(previous, jumpDirection, ignoreRoot);
+                    bool jumpable = capabilities != null && capabilities.AllowJump &&
+                                    (rise > 0.62f || lowObstacle) && horizontal <= 4.2f &&
+                                    TryJumpSegment(previous, target, capabilities, ignoreRoot);
+                    if (!jumpable)
+                    {
+                        detail = "blocked waypoint=" + i + " segment=" + blockedSegment + "/" + segments;
+                        return false;
+                    }
+                    jumpFlags[i] = true;
+                    jumps++;
+                }
                 previous = target;
             }
-            detail = "ok";
+            detail = "ok jumps=" + jumps;
             return true;
         }
 

@@ -18,6 +18,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static bool _hasDestination;
         private static float _nextRepath;
         private static float _nextJumpAt;
+        private static float _obstacleJumpForwardUntil;
         private static float _nextFireAt;
         private static float _nextSkillAt;
         private static float _nextWeaponSwitchAt;
@@ -99,6 +100,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _hasDestination = false;
             _nextRepath = 0f;
             _nextJumpAt = 0f;
+            _obstacleJumpForwardUntil = 0f;
             _nextFireAt = 0f;
             _nextSkillAt = 0f;
             _nextWeaponSwitchAt = 0f;
@@ -296,6 +298,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (!jump && AutoBattleRoutePlanner.HasForwardBlock(playerPosition, direction, player.transform.root))
             {
+                if (Time.time < _obstacleJumpForwardUntil) return direction;
+                if (Time.time >= _nextJumpAt && AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
+                    playerPosition, direction, player.transform.root))
+                {
+                    AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
+                    AutoBattleInput.HoldAction(ActionType.kActionJump, 0.24f);
+                    _nextJumpAt = Time.time + 0.5f;
+                    _obstacleJumpForwardUntil = Time.time + 0.34f;
+                    LastPath = "wall_jump_obstacle";
+                    return direction;
+                }
                 if (Time.time >= _nextWallRecoveryAt || _wallRecoveryDirection.sqrMagnitude < 0.01f)
                 {
                     _nextWallRecoveryAt = Time.time + 0.35f;
@@ -355,7 +368,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
                 bool rainRoute = !string.IsNullOrEmpty(LastPathProvider) &&
                                  LastPathProvider.StartsWith("rain_navmesh", StringComparison.Ordinal);
-                if (!rainRoute && AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
+                if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
                     playerPosition, forward, player.transform.root))
                 {
                     AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
