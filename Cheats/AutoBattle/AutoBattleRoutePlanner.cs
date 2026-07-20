@@ -56,7 +56,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const float GroundRayDown = 10.0f;
         private const float MaxStepHeight = 1.25f;
         private const float NavLoadTimeout = 8.0f;
-        private const bool RainOnlyRoutingEnabled = true;
         private const float MaxWalkableRampGrade = 0.92f;
         private const float RainCornerClearanceRadius = 0.62f;
         private const float NavigationBodyRadius = 0.48f;
@@ -98,11 +97,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
         internal static bool IsGameNavigationReady
         {
             get { return _navState == AutoBattleNavResourceState.Ready; }
-        }
-
-        internal static bool RainOnlyRouting
-        {
-            get { return RainOnlyRoutingEnabled; }
         }
 
         internal static bool IsPointOnOwnedRainGraph(Vector3 point, float tolerance)
@@ -307,7 +301,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             AutoBattleRouteResult route;
             List<Vector3> points;
             if (capabilities == null) capabilities = new AutoBattleRouteCapabilities();
-            if (RainOnlyRoutingEnabled) capabilities.RequireRainPath = true;
             const string astarDetail = "disabled";
             string rainDetail = IsGameNavigationReady ? "ready" : RuntimeRainNavMesh.Detail;
             const string unityDetail = "disabled";

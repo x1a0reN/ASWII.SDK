@@ -607,20 +607,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             LastTarget = SafeTargetName(patrolTarget);
             Vector3 destination = patrolTarget.transform.position;
-            if (!AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(player.transform.position, 3.5f))
-            {
-                AutoBattleInput.ClearMovement();
-                ClearCurrentPath();
-                _hasDestination = false;
-                _nextRepath = 0f;
-                State = AutoBattleState.StuckRecovery;
-                LastPath = "rain_off_graph_wait";
-                LastPathProvider = "rain_navmesh_off_graph";
-                LastAction = "等待 RAIN 安全点回滚";
-                LastStatus = "玩家已离开 RAIN 图，停止切换目标并等待回滚";
-                LogMaybe(player, null, "rain_off_graph_wait");
-                return;
-            }
             float horizontal = Mathf.Sqrt(XZDistanceSq(player.transform.position, destination));
             float vertical = Mathf.Abs(player.transform.position.y - destination.y);
             if (horizontal <= 1.85f && vertical <= 2.4f)

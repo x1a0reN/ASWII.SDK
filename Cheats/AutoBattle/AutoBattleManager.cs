@@ -237,8 +237,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         LastPath = "path_pending_timeout";
                         return Vector3.zero;
                     }
-                    if (!AutoBattleRoutePlanner.RainOnlyRouting &&
-                        pendingAge <= 0.48f && pendingTravel <= 1.6f)
+                    if (pendingAge <= 0.48f && pendingTravel <= 1.6f)
                     {
                         Vector3 localAdvance = TryPendingLocalAdvance(player, _destination);
                         if (localAdvance.sqrMagnitude > 0.01f)
@@ -303,10 +302,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     _wallRecoveryCount++;
                     ClearPath();
                     _nextRepath = 0f;
+                    bool rainRoute = !string.IsNullOrEmpty(LastPathProvider) &&
+                                     LastPathProvider.StartsWith("rain_navmesh", StringComparison.Ordinal);
                     string clearanceDetail;
-                    if (!AutoBattleRoutePlanner.RainOnlyRouting ||
-                        !AutoBattleRoutePlanner.TryFindRainClearanceDirection(playerPosition, direction,
-                            player.transform.root, out _wallRecoveryDirection, out clearanceDetail))
+                    if (!rainRoute || !AutoBattleRoutePlanner.TryFindRainClearanceDirection(
+                            playerPosition, direction, player.transform.root,
+                            out _wallRecoveryDirection, out clearanceDetail))
                         _wallRecoveryDirection = BuildStableRecoveryDirection(player, direction, 0.72f);
                 }
                 LastPath = "wall_repath";
@@ -380,8 +381,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public static Vector3 NavigatePursuit(Character player, Vector3 liveTargetPosition)
         {
             if (player == null || player.transform == null) return Vector3.zero;
-            if (AutoBattleRoutePlanner.RainOnlyRouting)
-                return NavigateSurvival(player, liveTargetPosition, false, "attack_chase");
             Vector3 playerPosition = player.transform.position;
             Vector3 direction = liveTargetPosition - playerPosition;
             float verticalDelta = Mathf.Abs(direction.y);

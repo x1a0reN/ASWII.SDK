@@ -12,13 +12,12 @@ This branch is intentionally limited to the survival automation runtime.
 6. After one kill or assist, navigate to a cliff and jump; use `Suicide(uid)` only as a timeout fallback.
 7. Flip the server-provided number of reward cards and return to matching.
 
-The original physics-grid 2.5D planner remains in source but is temporarily disabled.
-All navigation, including pursuit and stuck recovery, must stay on the owned RAIN
-graph so RAIN defects remain observable instead of being hidden by a fallback. Maps
-that do not ship a native navigation prefab, including `level33`, build that graph
-from active terrain colliders after the scene reaches `Level.State.kReady`. RAIN paths
-are sanitized, surface-smoothed, and moved away from tight wall corners before they
-reach the follower. Runtime graphs are cached both in memory and on disk.
+The physics-grid 2.5D route planner remains enabled as the fallback. The route order
+is direct physics, validated RAIN path, then the 2.5D grid. Maps that do not ship a
+native navigation prefab, including `level33`, build an owned RAIN graph from active
+terrain colliders after the scene reaches `Level.State.kReady`. RAIN paths are
+sanitized, surface-smoothed, and moved away from tight wall corners before they reach
+the follower. Runtime graphs are cached both in memory and on disk.
 Map exit only unregisters the in-memory graph; returning to the same map registers
 it immediately. A later game process loads the validated graph from
 `Application.persistentDataPath/ASWDEBUG/NavMeshCache`. The wrapper verifies the
