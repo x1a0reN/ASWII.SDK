@@ -634,31 +634,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             _localPatrolReachedAt = 0f;
             State = AutoBattleState.RouteToEngage;
-            Vector3 moveDir = UpdateNavigation(player, destination, null, false, true, true);
-            if (string.Equals(LastPathProvider, "rain_navmesh_required", StringComparison.Ordinal))
-            {
-                string relocationDetail;
-                bool relocated = LocalNavigationCombatTest.TryRelocatePatrolTarget(
-                    patrolTarget, player.transform.position, out relocationDetail);
-                if (!relocated)
-                    LocalNavigationCombatTest.AdvancePatrolTarget(patrolTarget);
-
-                AutoBattleInput.ClearMovement();
-                _localPatrolTarget = null;
-                _localPatrolIndex = -1;
-                _localPatrolReachedAt = 0f;
-                ClearCurrentPath();
-                _hasDestination = false;
-                _nextRepath = 0f;
-                State = AutoBattleState.StuckRecovery;
-                LastAction = relocated ? "patrol_target_relocated" : "patrol_target_skipped";
-                LastStatus = relocationDetail;
-                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "patrol_route_recovery index=" +
-                    (patrolIndex + 1) + " relocated=" + (relocated ? "1" : "0") +
-                    " detail=" + relocationDetail);
-                LogMaybe(player, null, LastAction);
-                return;
-            }
+            Vector3 moveDir = UpdateNavigation(player, destination, null, false, true, false);
             AutoBattleInput.SetMoveWorld(player, moveDir, false);
             Vector3 routeLook = GetPathLookDirection(player, moveDir);
             if (routeLook.sqrMagnitude > 0.01f)

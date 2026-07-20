@@ -82,13 +82,10 @@ the guide or produce per-frame log spam.
 
 `level33 Navigation Patrol` is a navigation-only cache test. It directly loads the
 survival level that resolves to physical `level33`, constrains the player and four
-stationary Bots to the level Lua `map_center` / `map_size` interior, rejects points
-inside the game's `DeadSpace` volumes, and requires complete paths on the cached RAIN
-graph. The player walks to each Bot in sequence and then advances to the next one.
+stationary Bots to the level Lua `map_center` / `map_size` interior, and rejects points
+inside the game's `DeadSpace` volumes. The player walks to each Bot in sequence using
+the normal direct-physics, RAIN, and 2.5D fallback order, then advances to the next one.
 Target combat selection, role tactics, aiming, scoping, skills, and firing are not run.
-This test never falls back to a partial physics-grid frontier: an unreachable Bot is
-relocated into the player's current RAIN-connected region. If the player still leaves
-the graph, the test restores the last graph-validated position and rebuilds the route.
 
 `Open Room Test` is a separate direct-combat mode for manually created rooms. It
 never starts matching or runs rank, suicide, reward-card, or rematch behavior. It
