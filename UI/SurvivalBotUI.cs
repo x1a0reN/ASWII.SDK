@@ -57,6 +57,7 @@ namespace ASWDEBUG.UI
         private static string[] _dropdownOptions;
         private static int _dropdownSelected;
         private static int _dropdownFirstVisible;
+        private static int _dropdownMapOptionsVersion;
         private static float _rowStride = RowHeight + 1f;
 
         private static GUIStyle _titleStyle;
@@ -204,7 +205,7 @@ namespace ASWDEBUG.UI
             string header = "导航  " + NavigationStageName(snapshot) + "  " +
                 (snapshot.Progress01 * 100f).ToString("0.0") + "%  |  " +
                 (string.IsNullOrEmpty(snapshot.MapName) ? "-" :
-                    MapBakeSceneLoader.DisplayNameFor(snapshot.MapName)) + "  #" + snapshot.Generation;
+                    MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName)) + "  #" + snapshot.Generation;
             GUI.Label(new Rect(textX, panel.y + 1f, textWidth, 18f),
                 ClipToWidth(header, _secondaryLabelStyle, textWidth), _secondaryLabelStyle);
 
@@ -216,7 +217,7 @@ namespace ASWDEBUG.UI
 
             string cacheLine = "缓存  " + CacheStateName(snapshot) + "  |  " +
                 FormatBytes(snapshot.CacheBytes) + "  |  " +
-                MapBakeSceneLoader.DisplayNameFor(snapshot.MapName) +
+                MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName) +
                 "  |  内存 " + snapshot.CacheCount;
             if (compact)
             {
@@ -308,6 +309,7 @@ namespace ASWDEBUG.UI
                     _dropdownOptions = maps;
                     _dropdownSelected = selected;
                     _dropdownFirstVisible = Mathf.Max(0, selected - 6);
+                    _dropdownMapOptionsVersion = MapBakeSceneLoader.MapOptionsVersion;
                 }
             }
 
@@ -321,6 +323,12 @@ namespace ASWDEBUG.UI
         private static void DrawDropdownOverlay()
         {
             if (_openDropdown == DropdownId.None || _dropdownOptions == null || _dropdownOptions.Length == 0) return;
+            if (_openDropdown == DropdownId.MapBakeTarget &&
+                _dropdownMapOptionsVersion != MapBakeSceneLoader.MapOptionsVersion)
+            {
+                _openDropdown = DropdownId.None;
+                return;
+            }
 
             float rowHeight = 24f;
             int maxVisible = Mathf.Max(1, Mathf.FloorToInt((Screen.height - 24f) / rowHeight));

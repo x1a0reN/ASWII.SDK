@@ -52,9 +52,11 @@ maximum-detail runtime graph is built. AFK auto-leave is disabled for this priva
 scene, and local `SyncPlayerData` packets are suppressed until the scene exits, so
 the scene can remain open until disk serialization completes. The selector displays
 the localized `LevelInfo.show_name` supplied by the game's own channel level table;
-internal `levelXX` resource keys are not shown in the UI. Immediately before
-`Level.LoadMap`, direct baking restores the selected scene key if the level script
-redirected it to a shared scene. After a non-empty disk cache is confirmed, the
+internal `levelXX` resource keys are not shown in the UI. Each option retains its
+authoritative `LevelInfo.id`, and the native level Lua remains responsible for resolving
+the final scene through `SetMesh`. The `Level.LoadMap` hook records that resolved scene
+without rewriting it, keeping the Chinese name, camera data, map parameters, and scene
+geometry aligned. After a non-empty disk cache is confirmed, the
 loader automatically changes back to `Lobby`, allowing the
 native `FightState.OnExit -> Level.OnExit` path to destroy the temporary map scene.
 

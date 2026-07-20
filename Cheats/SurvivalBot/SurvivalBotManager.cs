@@ -667,7 +667,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     return;
                 }
 
-                string displayName = MapBakeSceneLoader.DisplayNameFor(snapshot.MapName);
+                string displayName = MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName);
                 StatusText = "地图建图 | 已完成并可复用 | " + displayName +
                     " | 节点 " + snapshot.GraphSize + " | 缓存 " + snapshot.CacheStatus;
                 if (MapBakeSceneLoader.DirectSceneActive)
@@ -715,7 +715,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 StatusText = "地图建图 | 等待地图加载";
                 return;
             }
-            StatusText = "地图建图 | 准备 " + MapBakeSceneLoader.DisplayNameFor(snapshot.MapName) +
+            StatusText = "地图建图 | 准备 " + MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName) +
                 " | " + snapshot.Detail;
         }
 
