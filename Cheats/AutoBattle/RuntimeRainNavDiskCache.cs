@@ -16,6 +16,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public byte[] Payload;
         public long FileBytes;
         public string FilePath;
+        public string PayloadSha256;
     }
 
     internal static class RuntimeRainNavDiskCache
@@ -161,7 +162,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         GraphSize = graphSize,
                         Payload = payload,
                         FileBytes = info.Length,
-                        FilePath = path
+                        FilePath = path,
+                        PayloadSha256 = ToHex(actualHash)
                     };
                     status = "hit";
                     return true;
@@ -249,6 +251,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 status = "save_ex=" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 80);
                 return false;
             }
+        }
+
+        internal static string ComputePayloadSha256(byte[] payload)
+        {
+            if (payload == null) return string.Empty;
+            using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(payload));
         }
 
         private static string SafeFileName(string mapName)

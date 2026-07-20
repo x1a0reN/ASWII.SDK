@@ -12,15 +12,12 @@ This branch is intentionally limited to the survival automation runtime.
 6. After one kill or assist, navigate to a cliff and jump; use `Suicide(uid)` only as a timeout fallback.
 7. Flip the server-provided number of reward cards and return to matching.
 
-The physics-grid 2.5D route planner remains enabled as the fallback. The route order
-is direct physics, validated RAIN path, then the 2.5D grid. Maps that do not ship a
-native navigation prefab, including `level33`, build an owned RAIN graph from active
-terrain colliders after the scene reaches `Level.State.kReady`. RAIN paths are
-sanitized, surface-smoothed, and moved away from tight wall corners before they reach
-the follower. A physically blocked RAIN segment is retained when its complete jump
-arc and landing are valid; only non-walkable and non-jumpable segments fall back to
-the 2.5D grid. The 2.5D search publishes only a completed route, not its changing
-search frontier, and uses the same body-width clearance checks as the follower.
+All route generation is RAIN-only. Direct-physics pursuit, pending probe movement,
+and the physics-grid 2.5D fallback are disabled. Maps that do not ship a native
+navigation prefab, including `level33`, build an owned RAIN graph from active terrain
+colliders after the scene reaches `Level.State.kReady`. RAIN paths are sanitized,
+surface-smoothed, moved away from tight wall corners, and physically vetoed before
+they reach the follower; physics checks never generate an alternate route.
 Runtime graphs are cached both in memory and on disk.
 Map exit only unregisters the in-memory graph; returning to the same map registers
 it immediately. A later game process loads the validated graph from
@@ -42,6 +39,14 @@ disk-cache directory; later normal bot modes prefer this maximum-detail cache an
 fall back to the runtime profile only when it is absent. Enabling the mode on a map
 that already has a compatible cache validates and registers that cache instead of
 rebuilding it.
+After the base graph is ready, a versioned companion cache (`.rainmeta`) is built
+without overwriting `.rainnav`. It records connected components, boundary/ledge
+samples, surface clearance, eight-direction cover masks, dead-space/headroom-safe
+spawn samples, and validated directed Jump/Drop Off-Mesh Links. Candidates come only
+from spatially indexed boundary edges and validate the complete arc and landing.
+Compatible links are injected for the current profession and removed when the graph
+is deactivated. Link paths retain raw takeoff/landing anchors so funnel smoothing
+cannot erase the jump. Map Bake returns only after both cache files are saved.
 Once contour generation has started, normal match completion and `Level.Exit` no
 longer cancel it. Generation continues in the background after leaving the map and
 the UI keeps showing its live progress until the graph is written to disk. Closing
@@ -66,16 +71,16 @@ geometry aligned. After a non-empty disk cache is confirmed, the
 loader automatically changes back to `Lobby`, allowing the
 native `FightState.OnExit -> Level.OnExit` path to destroy the temporary map scene.
 
-Forced hunt does not select a standoff or interception point. It follows the live
-enemy position directly in open space, falls back to global routing only when
-blocked or crossing levels, and keeps pursuit movement active while ranged fire is
+Forced hunt does not select a standoff or interception point. It continuously sends
+the live enemy position to RAIN and keeps routed pursuit active while ranged fire is
 running. Opportunity attacks retain their short combat strafe behavior. Survival
 combat reuses its role detection and tactics for heavy, medic/guard, and
 assault/sniper loadouts.
 
 Press `Delete` to show or hide the project-style configuration panel. Its navigation
 card shows build phase, progress, elapsed time, colliders, graph nodes, bounds,
-worker count, cache source/status/size, and the active route provider. Press `F8`
+worker count, base/derived cache status and size, component/boundary/surface counts,
+Jump/Drop link counts, safe samples, and the active RAIN route provider. Press `F8`
 to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs`.
 While any bot mode is active, the remaining route is rendered in world space as
 a terrain-snapped red/orange guide line with waypoint markers. The next point is
@@ -88,7 +93,7 @@ the guide or produce per-frame log spam.
 survival level that resolves to physical `level33`, constrains the player and four
 stationary Bots to the level Lua `map_center` / `map_size` interior, and rejects points
 inside the game's `DeadSpace` volumes. The player walks to each Bot in sequence using
-the normal direct-physics, RAIN, and 2.5D fallback order, then advances to the next one.
+only RAIN and its validated Off-Mesh Links, then advances to the next one.
 Target combat selection, role tactics, aiming, scoping, skills, and firing are not run.
 
 `Open Room Test` is a separate direct-combat mode for manually created rooms. It

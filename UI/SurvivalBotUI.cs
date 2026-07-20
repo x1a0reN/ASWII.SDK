@@ -214,12 +214,16 @@ namespace ASWDEBUG.UI
         private static void DrawNavigationPanel(Rect panel, bool compact)
         {
             RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
+            RuntimeRainDerivedSnapshot derived = snapshot.Derived;
+            bool derivedActive = derived.Stage != RuntimeRainDerivedStage.Idle &&
+                                 derived.Stage != RuntimeRainDerivedStage.Ready;
+            float activeProgress = derivedActive ? derived.Progress01 : snapshot.Progress01;
             DrawPanel(panel, _panelInnerTexture, _borderTexture);
 
             float textX = panel.x + 7f;
             float textWidth = panel.width - 14f;
-            string header = "导航  " + NavigationStageName(snapshot) + "  " +
-                (snapshot.Progress01 * 100f).ToString("0.0") + "%  |  " +
+            string header = "导航  RAIN 专用 · " + NavigationStageName(snapshot) + "  " +
+                (activeProgress * 100f).ToString("0.0") + "%  |  " +
                 (string.IsNullOrEmpty(snapshot.MapName) ? "-" :
                     MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName)) + "  #" + snapshot.Generation;
             GUI.Label(new Rect(textX, panel.y + 1f, textWidth, 18f),
@@ -227,12 +231,12 @@ namespace ASWDEBUG.UI
 
             Rect progressTrack = new Rect(textX, panel.y + 20f, textWidth, 5f);
             GUI.DrawTexture(progressTrack, _borderTexture);
-            float fillWidth = Mathf.Clamp(progressTrack.width * snapshot.Progress01, 0f, progressTrack.width);
+            float fillWidth = Mathf.Clamp(progressTrack.width * activeProgress, 0f, progressTrack.width);
             if (fillWidth > 0f)
                 GUI.DrawTexture(new Rect(progressTrack.x, progressTrack.y, fillWidth, progressTrack.height), _accentTexture);
 
-            string cacheLine = "缓存  " + CacheStateName(snapshot) + "  |  " +
-                FormatBytes(snapshot.CacheBytes) + "  |  " +
+            string cacheLine = "缓存  基础 " + CacheStateName(snapshot) + " " + FormatBytes(snapshot.CacheBytes) +
+                "  |  派生 " + DerivedCacheStateName(derived) + " " + FormatBytes(derived.CacheBytes) + "  |  " +
                 MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName) +
                 "  |  内存 " + snapshot.CacheCount;
             if (compact)
@@ -242,8 +246,9 @@ namespace ASWDEBUG.UI
                 return;
             }
 
+            float shownElapsed = Mathf.Max(snapshot.ElapsedSeconds, derived.ElapsedSeconds);
             string timeLimit = snapshot.TimeoutSeconds <= 0f
-                ? snapshot.ElapsedSeconds.ToString("0.0") + " 秒 / 不限时"
+                ? shownElapsed.ToString("0.0") + " 秒 / 不限时"
                 : snapshot.ElapsedSeconds.ToString("0.0") + " / " +
                     snapshot.TimeoutSeconds.ToString("0") + " 秒";
             string buildLine = "构建  碰撞体 " + snapshot.ColliderCount + "  |  节点 " + snapshot.GraphSize +
@@ -262,12 +267,26 @@ namespace ASWDEBUG.UI
             string path = directCombatTest
                 ? AutoBattleManager.LastPath
                 : SurvivalCombatAdapter.LastPath;
-            string pathLine = "路径  " + provider + "  |  导航点 " +
-                NavigationPathVisualizer.VisiblePointCount + "  |  " + intent + "  |  " + path;
-            string detailLine = SurvivalBotManager.Level33TestEnabled
-                ? "测试  Bot " + LocalNavigationCombatTest.AliveBotCount + "/" +
-                  LocalNavigationCombatTest.BotCount + "  |  " + LocalNavigationCombatTest.StatusText
-                : "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
+            bool showDerivedDetails = SurvivalBotManager.MapBakeEnabled || derivedActive;
+            string pathLine = showDerivedDetails
+                ? "数据  表面 " + derived.SurfaceCount + "  |  分区 " + derived.ComponentCount +
+                  "  |  边界/悬崖 " + derived.BoundaryCount
+                : "路径  RAIN / " + provider + "  |  导航点 " +
+                  NavigationPathVisualizer.VisiblePointCount + "  |  " + intent + "  |  " + path;
+            string derivedLine = "派生  " + DerivedStageName(derived.Stage) + " " +
+                (derived.Progress01 * 100f).ToString("0.0") + "% " + derived.Processed + "/" + derived.Total +
+                "  |  分区 " + derived.ComponentCount + " 边界 " + derived.BoundaryCount +
+                " Jump " + derived.JumpLinkCount + " Drop " + derived.DropLinkCount +
+                " 安全点 " + derived.SafeSpawnCount;
+            string detailLine = showDerivedDetails
+                ? "链接  Jump " + derived.JumpLinkCount + "  |  Drop " + derived.DropLinkCount +
+                  "  |  安全出生点 " + derived.SafeSpawnCount + "  |  " + derived.Detail
+                : derived.Stage == RuntimeRainDerivedStage.Ready
+                ? derivedLine
+                : SurvivalBotManager.Level33TestEnabled
+                    ? "测试  Bot " + LocalNavigationCombatTest.AliveBotCount + "/" +
+                      LocalNavigationCombatTest.BotCount + "  |  " + LocalNavigationCombatTest.StatusText
+                    : "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
 
             DrawClippedLine(panel.y + 27f, buildLine, textX, textWidth);
             DrawClippedLine(panel.y + 44f, boundsLine, textX, textWidth);
@@ -577,6 +596,9 @@ namespace ASWDEBUG.UI
 
         private static string NavigationStageName(RuntimeRainNavSnapshot snapshot)
         {
+            if (snapshot.Derived.Stage != RuntimeRainDerivedStage.Idle &&
+                snapshot.Derived.Stage != RuntimeRainDerivedStage.Ready)
+                return "派生 " + DerivedStageName(snapshot.Derived.Stage);
             if (snapshot.CacheSource == "native") return "原生资源";
             if (snapshot.State == RuntimeRainNavState.Building) return "生成中";
             if (snapshot.State == RuntimeRainNavState.Ready) return "已就绪";
@@ -590,6 +612,29 @@ namespace ASWDEBUG.UI
                 return "准备中";
             }
             return "未启用";
+        }
+
+        private static string DerivedStageName(RuntimeRainDerivedStage stage)
+        {
+            if (stage == RuntimeRainDerivedStage.ScanGraph) return "扫描图";
+            if (stage == RuntimeRainDerivedStage.Components) return "连通分区";
+            if (stage == RuntimeRainDerivedStage.Surfaces) return "净空/掩体";
+            if (stage == RuntimeRainDerivedStage.OffMeshLinks) return "OffMesh Link";
+            if (stage == RuntimeRainDerivedStage.Saving) return "写入";
+            if (stage == RuntimeRainDerivedStage.Loading) return "加载";
+            if (stage == RuntimeRainDerivedStage.Ready) return "已就绪";
+            if (stage == RuntimeRainDerivedStage.Failed) return "失败";
+            return "等待";
+        }
+
+        private static string DerivedCacheStateName(RuntimeRainDerivedSnapshot snapshot)
+        {
+            if (snapshot.Stage == RuntimeRainDerivedStage.Ready)
+                return snapshot.CacheStatus == "disk_hit" ? "磁盘命中" : "已保存";
+            if (snapshot.Stage == RuntimeRainDerivedStage.Saving) return "写入中";
+            if (snapshot.Stage == RuntimeRainDerivedStage.Failed) return "失败";
+            if (snapshot.Stage == RuntimeRainDerivedStage.Idle) return "待生成";
+            return "生成中";
         }
 
         private static string CacheStateName(RuntimeRainNavSnapshot snapshot)

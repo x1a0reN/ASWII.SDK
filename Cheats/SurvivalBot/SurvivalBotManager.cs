@@ -720,15 +720,31 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     return;
                 }
 
+                RuntimeRainDerivedSnapshot derived = snapshot.Derived;
+                if (derived.Stage == RuntimeRainDerivedStage.Failed)
+                {
+                    StatusText = "地图建图 | 派生数据生成失败 | " + derived.Detail;
+                    return;
+                }
+                if (derived.Stage != RuntimeRainDerivedStage.Ready)
+                {
+                    StatusText = "地图建图 | 派生 " + DerivedStageName(derived.Stage) + " " +
+                        (derived.Progress01 * 100f).ToString("0.0") + "% | " +
+                        derived.Processed + "/" + derived.Total + " | Jump " +
+                        derived.JumpLinkCount + " Drop " + derived.DropLinkCount;
+                    return;
+                }
+
                 string displayName = MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName);
                 StatusText = "地图建图 | 已完成并可复用 | " + displayName +
-                    " | 节点 " + snapshot.GraphSize + " | 缓存 " + snapshot.CacheStatus;
+                    " | 节点 " + snapshot.GraphSize + " | OffMesh " +
+                    (derived.JumpLinkCount + derived.DropLinkCount) + " | 缓存 " + derived.CacheStatus;
                 if (MapBakeSceneLoader.DirectSceneActive)
                 {
-                    if (snapshot.CacheBytes <= 0L)
+                    if (!snapshot.BakeArtifactReady)
                     {
-                        StatusText = "地图建图 | 图已生成但磁盘缓存未保存，不自动退出 | " +
-                            snapshot.CacheStatus;
+                        StatusText = "地图建图 | 基础图或派生缓存未完整保存，不自动退出 | base=" +
+                            snapshot.CacheStatus + " meta=" + derived.CacheStatus;
                         return;
                     }
 
@@ -770,6 +786,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
             StatusText = "地图建图 | 准备 " + MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName) +
                 " | " + snapshot.Detail;
+        }
+
+        private static string DerivedStageName(RuntimeRainDerivedStage stage)
+        {
+            if (stage == RuntimeRainDerivedStage.ScanGraph) return "扫描图";
+            if (stage == RuntimeRainDerivedStage.Components) return "连通分区";
+            if (stage == RuntimeRainDerivedStage.Surfaces) return "净空/掩体/出生点";
+            if (stage == RuntimeRainDerivedStage.OffMeshLinks) return "Jump/Drop Link";
+            if (stage == RuntimeRainDerivedStage.Saving) return "写入缓存";
+            if (stage == RuntimeRainDerivedStage.Loading) return "加载缓存";
+            return stage.ToString();
         }
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)

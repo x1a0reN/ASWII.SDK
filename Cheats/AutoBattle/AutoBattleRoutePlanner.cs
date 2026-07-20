@@ -301,33 +301,35 @@ namespace ASWDEBUG.Cheats.AutoBattle
             AutoBattleRouteResult route;
             List<Vector3> points;
             if (capabilities == null) capabilities = new AutoBattleRouteCapabilities();
-            const string astarDetail = "disabled";
+            capabilities.RequireRainPath = true;
             string rainDetail = IsGameNavigationReady ? "ready" : RuntimeRainNavMesh.Detail;
-            const string unityDetail = "disabled";
-
-            if (!capabilities.RequireRainPath && CanFollowSegment(from, to, ignoreRoot))
-            {
-                _physicsSearchJob = null;
-                points = new List<Vector3>(1);
-                points.Add(to);
-                route = FromPoints("phys_grid_2_5d", false, points, "result=ok nodes=0 layers=1 jumps=0 corners=1 rejectGround=0 rejectBlock=0 frontier=0 direct=1 astar=" + astarDetail + " rain=" + rainDetail + " unity=" + unityDetail);
-                LogRoute(route);
-                return route;
-            }
 
             if (IsGameNavigationReady)
             {
                 bool rainPending;
                 bool rainPartial;
-                if (TryBuildRainPath(from, to, out points, out rainDetail, out rainPending, out rainPartial))
+                bool rainOffMesh;
+                List<bool> rainOffMeshFlags;
+                if (TryBuildRainPath(from, to, capabilities, out points, out rainDetail,
+                    out rainPending, out rainPartial, out rainOffMesh, out rainOffMeshFlags))
                 {
                     string optimizeDetail;
-                    points = OptimizeRainPath(from, points, ignoreRoot, out optimizeDetail);
+                    if (rainOffMesh)
+                    {
+                        List<bool> optimizedFlags;
+                        points = OptimizeRainPathWithHardLinks(from, points, rainOffMeshFlags,
+                            ignoreRoot, out optimizedFlags, out optimizeDetail);
+                        rainOffMeshFlags = optimizedFlags;
+                    }
+                    else
+                    {
+                        points = OptimizeRainPath(from, points, ignoreRoot, out optimizeDetail);
+                    }
                     rainDetail += " " + optimizeDetail;
                     string validationDetail = "not_checked";
                     List<bool> validatedJumpFlags = new List<bool>();
                     bool physicsValidated = !rainPartial && ValidateRainPath(from, points, capabilities,
-                        ignoreRoot, out validatedJumpFlags, out validationDetail);
+                        ignoreRoot, rainOffMeshFlags, out validatedJumpFlags, out validationDetail);
                     if (physicsValidated)
                     {
                         _physicsSearchJob = null;
@@ -343,25 +345,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
                 else if (rainPending)
                 {
-                    if (capabilities.RequireRainPath)
-                    {
-                        route = Pending("rain_navmesh_pending", rainDetail);
-                        LogRoute(route);
-                        return route;
-                    }
-                    rainDetail += " fallback=physics_while_pending";
-                }
-
-                if (capabilities.RequireRainPath)
-                {
-                    _physicsSearchJob = null;
-                    route = Fail("rain_navmesh_required",
-                        "result=fail reason=complete_rain_path_unavailable " + rainDetail);
+                    route = Pending("rain_navmesh_pending", rainDetail);
                     LogRoute(route);
                     return route;
                 }
+
+                _physicsSearchJob = null;
+                route = Fail("rain_navmesh_required",
+                    "result=fail reason=complete_rain_path_unavailable " + rainDetail);
+                LogRoute(route);
+                return route;
             }
-            else if (capabilities.RequireRainPath)
+            else
             {
                 _physicsSearchJob = null;
                 route = Pending("rain_navmesh_pending",
@@ -369,10 +364,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 LogRoute(route);
                 return route;
             }
-
-            route = BuildPhysicsGridRoute(from, to, ignoreRoot, capabilities, unityDetail, astarDetail, rainDetail);
-            LogRoute(route);
-            return route;
         }
 
         private static void AnnotateBuiltInJumpFlags(AutoBattleRouteResult route, Vector3 from, AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
@@ -1315,12 +1306,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool TryBuildRainPath(Vector3 from, Vector3 to, out List<Vector3> result, out string detail, out bool pending, out bool partial)
+        private static bool TryBuildRainPath(Vector3 from, Vector3 to, AutoBattleRouteCapabilities capabilities,
+            out List<Vector3> result, out string detail, out bool pending, out bool partial, out bool offMesh,
+            out List<bool> offMeshFlags)
         {
             result = null;
             detail = "rain=not_tried";
             pending = false;
             partial = false;
+            offMesh = false;
+            offMeshFlags = null;
             try
             {
                 if (NavigationManager.Instance == null)
@@ -1350,6 +1345,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     }
                     graph = ownedGraph;
                 }
+                if (RuntimeRainNavDerivedData.PrepareLinksForRoute(graph, capabilities))
+                    _rainSearchJob = null;
                 RainSearchJob job = _rainSearchJob;
                 if (job == null || !job.Matches(graph, from, to))
                 {
@@ -1362,7 +1359,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     }
 
                     finder.MaxYOffset = 4f;
-                    finder.MaxPathfindingSteps = 4096;
+                    finder.MaxPathfindingSteps = 32768;
                     finder.MaxPathLength = 1200f;
                     finder.StartPath(graph, from, to);
                     job = new RainSearchJob(graph, finder, from, to);
@@ -1378,7 +1375,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
                 if (!complete && job.Finder.InProgress)
                 {
-                    if (job.Slices >= 48 || job.CpuMilliseconds >= 480L)
+                    if (job.Slices >= 120 || job.CpuMilliseconds >= 1200L)
                     {
                         _rainSearchJob = null;
                         detail = "rain=timeout graph=" + graph.GetType().Name + " slices=" + job.Slices + " ms=" + job.CpuMilliseconds;
@@ -1397,11 +1394,25 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     return false;
                 }
 
-                result = new List<Vector3>(path.WaypointCount);
-                for (int i = 0; i < path.WaypointCount; i++)
-                    result.Add(path.GetWaypointPosition(i));
+                List<Vector3> linkedPath;
+                List<bool> linkedFlags;
+                offMesh = RuntimeRainNavDerivedData.TryBuildLinkedWorldPath(path, from, to,
+                    out linkedPath, out linkedFlags);
+                if (offMesh)
+                {
+                    result = linkedPath;
+                    offMeshFlags = linkedFlags;
+                }
+                else
+                {
+                    result = new List<Vector3>(path.WaypointCount);
+                    for (int i = 0; i < path.WaypointCount; i++)
+                        result.Add(path.GetWaypointPosition(i));
+                }
                 partial = path.IsPartial;
-                detail = "rain=ok graph=" + graph.GetType().Name + " pts=" + result.Count + " partial=" + (path.IsPartial ? "1" : "0") + " slices=" + job.Slices + " ms=" + job.CpuMilliseconds;
+                detail = "rain=ok graph=" + graph.GetType().Name + " pts=" + result.Count +
+                    " partial=" + (path.IsPartial ? "1" : "0") + " offmesh=" + (offMesh ? "1" : "0") +
+                    " slices=" + job.Slices + " ms=" + job.CpuMilliseconds;
                 return result.Count > 0;
             }
             catch (Exception ex)
@@ -1414,7 +1425,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static bool ValidateRainPath(Vector3 from, List<Vector3> points,
             AutoBattleRouteCapabilities capabilities, Transform ignoreRoot,
-            out List<bool> jumpFlags, out string detail)
+            List<bool> forcedJumpFlags, out List<bool> jumpFlags, out string detail)
         {
             jumpFlags = new List<bool>(points == null ? 0 : points.Count);
             for (int i = 0; points != null && i < points.Count; i++) jumpFlags.Add(false);
@@ -1438,6 +1449,22 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 float horizontal = XZDistance(previous, target);
                 if (horizontal < 0.12f)
                 {
+                    previous = target;
+                    continue;
+                }
+
+                bool forcedJump = forcedJumpFlags != null && i < forcedJumpFlags.Count && forcedJumpFlags[i];
+                if (forcedJump)
+                {
+                    bool validLink = capabilities != null && capabilities.AllowJump &&
+                                     TryJumpSegment(previous, target, capabilities, ignoreRoot);
+                    if (!validLink)
+                    {
+                        detail = "offmesh_invalid waypoint=" + i;
+                        return false;
+                    }
+                    jumpFlags[i] = true;
+                    jumps++;
                     previous = target;
                     continue;
                 }
@@ -1476,6 +1503,69 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             detail = "ok jumps=" + jumps;
             return true;
+        }
+
+        private static List<Vector3> OptimizeRainPathWithHardLinks(Vector3 from, List<Vector3> points,
+            List<bool> jumpFlags, Transform ignoreRoot, out List<bool> optimizedFlags, out string detail)
+        {
+            optimizedFlags = new List<bool>();
+            List<Vector3> optimized = new List<Vector3>();
+            if (points == null || points.Count == 0)
+            {
+                detail = "opt=offmesh_empty";
+                return optimized;
+            }
+
+            Vector3 anchor = from;
+            int index = 0;
+            int removed = 0;
+            while (index < points.Count)
+            {
+                int jumpIndex = -1;
+                for (int i = index; i < points.Count; i++)
+                {
+                    if (jumpFlags != null && i < jumpFlags.Count && jumpFlags[i])
+                    {
+                        jumpIndex = i;
+                        break;
+                    }
+                }
+                int normalEnd = jumpIndex >= 0 ? jumpIndex - 1 : points.Count - 1;
+                int cursor = index;
+                while (cursor <= normalEnd)
+                {
+                    int chosen = cursor;
+                    for (int candidate = normalEnd; candidate > cursor; candidate--)
+                    {
+                        if (!CanFollowSegment(anchor, points[candidate], ignoreRoot)) continue;
+                        chosen = candidate;
+                        break;
+                    }
+                    AddOptimizedPoint(optimized, optimizedFlags, points[chosen], false);
+                    removed += chosen - cursor;
+                    anchor = points[chosen];
+                    cursor = chosen + 1;
+                }
+                if (jumpIndex < 0) break;
+                AddOptimizedPoint(optimized, optimizedFlags, points[jumpIndex], true);
+                anchor = points[jumpIndex];
+                index = jumpIndex + 1;
+            }
+            detail = "opt=offmesh_hard_anchors in=" + points.Count + " out=" + optimized.Count +
+                " removed=" + removed;
+            return optimized;
+        }
+
+        private static void AddOptimizedPoint(List<Vector3> points, List<bool> flags, Vector3 point, bool jump)
+        {
+            if (points.Count > 0 && XZDistance(points[points.Count - 1], point) < 0.08f &&
+                Mathf.Abs(points[points.Count - 1].y - point.y) < 0.10f)
+            {
+                if (jump) flags[flags.Count - 1] = true;
+                return;
+            }
+            points.Add(point);
+            flags.Add(jump);
         }
 
         private static object InvokePathBuilder(object graph, Vector3 from, Vector3 to, out string detail)
@@ -1603,11 +1693,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (string.IsNullOrEmpty(reason)) reason = "rain=" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 80);
             }
 
-            if ((active && graphCount > 0 && nearest) || (rainGraphCount > 0 && rainNearest))
+            if (rainGraphCount > 0 && rainNearest)
             {
                 SetNavigationState(AutoBattleNavResourceState.Ready,
                     "map=" + SafeMap(_navMapName) +
-                    " provider=" + (rainGraphCount > 0 && rainNearest ? "rain" : "astar") +
+                    " provider=rain" +
                     " astarActive=" + (active ? "1" : "0") + " astarGraphs=" + graphCount + " astarNearest=" + (nearest ? "1" : "0") +
                     " rainGraphs=" + rainGraphCount + " rainNearest=" + (rainNearest ? "1" : "0") +
                     " wait=" + (now - _navLoadStartedAt).ToString("0.0"));

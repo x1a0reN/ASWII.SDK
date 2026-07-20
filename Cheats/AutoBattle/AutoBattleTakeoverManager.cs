@@ -3079,25 +3079,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _stuckCount++;
                 _stuckTime = 0f;
                 _nextStuckRecoveryTime = Time.time + 0.45f;
-                bool rainRecovery = !string.IsNullOrEmpty(LastPathProvider) &&
-                                    LastPathProvider.StartsWith("rain_navmesh", StringComparison.Ordinal);
-                Vector3 routeForward = player.transform.forward;
-                if (Path.Count > 0 && _pathIndex >= 0 && _pathIndex < Path.Count)
-                    routeForward = Path[_pathIndex] - player.transform.position;
-                routeForward.y = 0f;
                 if (seekNavigation && sense != null && !sense.StrictFireLineOfSight)
                     MarkCurrentSearchPointFailed(player, sense, "no_progress");
                 ClearCurrentPath();
                 _nextRepath = 0f;
                 LastPath = "stuck_repath#" + _stuckCount;
-                Vector3 side = player.transform.right * ((_stuckCount % 2 == 0) ? 1f : -1f);
                 Vector3 forward = player.transform.forward;
                 forward.y = 0f;
-                side.y = 0f;
                 if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
-                if (side.sqrMagnitude < 0.01f) side = Vector3.right;
                 forward.Normalize();
-                side.Normalize();
                 if (SafeIsOnGround(player) &&
                     AutoBattleRoutePlanner.ShouldJumpForwardObstacle(player.transform.position, forward, SafeRoot(player)))
                 {
@@ -3105,23 +3095,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
                     LastPath += " jump_obstacle";
                 }
-                Vector3 rainClearanceDirection;
-                string rainClearanceDetail;
-                if (rainRecovery && AutoBattleRoutePlanner.TryFindRainClearanceDirection(
-                    player.transform.position,
-                    routeForward.sqrMagnitude > 0.01f ? routeForward : forward,
-                    SafeRoot(player), out rainClearanceDirection, out rainClearanceDetail))
-                {
-                    LastPath += " rain_clearance";
-                    LastPathDetail = rainClearanceDetail + " dest=" + FormatVec(dest);
-                    FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=rain_navmesh recovery=corner_clearance " +
-                        rainClearanceDetail + " pos=" + FormatVec(player.transform.position));
-                    return rainClearanceDirection;
-                }
-                Vector3 escape = _stuckCount % 3 == 0
-                    ? -forward
-                    : side - forward * 0.45f;
-                return escape.sqrMagnitude < 0.01f ? -forward : escape.normalized;
+                return Vector3.zero;
             }
 
             if (Path.Count == 0)
@@ -3182,7 +3156,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             dir.y = 0f;
             if (dir.sqrMagnitude < 0.01f) return Vector3.zero;
             dir.Normalize();
-            if (jumpEdge && d <= 1.60f && Time.time >= _nextPathJumpTime && SafeIsOnGround(player))
+            if (jumpEdge && d <= 4.30f && Time.time >= _nextPathJumpTime && SafeIsOnGround(player))
             {
                 AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
                 AutoBattleInput.HoldAction(ActionType.kActionJump, 0.24f);
@@ -3214,14 +3188,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 LastPathDetail = "wallAhead=1 dest=" + FormatVec(dest);
                 FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=follow result=partial nodes=0 corners=0 rejectGround=0 rejectBlock=1 frontier=1 reason=wall_ahead dest=" + FormatVec(dest));
                 _wallAheadCount++;
-                Vector3 side = Vector3.Cross(Vector3.up, dir).normalized *
-                               ((_wallAheadCount % 2 == 0) ? 1f : -1f);
-                Vector3 escape = side - dir * 0.55f;
-                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, escape.normalized, SafeRoot(player)))
-                    escape = -side - dir * 0.55f;
-                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, escape.normalized, SafeRoot(player)))
-                    escape = -dir;
-                return escape.sqrMagnitude < 0.01f ? Vector3.zero : escape.normalized;
+                return Vector3.zero;
             }
             _wallAheadCount = 0;
             LastPath = (followingPendingPath ? "path_pending_follow " : "path ") +
@@ -3237,7 +3204,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             int seq = ++_pathBuildSeq;
             AutoBattleRouteCapabilities capabilities = GetRouteCapabilities(player);
-            capabilities.RequireRainPath = requireRainPath;
+            capabilities.RequireRainPath = true;
             AutoBattleRouteResult route = AutoBattleRoutePlanner.BuildRoute(from, to, ignoreRoot, capabilities);
             if (route != null && route.Provider != null && route.Provider.EndsWith("_pending", StringComparison.Ordinal))
             {

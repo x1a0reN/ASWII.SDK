@@ -231,22 +231,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         _pendingLocalOrigin = playerPosition;
                     }
                     float pendingAge = Time.time - _pendingLocalStartedAt;
-                    float pendingTravel = XzDistance(_pendingLocalOrigin, playerPosition);
                     if (pendingAge >= 1.25f)
                     {
                         ClearPath();
                         _nextRepath = Time.time + 0.2f;
                         LastPath = "path_pending_timeout";
                         return Vector3.zero;
-                    }
-                    if (pendingAge <= 0.48f && pendingTravel <= 1.6f)
-                    {
-                        Vector3 localAdvance = TryPendingLocalAdvance(player, _destination);
-                        if (localAdvance.sqrMagnitude > 0.01f)
-                        {
-                            LastPath = "path_pending_local";
-                            return localAdvance;
-                        }
                     }
                     LastPath = "path_pending_hold";
                 }
@@ -315,16 +305,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     _wallRecoveryCount++;
                     ClearPath();
                     _nextRepath = 0f;
-                    bool rainRoute = !string.IsNullOrEmpty(LastPathProvider) &&
-                                     LastPathProvider.StartsWith("rain_navmesh", StringComparison.Ordinal);
-                    string clearanceDetail;
-                    if (!rainRoute || !AutoBattleRoutePlanner.TryFindRainClearanceDirection(
-                            playerPosition, direction, player.transform.root,
-                            out _wallRecoveryDirection, out clearanceDetail))
-                        _wallRecoveryDirection = BuildStableRecoveryDirection(player, direction, 0.72f);
+                    _wallRecoveryDirection = Vector3.zero;
                 }
                 LastPath = "wall_repath";
-                return _wallRecoveryDirection;
+                return Vector3.zero;
             }
             _wallRecoveryCount = 0;
             _wallRecoveryDirection = Vector3.zero;
@@ -366,24 +350,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 {
                     LastPath = "stuck_local_recovery#" + _stuckRecoveryCount;
                 }
-                bool rainRoute = !string.IsNullOrEmpty(LastPathProvider) &&
-                                 LastPathProvider.StartsWith("rain_navmesh", StringComparison.Ordinal);
                 if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
                     playerPosition, forward, player.transform.root))
                 {
                     AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
                     AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
                 }
-                Vector3 rainClearanceDirection;
-                string rainClearanceDetail;
-                if (rainRoute && AutoBattleRoutePlanner.TryFindRainClearanceDirection(
-                    playerPosition, direction, player.transform.root,
-                    out rainClearanceDirection, out rainClearanceDetail))
-                {
-                    LastPath += " rain_clearance";
-                    return rainClearanceDirection;
-                }
-                return BuildStableRecoveryDirection(player, forward, 1f);
+                ClearPath();
+                _nextRepath = 0f;
+                return Vector3.zero;
             }
 
             LastPath = (_pathSearchPending ? "path_pending_follow " : "path ") +
@@ -393,51 +368,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         public static Vector3 NavigatePursuit(Character player, Vector3 liveTargetPosition)
         {
-            if (player == null || player.transform == null) return Vector3.zero;
-            Vector3 playerPosition = player.transform.position;
-            Vector3 direction = liveTargetPosition - playerPosition;
-            float verticalDelta = Mathf.Abs(direction.y);
-            direction.y = 0f;
-            float distance = direction.magnitude;
-            if (distance <= 0.65f)
-            {
-                LastPathIntent = "attack_chase";
-                LastPath = "attack_chase_face_range";
-                return Vector3.zero;
-            }
-            direction /= distance;
-
-            bool directAdvance = verticalDelta <= 1.25f &&
-                !AutoBattleRoutePlanner.HasForwardBlock(playerPosition, direction, player.transform.root);
-            if (!directAdvance)
-                return NavigateSurvival(player, liveTargetPosition, false, "attack_chase");
-
-            if (!string.Equals(_navigationIntent, "attack_chase", StringComparison.Ordinal))
-            {
-                ClearPath();
-                _navigationIntent = "attack_chase";
-                _lastPathProgressPosition = playerPosition;
-                _lastPathProgressAt = Time.time;
-                _lastActualPathProgressAt = Time.time;
-            }
-            else if (Path.Count > 0 || _pathSearchPending)
-            {
-                ClearPath();
-            }
-
-            if (XzDistance(_lastPathProgressPosition, playerPosition) >= 0.35f)
-            {
-                _lastPathProgressPosition = playerPosition;
-                _lastPathProgressAt = Time.time;
-                _lastActualPathProgressAt = Time.time;
-            }
-            _destination = liveTargetPosition;
-            _hasDestination = true;
-            _nextRepath = 0f;
-            LastPathIntent = "attack_chase";
-            LastPathProvider = "direct_pursuit";
-            LastPath = "attack_chase_direct";
-            return direction;
+            return NavigateSurvival(player, liveTargetPosition, false, "attack_chase");
         }
 
         private static Vector3 ApplyLocalAvoidance(Character player, Vector3 desired)
@@ -961,7 +892,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static AutoBattleRouteCapabilities CreateCapabilities(Character player)
         {
-            AutoBattleRouteCapabilities capabilities = new AutoBattleRouteCapabilities();
+            AutoBattleRouteCapabilities capabilities = new AutoBattleRouteCapabilities
+            {
+                RequireRainPath = true
+            };
             try
             {
                 if (player.character_info != null)
