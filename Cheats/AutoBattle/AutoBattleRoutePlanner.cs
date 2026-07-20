@@ -29,6 +29,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public float JumpVelocity = 6.5f;
         public float RunSpeed = 6.0f;
         public bool AllowJump = true;
+        public bool RequireRainPath;
     }
 
     internal enum AutoBattleNavResourceState
@@ -89,6 +90,23 @@ namespace ASWDEBUG.Cheats.AutoBattle
         internal static bool IsGameNavigationReady
         {
             get { return _navState == AutoBattleNavResourceState.Ready; }
+        }
+
+        internal static bool IsPointOnOwnedRainGraph(Vector3 point, float tolerance)
+        {
+            try
+            {
+                NavigationManager manager = NavigationManager.Instance;
+                RAINNavigationGraph ownedGraph = RuntimeRainNavMesh.OwnedGraph;
+                if (manager == null || ownedGraph == null) return false;
+                List<RAINNavigationGraph> graphs = manager.GraphsForPoints(
+                    point, point, Mathf.Max(0.25f, tolerance), NavigationManager.GraphType.Navmesh, null);
+                return graphs != null && graphs.Contains(ownedGraph);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         internal static void TickNavigation(Level level, Character player, bool navigationActive)
@@ -226,7 +244,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             string rainDetail = IsGameNavigationReady ? "ready" : RuntimeRainNavMesh.Detail;
             const string unityDetail = "disabled";
 
-            if (HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot))
+            if (!capabilities.RequireRainPath &&
+                HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot))
             {
                 _physicsSearchJob = null;
                 points = new List<Vector3>(1);
@@ -262,8 +281,31 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
                 else if (rainPending)
                 {
+                    if (capabilities.RequireRainPath)
+                    {
+                        route = Pending("rain_navmesh_pending", rainDetail);
+                        LogRoute(route);
+                        return route;
+                    }
                     rainDetail += " fallback=physics_while_pending";
                 }
+
+                if (capabilities.RequireRainPath)
+                {
+                    _physicsSearchJob = null;
+                    route = Fail("rain_navmesh_required",
+                        "result=fail reason=complete_rain_path_unavailable " + rainDetail);
+                    LogRoute(route);
+                    return route;
+                }
+            }
+            else if (capabilities.RequireRainPath)
+            {
+                _physicsSearchJob = null;
+                route = Pending("rain_navmesh_pending",
+                    "result=pending reason=navigation_not_ready state=" + NavigationState);
+                LogRoute(route);
+                return route;
             }
 
             route = BuildPhysicsGridRoute(from, to, ignoreRoot, capabilities, unityDetail, astarDetail, rainDetail);
@@ -923,8 +965,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     }
 
                     finder.MaxYOffset = 4f;
-                    finder.MaxPathfindingSteps = 512;
-                    finder.MaxPathLength = 600f;
+                    finder.MaxPathfindingSteps = 4096;
+                    finder.MaxPathLength = 1200f;
                     finder.StartPath(graph, from, to);
                     job = new RainSearchJob(graph, finder, from, to);
                     _rainSearchJob = job;

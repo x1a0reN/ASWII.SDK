@@ -634,7 +634,31 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             _localPatrolReachedAt = 0f;
             State = AutoBattleState.RouteToEngage;
-            Vector3 moveDir = UpdateNavigation(player, destination, null, false, true);
+            Vector3 moveDir = UpdateNavigation(player, destination, null, false, true, true);
+            if (string.Equals(LastPathProvider, "rain_navmesh_required", StringComparison.Ordinal))
+            {
+                string relocationDetail;
+                bool relocated = LocalNavigationCombatTest.TryRelocatePatrolTarget(
+                    patrolTarget, player.transform.position, out relocationDetail);
+                if (!relocated)
+                    LocalNavigationCombatTest.AdvancePatrolTarget(patrolTarget);
+
+                AutoBattleInput.ClearMovement();
+                _localPatrolTarget = null;
+                _localPatrolIndex = -1;
+                _localPatrolReachedAt = 0f;
+                ClearCurrentPath();
+                _hasDestination = false;
+                _nextRepath = 0f;
+                State = AutoBattleState.StuckRecovery;
+                LastAction = relocated ? "patrol_target_relocated" : "patrol_target_skipped";
+                LastStatus = relocationDetail;
+                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "patrol_route_recovery index=" +
+                    (patrolIndex + 1) + " relocated=" + (relocated ? "1" : "0") +
+                    " detail=" + relocationDetail);
+                LogMaybe(player, null, LastAction);
+                return;
+            }
             AutoBattleInput.SetMoveWorld(player, moveDir, false);
             Vector3 routeLook = GetPathLookDirection(player, moveDir);
             if (routeLook.sqrMagnitude > 0.01f)
@@ -2994,10 +3018,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static Vector3 UpdateNavigation(Character player, Vector3 dest, TargetSense sense, bool tacticalMove)
         {
-            return UpdateNavigation(player, dest, sense, tacticalMove, false);
+            return UpdateNavigation(player, dest, sense, tacticalMove, false, false);
         }
 
         private static Vector3 UpdateNavigation(Character player, Vector3 dest, TargetSense sense, bool tacticalMove, bool preserveHeight)
+        {
+            return UpdateNavigation(player, dest, sense, tacticalMove, preserveHeight, false);
+        }
+
+        private static Vector3 UpdateNavigation(Character player, Vector3 dest, TargetSense sense, bool tacticalMove,
+            bool preserveHeight, bool requireRainPath)
         {
             bool seekNavigation = State == AutoBattleState.Seek && !tacticalMove;
             dest = NormalizeNavigationDestination(player, dest, preserveHeight);
@@ -3033,7 +3063,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _nextRepath = _pathSearchPending
                     ? Time.time
                     : Time.time + (tacticalMove ? 0.24f : RepathInterval);
-                BuildPath(player, player.transform.position, dest, null, SafeRoot(player), tacticalMove);
+                BuildPath(player, player.transform.position, dest, null, SafeRoot(player), tacticalMove, requireRainPath);
             }
 
             bool followingPendingPath = false;
@@ -3090,7 +3120,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
                     LastPath += " jump_obstacle";
                 }
-                return (_stuckCount % 3 == 0 ? side - forward * 0.45f : side + forward * 0.65f).normalized;
+                Vector3 escape = _stuckCount % 3 == 0
+                    ? -forward
+                    : side - forward * 0.45f;
+                return escape.sqrMagnitude < 0.01f ? -forward : escape.normalized;
             }
 
             if (Path.Count == 0)
@@ -3175,11 +3208,14 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     AutoBattleInput.HoldAction(ActionType.kActionJump, 0.18f);
                     LastPath = "wall_repath jump_obstacle";
                 }
-                Vector3 side = player.transform.right * ((_wallAheadCount % 2 == 0) ? 0.55f : -0.55f);
-                side.y = 0f;
-                Vector3 escape = (_wallAheadCount % 3 == 0) ? side : dir + side;
-                if (escape.sqrMagnitude < 0.01f) return Vector3.zero;
-                return escape.normalized;
+                Vector3 side = Vector3.Cross(Vector3.up, dir).normalized *
+                               ((_wallAheadCount % 2 == 0) ? 1f : -1f);
+                Vector3 escape = side - dir * 0.55f;
+                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, escape.normalized, SafeRoot(player)))
+                    escape = -side - dir * 0.55f;
+                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, escape.normalized, SafeRoot(player)))
+                    escape = -dir;
+                return escape.sqrMagnitude < 0.01f ? Vector3.zero : escape.normalized;
             }
             _wallAheadCount = 0;
             LastPath = (followingPendingPath ? "path_pending_follow " : "path ") +
@@ -3187,14 +3223,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return dir;
         }
 
-        private static void BuildPath(Character player, Vector3 from, Vector3 to, Character expectedTarget, Transform ignoreRoot, bool tacticalMove)
+        private static void BuildPath(Character player, Vector3 from, Vector3 to, Character expectedTarget,
+            Transform ignoreRoot, bool tacticalMove, bool requireRainPath)
         {
             bool resumedPendingSearch = _pathSearchPending;
             bool hadUsablePath = Path.Count > 0 && _pathIndex >= 0 && _pathIndex < Path.Count;
 
             int seq = ++_pathBuildSeq;
-            AutoBattleRouteResult route = AutoBattleRoutePlanner.BuildRoute(from, to, ignoreRoot, GetRouteCapabilities(player));
-            if (route != null && route.Provider == "phys_grid_2_5d_pending")
+            AutoBattleRouteCapabilities capabilities = GetRouteCapabilities(player);
+            capabilities.RequireRainPath = requireRainPath;
+            AutoBattleRouteResult route = AutoBattleRoutePlanner.BuildRoute(from, to, ignoreRoot, capabilities);
+            if (route != null && route.Provider != null && route.Provider.EndsWith("_pending", StringComparison.Ordinal))
             {
                 LastPathProvider = route.Provider;
                 _pathSearchPending = true;

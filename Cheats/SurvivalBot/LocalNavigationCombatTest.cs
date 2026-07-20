@@ -1,5 +1,6 @@
 using ASWDEBUG.Cheats.AutoBattle;
 using ASWDEBUG.Logger;
+using RAIN.Navigation;
 using RAIN.Navigation.Graph;
 using RAIN.Navigation.NavMesh;
 using RAIN.Navigation.Pathfinding;
@@ -43,6 +44,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static int _spawnSequence;
         private static int _patrolIndex;
         private static PlayableBounds _playableBounds;
+        private static bool _navigationWasReady;
+        private static bool _hasLastNavigablePlayerPosition;
+        private static Vector3 _lastNavigablePlayerPosition;
+        private static float _navigationLostAt;
+        private static float _nextNavigationRecoveryAt;
+        private static int _navigationRecoveryCount;
 
         private sealed class LocalBotEntry
         {
@@ -141,6 +148,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _actorsPrepared = false;
             _patrolIndex = 0;
             _playableBounds = new PlayableBounds();
+            ResetNavigationRecovery();
             _startedAt = Time.realtimeSinceStartup;
             _nextStatusAt = 0f;
             State = LocalNavigationTestState.Loading;
@@ -157,7 +165,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             MapBakeSceneLoader.Tick();
 
             float now = Time.realtimeSinceStartup;
-            if (now - _startedAt > LoadTimeoutSeconds && State != LocalNavigationTestState.Running)
+            if (now - _startedAt > LoadTimeoutSeconds && !_actorsPrepared)
             {
                 FailAndReturn("level33 测试加载超时");
                 return;
@@ -231,6 +239,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     return;
                 }
                 _actorsPrepared = true;
+                _hasLastNavigablePlayerPosition = true;
+                _lastNavigablePlayerPosition = player.transform.position;
                 AutoBattleManager.SetEnabled(true, "level33_test_ready");
                 State = LocalNavigationTestState.WaitingNavigation;
                 StatusText = "Bot 已生成，等待玩家位置接入 RAIN 导航";
@@ -240,11 +250,28 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (!AutoBattleRoutePlanner.IsGameNavigationReady)
             {
                 FreezeAllBots();
+                AutoBattleInput.ClearMovement();
+                if (_navigationLostAt <= 0f) _navigationLostAt = now;
+                if (_navigationWasReady && _hasLastNavigablePlayerPosition &&
+                    now - _navigationLostAt >= 0.65f && now >= _nextNavigationRecoveryAt)
+                {
+                    _nextNavigationRecoveryAt = now + 2.25f;
+                    RecoverPlayerToLastNavigablePosition(player);
+                }
                 State = LocalNavigationTestState.WaitingNavigation;
                 StatusText = "等待 RAIN 路径查询就绪 | Bot " + AliveBotCount + "/" + Bots.Count;
                 return;
             }
 
+            _navigationWasReady = true;
+            _navigationLostAt = 0f;
+            if (AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(player.transform.position, 1.25f))
+            {
+                _hasLastNavigablePlayerPosition = true;
+                _lastNavigablePlayerPosition = player.transform.position;
+            }
+            if (!AutoBattleManager.Enabled)
+                AutoBattleManager.SetEnabled(true, "level33_test_navigation_recovered");
             State = LocalNavigationTestState.Running;
             TickBotRespawns(level, player);
             AutoBattleManager.Tick(level, player, camera);
@@ -265,6 +292,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _actorsPrepared = false;
             _patrolIndex = 0;
             _playableBounds = new PlayableBounds();
+            ResetNavigationRecovery();
             AutoBattleManager.SetEnabled(false, "level33_test_stop:" + reason);
             AutoBattleInput.ClearAll();
             DestroyBots();
@@ -317,6 +345,56 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 " to=" + (_patrolIndex + 1));
         }
 
+        internal static bool TryRelocatePatrolTarget(Character expectedTarget, Vector3 origin, out string detail)
+        {
+            detail = "巡逻目标重置失败";
+            if (!Running || expectedTarget == null || expectedTarget.transform == null)
+                return false;
+
+            int targetIndex = -1;
+            for (int i = 0; i < Bots.Count; i++)
+            {
+                if (Bots[i] != null && Bots[i].Character == expectedTarget)
+                {
+                    targetIndex = i;
+                    break;
+                }
+            }
+            RAINNavigationGraph graph = RuntimeRainNavMesh.OwnedGraph;
+            if (targetIndex < 0 || graph == null || graph.Size <= 0 || !_playableBounds.Valid)
+                return false;
+
+            Vector3 spawn;
+            if (!TrySampleGraphPoint(graph, _playableBounds, origin, 10f, 44f, Bots, out spawn) &&
+                !TrySampleGraphPoint(graph, _playableBounds, origin, 5f, 28f, Bots, out spawn))
+            {
+                detail = "Bot " + (targetIndex + 1) + " 无法重置到当前 RAIN 连通区";
+                return false;
+            }
+
+            try
+            {
+                Quaternion rotation = FaceTowards(spawn, origin);
+                expectedTarget.Rebirth(ActorHealth, 0, spawn, rotation);
+                expectedTarget.transform.position = spawn;
+                expectedTarget.transform.rotation = rotation;
+                expectedTarget.invincible_time = 0f;
+                expectedTarget.can_select = true;
+                expectedTarget.ActivateObjects();
+                FreezeRobot(expectedTarget as RobotControl);
+                Bots[targetIndex].RespawnAt = 0f;
+                detail = "Bot " + (targetIndex + 1) + " 已重置到当前可达 RAIN 连通区";
+                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "patrol_target_relocated index=" +
+                    (targetIndex + 1) + " from=" + FormatVector(origin) + " to=" + FormatVector(spawn));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                detail = "Bot " + (targetIndex + 1) + " 重置失败: " + ex.GetType().Name + ":" + Safe(ex.Message);
+                return false;
+            }
+        }
+
         internal static void NotifyLevelExit()
         {
             if (!_enabled && !_ownsDirectScene && Bots.Count == 0) return;
@@ -325,6 +403,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _actorsPrepared = false;
             _patrolIndex = 0;
             _playableBounds = new PlayableBounds();
+            ResetNavigationRecovery();
             Bots.Clear();
             AutoBattleManager.SetEnabled(false, "level33_test_level_exit");
             AutoBattleInput.ClearAll();
@@ -725,14 +804,20 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             try
             {
+                NavigationManager manager = NavigationManager.Instance;
+                List<RAINNavigationGraph> graphs = manager == null
+                    ? null
+                    : manager.GraphsForPoints(from, to, 4f, NavigationManager.GraphType.Navmesh, null);
+                if (graphs == null || !graphs.Contains(graph)) return false;
+
                 RAINPathFinder finder = graph.CreatePathFinder();
                 if (finder == null) return false;
                 finder.MaxYOffset = 4f;
-                finder.MaxPathfindingSteps = 2048;
-                finder.MaxPathLength = 600f;
+                finder.MaxPathfindingSteps = 4096;
+                finder.MaxPathLength = 1200f;
                 finder.StartPath(graph, from, to);
                 RAINPath path = null;
-                for (int slice = 0; slice < 24; slice++)
+                for (int slice = 0; slice < 64; slice++)
                 {
                     bool complete = finder.ComputePath(out path);
                     if (complete || !finder.InProgress) break;
@@ -740,6 +825,44 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return path != null && path.IsValid && !path.IsPartial && path.WaypointCount > 0;
             }
             catch { return false; }
+        }
+
+        private static void RecoverPlayerToLastNavigablePosition(Character player)
+        {
+            if (player == null || player.transform == null || !_hasLastNavigablePlayerPosition) return;
+            try
+            {
+                Vector3 from = player.transform.position;
+                Quaternion rotation = player.transform.rotation;
+                AutoBattleManager.SetEnabled(false, "level33_test_navigation_lost");
+                AutoBattleInput.ClearAll();
+                player.Rebirth(ActorHealth, 0, _lastNavigablePlayerPosition, rotation);
+                player.transform.position = _lastNavigablePlayerPosition;
+                player.transform.rotation = rotation;
+                player.ready = true;
+                player.connected = true;
+                player.playing = true;
+                player.ActivateObjects();
+                _navigationRecoveryCount++;
+                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "navigation_anchor_recovery count=" +
+                    _navigationRecoveryCount + " from=" + FormatVector(from) +
+                    " to=" + FormatVector(_lastNavigablePlayerPosition));
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "navigation_anchor_recovery_failed ex=" +
+                    ex.GetType().Name + ":" + Safe(ex.Message));
+            }
+        }
+
+        private static void ResetNavigationRecovery()
+        {
+            _navigationWasReady = false;
+            _hasLastNavigablePlayerPosition = false;
+            _lastNavigablePlayerPosition = Vector3.zero;
+            _navigationLostAt = 0f;
+            _nextNavigationRecoveryAt = 0f;
+            _navigationRecoveryCount = 0;
         }
 
         private static bool IsSeparated(Vector3 candidate, List<LocalBotEntry> existing, float minimum)
