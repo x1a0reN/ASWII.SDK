@@ -1,4 +1,5 @@
 using System;
+using ASWDEBUG.Cheats.AutoBattle;
 using ASWDEBUG.Cheats.SurvivalBot;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Patch;
@@ -45,6 +46,8 @@ namespace ASWDEBUG.Main
 
             try
             {
+                AutoBattleRoutePlanner.TickNavigation(level, player,
+                    SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled);
                 SurvivalBotManager.Tick(level, player, CameraMain);
             }
             catch (Exception ex)
@@ -64,6 +67,7 @@ namespace ASWDEBUG.Main
             if (Instance != this) return;
             Instance = null;
             SurvivalBotManager.Stop("plugin_destroyed");
+            AutoBattleRoutePlanner.ShutdownNavigation("plugin_destroyed");
             NetworkRouteManager.Shutdown();
         }
     }

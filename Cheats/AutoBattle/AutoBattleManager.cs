@@ -165,13 +165,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
             LastPathIntent = intent;
 
             bool firstDestination = !_hasDestination;
+            bool attackChase = string.Equals(intent, "attack_chase", StringComparison.Ordinal);
             float destinationDelta = firstDestination ? float.MaxValue : XzDistance(_destination, destination);
             float destinationYDelta = firstDestination ? float.MaxValue : Mathf.Abs(_destination.y - destination.y);
+            float softDestinationThreshold = attackChase ? 4.5f : (tacticalMove ? 2f : 2.5f);
+            float hardDestinationThreshold = attackChase ? 11f : 6f;
             bool softDestinationChanged = !firstDestination &&
-                (destinationDelta > (tacticalMove ? 2f : 2.5f) || destinationYDelta > 1.25f);
-            bool hardDestinationChanged = firstDestination || destinationDelta > 6f || destinationYDelta > 2.5f;
+                (destinationDelta > softDestinationThreshold || destinationYDelta > 1.25f);
+            bool hardDestinationChanged = firstDestination || destinationDelta > hardDestinationThreshold || destinationYDelta > 2.5f;
+            bool pendingWithoutPath = attackChase && _pathSearchPending &&
+                (Path.Count == 0 || _pathIndex >= Path.Count);
             bool commitDestination = firstDestination || hardDestinationChanged ||
-                (softDestinationChanged && Time.time >= _nextRepath);
+                (softDestinationChanged && !pendingWithoutPath && Time.time >= _nextRepath);
             if (hardDestinationChanged)
             {
                 ClearPath();
@@ -196,7 +201,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (!needRepath && softDestinationChanged && commitDestination) needRepath = true;
             if ((_pathSearchPending || needRepath) && Time.time >= _nextRepath)
             {
-                _nextRepath = _pathSearchPending ? Time.time : Time.time + (tacticalMove ? 0.24f : 0.36f);
+                _nextRepath = _pathSearchPending
+                    ? Time.time
+                    : Time.time + (attackChase ? 0.70f : (tacticalMove ? 0.24f : 0.36f));
                 BuildPath(player, playerPosition, _destination);
             }
 
@@ -339,6 +346,55 @@ namespace ASWDEBUG.Cheats.AutoBattle
             LastPath = (_pathSearchPending ? "path_pending_follow " : "path ") +
                 (_pathIndex + 1) + "/" + Path.Count + (jump ? " jump" : string.Empty);
             return ApplyLocalAvoidance(player, direction);
+        }
+
+        public static Vector3 NavigatePursuit(Character player, Vector3 liveTargetPosition)
+        {
+            if (player == null || player.transform == null) return Vector3.zero;
+            Vector3 playerPosition = player.transform.position;
+            Vector3 direction = liveTargetPosition - playerPosition;
+            float verticalDelta = Mathf.Abs(direction.y);
+            direction.y = 0f;
+            float distance = direction.magnitude;
+            if (distance <= 0.65f)
+            {
+                LastPathIntent = "attack_chase";
+                LastPath = "attack_chase_face_range";
+                return Vector3.zero;
+            }
+            direction /= distance;
+
+            bool directAdvance = verticalDelta <= 1.25f &&
+                !AutoBattleRoutePlanner.HasForwardBlock(playerPosition, direction, player.transform.root);
+            if (!directAdvance)
+                return NavigateSurvival(player, liveTargetPosition, false, "attack_chase");
+
+            if (!string.Equals(_navigationIntent, "attack_chase", StringComparison.Ordinal))
+            {
+                ClearPath();
+                _navigationIntent = "attack_chase";
+                _lastPathProgressPosition = playerPosition;
+                _lastPathProgressAt = Time.time;
+                _lastActualPathProgressAt = Time.time;
+            }
+            else if (Path.Count > 0 || _pathSearchPending)
+            {
+                ClearPath();
+            }
+
+            if (XzDistance(_lastPathProgressPosition, playerPosition) >= 0.35f)
+            {
+                _lastPathProgressPosition = playerPosition;
+                _lastPathProgressAt = Time.time;
+                _lastActualPathProgressAt = Time.time;
+            }
+            _destination = liveTargetPosition;
+            _hasDestination = true;
+            _nextRepath = 0f;
+            LastPathIntent = "attack_chase";
+            LastPathProvider = "direct_pursuit";
+            LastPath = "attack_chase_direct";
+            return direction;
         }
 
         private static Vector3 ApplyLocalAvoidance(Character player, Vector3 desired)

@@ -90,6 +90,24 @@ namespace ASWDEBUG.Cheats.AutoBattle
             get { return _navState == AutoBattleNavResourceState.Ready; }
         }
 
+        internal static void TickNavigation(Level level, Character player, bool navigationActive)
+        {
+            RuntimeRainNavMesh.Tick(level, player, navigationActive);
+            if (player != null && player.transform != null)
+                UpdateNavigationStatus(player.transform.position);
+        }
+
+        internal static void ShutdownNavigation(string reason)
+        {
+            _physicsSearchJob = null;
+            _rainSearchJob = null;
+            RuntimeRainNavMesh.Shutdown(reason);
+            _navMapName = string.Empty;
+            _navResourceDeclared = false;
+            _navLoadRequested = false;
+            _navState = AutoBattleNavResourceState.Unavailable;
+        }
+
         internal static void PrepareNavigationLoad(string mapName, ref bool loadNavmesh)
         {
             string normalized = (mapName ?? string.Empty).Trim().ToLowerInvariant();
@@ -99,18 +117,21 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (declared && !loadNavmesh)
                 loadNavmesh = true;
 
+            RuntimeRainNavMesh.PrepareMap(normalized, !declared);
+
             _navMapName = normalized;
             _navResourceDeclared = declared;
-            _navLoadRequested = loadNavmesh;
+            _navLoadRequested = loadNavmesh || RuntimeRainNavMesh.Requested;
             _navLoadStartedAt = Time.realtimeSinceStartup;
             _nextNavProbeTime = 0f;
             _physicsSearchJob = null;
             _rainSearchJob = null;
-            SetNavigationState(declared && loadNavmesh ? AutoBattleNavResourceState.Loading : AutoBattleNavResourceState.Unavailable,
+            SetNavigationState(_navLoadRequested ? AutoBattleNavResourceState.Loading : AutoBattleNavResourceState.Unavailable,
                 "map=" + SafeMap(normalized) +
                 " manifest=" + (declared ? "hit" : "miss") +
                 " original=" + (original ? "1" : "0") +
-                " final=" + (loadNavmesh ? "1" : "0") +
+                " native=" + (loadNavmesh ? "1" : "0") +
+                " runtime=" + (RuntimeRainNavMesh.Requested ? "1" : "0") +
                 " forced=" + (!original && loadNavmesh ? "1" : "0"));
         }
 
@@ -149,7 +170,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             List<Vector3> points;
             if (capabilities == null) capabilities = new AutoBattleRouteCapabilities();
             const string astarDetail = "disabled";
-            const string rainDetail = "disabled";
+            string rainDetail = IsGameNavigationReady ? "ready" : RuntimeRainNavMesh.Detail;
             const string unityDetail = "disabled";
 
             if (HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot))
@@ -162,12 +183,27 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return route;
             }
 
-            if (_physicsSearchJob != null && _physicsSearchJob.Matches(from, to, ignoreRoot))
+            if (IsGameNavigationReady)
             {
-                route = BuildPhysicsGridRoute(from, to, ignoreRoot, capabilities,
-                    _physicsSearchJob.UnityDetail, astarDetail, rainDetail);
-                LogRoute(route);
-                return route;
+                bool rainPending;
+                bool rainPartial;
+                if (TryBuildRainPath(from, to, out points, out rainDetail, out rainPending, out rainPartial))
+                {
+                    string validationDetail = "not_checked";
+                    if (!rainPartial && ValidateRainPath(from, points, ignoreRoot, out validationDetail))
+                    {
+                        _physicsSearchJob = null;
+                        route = FromPoints("rain_navmesh", false, points, rainDetail + " validate=ok");
+                        AnnotateBuiltInJumpFlags(route, from, capabilities, ignoreRoot);
+                        LogRoute(route);
+                        return route;
+                    }
+                    rainDetail += rainPartial ? " validate=partial_rejected" : " validate=" + validationDetail;
+                }
+                else if (rainPending)
+                {
+                    rainDetail += " fallback=physics_while_pending";
+                }
             }
 
             route = BuildPhysicsGridRoute(from, to, ignoreRoot, capabilities, unityDetail, astarDetail, rainDetail);
@@ -780,11 +816,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool TryBuildRainPath(Vector3 from, Vector3 to, out List<Vector3> result, out string detail, out bool pending)
+        private static bool TryBuildRainPath(Vector3 from, Vector3 to, out List<Vector3> result, out string detail, out bool pending, out bool partial)
         {
             result = null;
             detail = "rain=not_tried";
             pending = false;
+            partial = false;
             try
             {
                 if (NavigationManager.Instance == null)
@@ -794,7 +831,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     return false;
                 }
                 IList<string> tags = null;
-                List<RAINNavigationGraph> graphs = NavigationManager.Instance.GraphsForPoints(from, to, 2f, NavigationManager.GraphType.Navmesh, tags);
+                List<RAINNavigationGraph> graphs = NavigationManager.Instance.GraphsForPoints(from, to, 4f, NavigationManager.GraphType.Navmesh, tags);
                 if (graphs == null || graphs.Count == 0)
                 {
                     _rainSearchJob = null;
@@ -803,6 +840,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
 
                 RAINNavigationGraph graph = graphs[0];
+                if (RuntimeRainNavMesh.Requested)
+                {
+                    RAINNavigationGraph ownedGraph = RuntimeRainNavMesh.OwnedGraph;
+                    if (ownedGraph == null || !graphs.Contains(ownedGraph))
+                    {
+                        _rainSearchJob = null;
+                        detail = "rain=owned_graph_not_for_points";
+                        return false;
+                    }
+                    graph = ownedGraph;
+                }
                 RainSearchJob job = _rainSearchJob;
                 if (job == null || !job.Matches(graph, from, to))
                 {
@@ -814,9 +862,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         return false;
                     }
 
-                    finder.MaxYOffset = 2f;
-                    finder.MaxPathfindingSteps = 220;
-                    finder.MaxPathLength = 300f;
+                    finder.MaxYOffset = 4f;
+                    finder.MaxPathfindingSteps = 512;
+                    finder.MaxPathLength = 600f;
                     finder.StartPath(graph, from, to);
                     job = new RainSearchJob(graph, finder, from, to);
                     _rainSearchJob = job;
@@ -831,7 +879,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
                 if (!complete && job.Finder.InProgress)
                 {
-                    if (job.Slices >= 40 || job.CpuMilliseconds >= 240L)
+                    if (job.Slices >= 48 || job.CpuMilliseconds >= 480L)
                     {
                         _rainSearchJob = null;
                         detail = "rain=timeout graph=" + graph.GetType().Name + " slices=" + job.Slices + " ms=" + job.CpuMilliseconds;
@@ -853,6 +901,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 result = new List<Vector3>(path.WaypointCount);
                 for (int i = 0; i < path.WaypointCount; i++)
                     result.Add(path.GetWaypointPosition(i));
+                partial = path.IsPartial;
                 detail = "rain=ok graph=" + graph.GetType().Name + " pts=" + result.Count + " partial=" + (path.IsPartial ? "1" : "0") + " slices=" + job.Slices + " ms=" + job.CpuMilliseconds;
                 return result.Count > 0;
             }
@@ -862,6 +911,49 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 detail = "rain=ex:" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 96);
                 return false;
             }
+        }
+
+        private static bool ValidateRainPath(Vector3 from, List<Vector3> points, Transform ignoreRoot, out string detail)
+        {
+            detail = "empty";
+            if (points == null || points.Count == 0) return false;
+            if (!IsFinite(from))
+            {
+                detail = "invalid_start";
+                return false;
+            }
+            Vector3 previous = from;
+            for (int i = 0; i < points.Count; i++)
+            {
+                Vector3 target = points[i];
+                if (!IsFinite(target))
+                {
+                    detail = "invalid_waypoint=" + i;
+                    return false;
+                }
+                float horizontal = XZDistance(previous, target);
+                if (horizontal < 0.12f)
+                {
+                    previous = target;
+                    continue;
+                }
+
+                int segments = Mathf.Clamp(Mathf.CeilToInt(horizontal / 0.9f), 1, 96);
+                Vector3 segmentStart = previous;
+                for (int segment = 1; segment <= segments; segment++)
+                {
+                    Vector3 segmentEnd = Vector3.Lerp(previous, target, (float)segment / segments);
+                    if (!CanFollowSegment(segmentStart, segmentEnd, ignoreRoot))
+                    {
+                        detail = "blocked waypoint=" + i + " segment=" + segment + "/" + segments;
+                        return false;
+                    }
+                    segmentStart = segmentEnd;
+                }
+                previous = target;
+            }
+            detail = "ok";
+            return true;
         }
 
         private static object InvokePathBuilder(object graph, Vector3 from, Vector3 to, out string detail)
@@ -924,10 +1016,24 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static void UpdateNavigationStatus(Vector3 probe)
         {
-            if (!_navResourceDeclared || !_navLoadRequested)
+            bool runtimeRequested = RuntimeRainNavMesh.Requested;
+            if ((!_navResourceDeclared || !_navLoadRequested) && !runtimeRequested)
             {
                 if (_navState != AutoBattleNavResourceState.Unavailable)
                     SetNavigationState(AutoBattleNavResourceState.Unavailable, "map=" + SafeMap(_navMapName) + " reason=not_requested");
+                return;
+            }
+
+            if (runtimeRequested && RuntimeRainNavMesh.HasFailed)
+            {
+                SetNavigationState(AutoBattleNavResourceState.Fallback,
+                    "map=" + SafeMap(_navMapName) + " provider=runtime reason=" + RuntimeRainNavMesh.Detail);
+                return;
+            }
+            if (runtimeRequested && RuntimeRainNavMesh.IsPending)
+            {
+                SetNavigationState(AutoBattleNavResourceState.Loading,
+                    "map=" + SafeMap(_navMapName) + " provider=runtime " + RuntimeRainNavMesh.Detail);
                 return;
             }
 
@@ -961,8 +1067,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 rainGraphCount = manager == null || manager.NavMeshGraphs == null ? 0 : manager.NavMeshGraphs.Count;
                 if (manager != null && rainGraphCount > 0)
                 {
-                    List<RAINNavigationGraph> rainGraphs = manager.GraphsForPoints(probe, probe, 2f, NavigationManager.GraphType.Navmesh, null);
+                    List<RAINNavigationGraph> rainGraphs = manager.GraphsForPoints(probe, probe, 4f, NavigationManager.GraphType.Navmesh, null);
                     rainNearest = rainGraphs != null && rainGraphs.Count > 0;
+                    if (runtimeRequested)
+                    {
+                        RAINNavigationGraph ownedGraph = RuntimeRainNavMesh.OwnedGraph;
+                        rainNearest = ownedGraph != null && rainGraphs != null && rainGraphs.Contains(ownedGraph);
+                    }
                 }
             }
             catch (Exception ex)
@@ -981,7 +1092,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return;
             }
 
-            if (now - _navLoadStartedAt >= NavLoadTimeout)
+            float timeoutOrigin = runtimeRequested && RuntimeRainNavMesh.IsReady
+                ? RuntimeRainNavMesh.ReadyAt
+                : _navLoadStartedAt;
+            if (now - timeoutOrigin >= NavLoadTimeout)
             {
                 SetNavigationState(AutoBattleNavResourceState.Fallback,
                     "map=" + SafeMap(_navMapName) +
@@ -1016,6 +1130,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static string SafeMap(string mapName)
         {
             return string.IsNullOrEmpty(mapName) ? "-" : SafeOneLine(mapName, 48);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return !float.IsNaN(value.x) && !float.IsInfinity(value.x) &&
+                   !float.IsNaN(value.y) && !float.IsInfinity(value.y) &&
+                   !float.IsNaN(value.z) && !float.IsInfinity(value.z);
         }
 
         private static AutoBattleRouteResult FromPoints(string provider, bool partial, List<Vector3> points, string detail)

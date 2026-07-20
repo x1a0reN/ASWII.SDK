@@ -85,7 +85,8 @@ namespace ASWDEBUG.Patch
 
         private static void PatchGameHooks(HarmonyInstance harmony)
         {
-            PatchByName(harmony, typeof(Level), "LoadMap", 3, "LevelLoadMapPrefix", null);
+            PatchByName(harmony, typeof(Level), "LoadMap", 3, "LevelLoadMapPrefix", "LevelLoadMapPostfix");
+            PatchByName(harmony, typeof(Level), "OnExit", 0, "LevelExitPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseCharacterInfo", 1, "CharacterInfoPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseGameEnd", 1, "GameEndPrefix", null);
             PatchByName(harmony, typeof(LobbyConnection), "RequestMatching", 2, "MatchingRequestedPrefix", null);
@@ -249,6 +250,16 @@ namespace ASWDEBUG.Patch
         private static void LevelLoadMapPrefix(string name, ref bool load_navmesh)
         {
             AutoBattleRoutePlanner.PrepareNavigationLoad(name, ref load_navmesh);
+        }
+
+        private static void LevelLoadMapPostfix(bool __result)
+        {
+            if (!__result) AutoBattleRoutePlanner.ShutdownNavigation("load_map_rejected");
+        }
+
+        private static void LevelExitPrefix()
+        {
+            AutoBattleRoutePlanner.ShutdownNavigation("level_exit");
         }
 
         private static void CharacterInfoPrefix(NetworkStream reader)

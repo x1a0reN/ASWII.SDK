@@ -12,9 +12,18 @@ This branch is intentionally limited to the survival automation runtime.
 6. After one kill or assist, navigate to a cliff and jump; use `Suicide(uid)` only as a timeout fallback.
 7. Flip the server-provided number of reward cards and return to matching.
 
-The original physics-grid 2.5D route planner is retained, with denser ground support
-sampling and corrected jump-route execution. Survival combat reuses
-its role detection and tactics for heavy, medic/guard, and assault/sniper loadouts.
+The original physics-grid 2.5D route planner is retained as the fallback. Maps that
+do not ship a native navigation prefab, including `level33`, build an owned RAIN
+NavMesh from the active terrain colliders after the scene reaches `Level.State.kReady`.
+The route order is direct physics, validated RAIN path, then the 2.5D grid. Runtime
+RAIN graphs are unregistered on map exit and never replace the game's own graphs.
+
+Forced hunt does not select a standoff or interception point. It follows the live
+enemy position directly in open space, falls back to global routing only when
+blocked or crossing levels, and keeps pursuit movement active while ranged fire is
+running. Opportunity attacks retain their short combat strafe behavior. Survival
+combat reuses its role detection and tactics for heavy, medic/guard, and
+assault/sniper loadouts.
 
 Press `Delete` to show or hide the project-style configuration panel. Press `F8`
 to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs`.

@@ -91,17 +91,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             get { EnsureLoaded(); return EmergencyDistanceValues[_emergencyDistanceIndex]; }
         }
 
-        public static float AttackStandOffDistance
-        {
-            get
-            {
-                EnsureLoaded();
-                if (_tacticsMode == (int)SurvivalTacticsPreset.Conservative) return 18f;
-                if (_tacticsMode == (int)SurvivalTacticsPreset.Aggressive) return 13f;
-                return 16f;
-            }
-        }
-
         public static float SafePointRefreshSeconds
         {
             get { EnsureLoaded(); return SafePointRefreshValues[_safePointRefreshIndex]; }
