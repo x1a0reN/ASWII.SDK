@@ -96,6 +96,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             get { return _requested && (_state == RuntimeRainNavState.WaitingScene || _state == RuntimeRainNavState.Building); }
         }
 
+        internal static bool IsBuilding
+        {
+            get { return _requested && _state == RuntimeRainNavState.Building; }
+        }
+
         internal static bool HasFailed
         {
             get { return _state == RuntimeRainNavState.Failed; }

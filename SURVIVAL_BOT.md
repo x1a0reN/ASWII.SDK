@@ -37,6 +37,12 @@ disk-cache directory; later normal bot modes prefer this maximum-detail cache an
 fall back to the runtime profile only when it is absent. Enabling the mode on a map
 that already has a compatible cache validates and registers that cache instead of
 rebuilding it.
+Once contour generation has started, normal match completion and `Level.Exit` no
+longer cancel it. Generation continues in the background after leaving the map and
+the UI keeps showing its live progress until the graph is written to disk. Closing
+the game process still loses an unfinished RAIN build because RAIN exposes graph
+serialization only after contour generation completes; this is background
+continuation, not a cross-process checkpoint.
 
 Forced hunt does not select a standoff or interception point. It follows the live
 enemy position directly in open space, falls back to global routing only when

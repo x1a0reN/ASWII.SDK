@@ -639,12 +639,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             Phase = SurvivalBotPhase.MapBake;
             AutoBattleInput.ClearAll();
-            if (level == null || level.state != Level.State.kReady)
-            {
-                StatusText = "地图建图 | 等待地图加载";
-                return;
-            }
-
             RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
             if (snapshot.State == RuntimeRainNavState.Ready)
             {
@@ -662,6 +656,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 StatusText = "地图建图 | 极限精度生成中 " +
                     (snapshot.Progress01 * 100f).ToString("0.0") + "% | 已用 " +
                     snapshot.ElapsedSeconds.ToString("0") + " 秒 | 不限时";
+                return;
+            }
+            if (level == null || level.state != Level.State.kReady)
+            {
+                StatusText = "地图建图 | 等待地图加载";
                 return;
             }
             StatusText = "地图建图 | 准备 " + snapshot.MapName + " | " + snapshot.Detail;

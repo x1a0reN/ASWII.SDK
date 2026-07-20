@@ -110,6 +110,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             _physicsSearchJob = null;
             _rainSearchJob = null;
+            if (SurvivalBotManager.MapBakeEnabled && RuntimeRainNavMesh.IsHighDetail &&
+                RuntimeRainNavMesh.IsBuilding)
+            {
+                FileLogger.Log("AUTO-BATTLE][NAVMESH", "background_build_preserved reason=" +
+                    SafeOneLine(reason, 80) + " map=" + SafeMap(RuntimeRainNavMesh.CurrentMapName));
+                return;
+            }
             RuntimeRainNavMesh.Deactivate(reason);
             ResetNavigationState();
         }
@@ -131,6 +138,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (declared && !loadNavmesh)
                 loadNavmesh = true;
+
+            if (bakeMode && RuntimeRainNavMesh.IsHighDetail && RuntimeRainNavMesh.IsBuilding)
+            {
+                FileLogger.Log("AUTO-BATTLE][NAVMESH", "background_build_kept activeMap=" +
+                    SafeMap(RuntimeRainNavMesh.CurrentMapName) + " incomingMap=" + SafeMap(normalized));
+                return;
+            }
 
             RuntimeRainNavMesh.PrepareMap(normalized, bakeMode || !declared, bakeMode);
 
@@ -155,6 +169,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             if (level == null || string.IsNullOrEmpty(level.map_name)) return;
             string normalized = level.map_name.Trim().ToLowerInvariant();
+            if (RuntimeRainNavMesh.IsHighDetail && RuntimeRainNavMesh.IsBuilding) return;
             if (RuntimeRainNavMesh.Requested && RuntimeRainNavMesh.IsHighDetail &&
                 string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized, StringComparison.OrdinalIgnoreCase))
                 return;
