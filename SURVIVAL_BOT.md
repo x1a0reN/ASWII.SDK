@@ -16,9 +16,13 @@ The original physics-grid 2.5D route planner is retained as the fallback. Maps t
 do not ship a native navigation prefab, including `level33`, build an owned RAIN
 NavMesh from the active terrain colliders after the scene reaches `Level.State.kReady`.
 The route order is direct physics, validated RAIN path, then the 2.5D grid. Runtime
-RAIN graphs are generated once per map and cached for the lifetime of the game
-process. Map exit only unregisters the graph; returning to the same map registers
-the cached graph immediately. Plugin shutdown releases every cached graph. The
+RAIN graphs are generated once per map and cached both in memory and on disk.
+Map exit only unregisters the in-memory graph; returning to the same map registers
+it immediately. A later game process loads the validated graph from
+`Application.persistentDataPath/ASWDEBUG/NavMeshCache`. The wrapper verifies the
+map resource fingerprint, RAIN module identity, generator settings, graph format,
+size limits, and SHA-256 before deserialization; any mismatch falls back to a fresh
+build. Plugin shutdown releases memory graphs without deleting the disk cache. The
 first build uses RAIN's automatic half-CPU worker count and a `0.25` cell size so
 the pre-round wait is used for maximum generation throughput and path detail.
 
@@ -29,7 +33,9 @@ running. Opportunity attacks retain their short combat strafe behavior. Survival
 combat reuses its role detection and tactics for heavy, medic/guard, and
 assault/sniper loadouts.
 
-Press `Delete` to show or hide the project-style configuration panel. Press `F8`
+Press `Delete` to show or hide the project-style configuration panel. Its navigation
+card shows build phase, progress, elapsed time, colliders, graph nodes, bounds,
+worker count, cache source/status/size, and the active route provider. Press `F8`
 to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs`.
 
 ## Second-client network route

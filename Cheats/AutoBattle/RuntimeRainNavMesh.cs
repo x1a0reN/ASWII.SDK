@@ -16,11 +16,35 @@ namespace ASWDEBUG.Cheats.AutoBattle
         Failed
     }
 
+    internal struct RuntimeRainNavSnapshot
+    {
+        public RuntimeRainNavState State;
+        public string MapName;
+        public string Detail;
+        public string CacheSource;
+        public string CacheStatus;
+        public string CacheFileName;
+        public float Progress01;
+        public float ElapsedSeconds;
+        public float TimeoutSeconds;
+        public float CellSize;
+        public int ColliderCount;
+        public int GraphSize;
+        public int WorkerCount;
+        public int CacheCount;
+        public int Generation;
+        public long CacheBytes;
+        public Vector3 BoundsSize;
+    }
+
     internal static class RuntimeRainNavMesh
     {
         private const float SceneSettleSeconds = 0.80f;
         private const float ColliderWaitSeconds = 20f;
         private const float BuildTimeoutSeconds = 75f;
+        private const float RuntimeCellSize = 0.25f;
+        private const string GeneratorSignature =
+            "v1|autoGrid=1|slope=50|height=1.80|radius=0.45|step=0.85|cell=0.25|vertex=0.22|segment=4";
 
         private static RuntimeRainNavState _state;
         private static string _mapName = string.Empty;
@@ -38,6 +62,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static RainNavMesh _navMesh;
         private static bool _reusePending;
         private static CachedNavMeshEntry _activeCache;
+        private static string _lastMapName = string.Empty;
+        private static string _cacheSource = "none";
+        private static string _cacheStatus = "not_checked";
+        private static string _cacheFileName = "-";
+        private static float _progress;
+        private static float _lastBuildSeconds;
+        private static int _colliderCount;
+        private static int _graphSize;
+        private static long _cacheBytes;
+        private static Vector3 _boundsSize;
         private static readonly Dictionary<string, CachedNavMeshEntry> CachedMaps =
             new Dictionary<string, CachedNavMeshEntry>(StringComparer.OrdinalIgnoreCase);
 
@@ -76,11 +110,39 @@ namespace ASWDEBUG.Cheats.AutoBattle
             get { return IsReady && _navMesh != null ? _navMesh.Graph : null; }
         }
 
+        internal static RuntimeRainNavSnapshot GetStatusSnapshot()
+        {
+            float elapsed = _lastBuildSeconds;
+            if (_state == RuntimeRainNavState.Building && _buildStartedAt > 0f)
+                elapsed = Mathf.Max(0f, Time.realtimeSinceStartup - _buildStartedAt);
+            return new RuntimeRainNavSnapshot
+            {
+                State = _state,
+                MapName = string.IsNullOrEmpty(_mapName) ? _lastMapName : _mapName,
+                Detail = _detail,
+                CacheSource = _cacheSource,
+                CacheStatus = _cacheStatus,
+                CacheFileName = _cacheFileName,
+                Progress01 = Mathf.Clamp01(_progress),
+                ElapsedSeconds = elapsed,
+                TimeoutSeconds = BuildTimeoutSeconds,
+                CellSize = RuntimeCellSize,
+                ColliderCount = _colliderCount,
+                GraphSize = _graphSize,
+                WorkerCount = Math.Max(1, Environment.ProcessorCount / 2),
+                CacheCount = CachedMaps.Count,
+                Generation = _generation,
+                CacheBytes = _cacheBytes,
+                BoundsSize = _boundsSize
+            };
+        }
+
         internal static void PrepareMap(string mapName, bool runtimeRequired)
         {
             Deactivate("map_change");
             _generation++;
             _mapName = (mapName ?? string.Empty).Trim().ToLowerInvariant();
+            _lastMapName = _mapName;
             _requested = runtimeRequired && !string.IsNullOrEmpty(_mapName);
             _state = _requested ? RuntimeRainNavState.WaitingScene : RuntimeRainNavState.Idle;
             _detail = _requested ? "waiting_scene" : "native_or_empty";
@@ -90,6 +152,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _readyAt = 0f;
             _nextAttemptAt = 0f;
             _nextLogAt = 0f;
+            _progress = _requested ? 0f : 1f;
+            _lastBuildSeconds = 0f;
+            _colliderCount = 0;
+            _graphSize = 0;
+            _boundsSize = Vector3.zero;
+            _cacheBytes = 0L;
+            _cacheSource = _requested ? "none" : "native";
+            _cacheStatus = _requested ? "checking" : "not_required";
+            _cacheFileName = _requested
+                ? System.IO.Path.GetFileName(RuntimeRainNavDiskCache.GetCachePath(_mapName))
+                : "-";
 
             CachedNavMeshEntry cached;
             if (_requested && TryGetCachedMap(_mapName, out cached))
@@ -98,11 +171,22 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _host = cached.Host;
                 _navMesh = cached.NavMesh;
                 _reusePending = true;
+                ApplyCacheTelemetry(cached, "memory", "memory_hit");
                 _detail = "cached_waiting_scene nodes=" + cached.GraphSize;
+            }
+            else if (_requested && TryLoadDiskMap(_mapName, out cached))
+            {
+                _activeCache = cached;
+                _host = cached.Host;
+                _navMesh = cached.NavMesh;
+                _reusePending = true;
+                ApplyCacheTelemetry(cached, "disk", "disk_hit");
+                _detail = "disk_cached_waiting_scene nodes=" + cached.GraphSize;
             }
             FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_prepare generation=" + _generation +
                 " map=" + SafeMap(_mapName) + " requested=" + (_requested ? "1" : "0") +
-                " cached=" + (_reusePending ? "1" : "0"));
+                " cached=" + (_reusePending ? "1" : "0") + " source=" + _cacheSource +
+                " cacheStatus=" + SafeOneLine(_cacheStatus, 80));
         }
 
         internal static void Tick(Level level, Character player, bool navigationActive)
@@ -234,32 +318,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 size.y = Mathf.Max(12f, size.y + 10f);
                 size.z = Mathf.Max(8f, size.z + 8f);
 
-                _host = new GameObject("ASWDEBUG_RuntimeRainNav_" + SafeMap(_mapName));
-                _host.hideFlags = HideFlags.HideAndDontSave;
-                _host.transform.position = bounds.center;
-                _host.transform.rotation = Quaternion.identity;
-                _host.transform.localScale = size;
-                UnityEngine.Object.DontDestroyOnLoad(_host);
-
-                _navMesh = new RainNavMesh();
-                _navMesh.MountPoint = _host.transform;
-                _navMesh.GraphName = "ASWDEBUG_RuntimeRainNav_" + SafeMap(_mapName) + "_" + _generation;
-                _navMesh.Size = 1f;
-                _navMesh.AutomaticGridSize = true;
-                _navMesh.IncludedLayers = terrainMask;
-                _navMesh.IgnoredTags = new List<string>();
-                _navMesh.UnwalkableTags = new List<string>();
-                _navMesh.MaxSlope = 50f;
-                _navMesh.WalkableHeight = 1.80f;
-                _navMesh.WalkableRadius = 0.45f;
-                _navMesh.StepHeight = 0.85f;
-                _navMesh.CellSize = 0.25f;
-                _navMesh.MaxVertexError = 0.22f;
-                _navMesh.MaxSegmentLength = 4f;
+                _host = CreateHost(bounds.center, size);
+                _navMesh = CreateNavMesh(_host, terrainMask);
                 _navMesh.StartCreatingContours(-1);
 
                 _state = RuntimeRainNavState.Building;
                 _buildStartedAt = Time.realtimeSinceStartup;
+                _progress = 0f;
+                _colliderCount = colliderCount;
+                _boundsSize = size;
+                _graphSize = 0;
+                _cacheSource = "generated";
+                _cacheStatus = "building";
                 _detail = "building progress=0";
                 _nextLogAt = 0f;
                 FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_build_started generation=" + _generation +
@@ -270,6 +340,149 @@ namespace ASWDEBUG.Cheats.AutoBattle
             catch (Exception ex)
             {
                 Fail("build_start_ex:" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 96));
+            }
+        }
+
+        private static GameObject CreateHost(Vector3 center, Vector3 size)
+        {
+            GameObject host = new GameObject("ASWDEBUG_RuntimeRainNav_" + SafeMap(_mapName));
+            host.hideFlags = HideFlags.HideAndDontSave;
+            host.transform.position = center;
+            host.transform.rotation = Quaternion.identity;
+            host.transform.localScale = size;
+            UnityEngine.Object.DontDestroyOnLoad(host);
+            return host;
+        }
+
+        private static RainNavMesh CreateNavMesh(GameObject host, int terrainMask)
+        {
+            RainNavMesh navMesh = new RainNavMesh();
+            navMesh.MountPoint = host.transform;
+            navMesh.GraphName = "ASWDEBUG_RuntimeRainNav_" + SafeMap(_mapName) + "_" + _generation;
+            navMesh.Size = 1f;
+            navMesh.AutomaticGridSize = true;
+            navMesh.IncludedLayers = terrainMask;
+            navMesh.IgnoredTags = new List<string>();
+            navMesh.UnwalkableTags = new List<string>();
+            navMesh.MaxSlope = 50f;
+            navMesh.WalkableHeight = 1.80f;
+            navMesh.WalkableRadius = 0.45f;
+            navMesh.StepHeight = 0.85f;
+            navMesh.CellSize = RuntimeCellSize;
+            navMesh.MaxVertexError = 0.22f;
+            navMesh.MaxSegmentLength = 4f;
+            return navMesh;
+        }
+
+        private static bool TryLoadDiskMap(string mapName, out CachedNavMeshEntry cached)
+        {
+            cached = null;
+            RuntimeRainNavCacheRecord record;
+            string status;
+            string rainIdentity = GetRainIdentity();
+            if (!RuntimeRainNavDiskCache.TryLoad(mapName, rainIdentity, GeneratorSignature, out record, out status))
+            {
+                _cacheStatus = status;
+                FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_miss map=" + SafeMap(mapName) +
+                    " reason=" + SafeOneLine(status, 100) + " file=" + _cacheFileName);
+                return false;
+            }
+
+            GameObject host = null;
+            RainNavMesh navMesh = null;
+            try
+            {
+                host = CreateHost(record.BoundsCenter, record.BoundsSize);
+                navMesh = CreateNavMesh(host, TerrainMask);
+                string capability;
+                if (!ProbeDiskCacheCapabilities(navMesh, out capability))
+                {
+                    _cacheStatus = "api_missing=" + capability;
+                    ReleaseUnregisteredGraph(navMesh, host, "disk_api_missing");
+                    return false;
+                }
+
+                navMesh.Graph.Deserialize(record.Payload);
+                int graphSize = navMesh.Graph == null ? 0 : navMesh.Graph.Size;
+                if (graphSize <= 0 || graphSize != record.GraphSize)
+                {
+                    _cacheStatus = "graph_size_mismatch=" + graphSize + "/" + record.GraphSize;
+                    ReleaseUnregisteredGraph(navMesh, host, "disk_graph_invalid");
+                    return false;
+                }
+
+                cached = new CachedNavMeshEntry(mapName, host, navMesh, graphSize, _generation,
+                    record.ColliderCount, record.BoundsSize, record.FileBytes);
+                CachedMaps[mapName] = cached;
+                FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_hit map=" + SafeMap(mapName) +
+                    " nodes=" + graphSize + " bytes=" + record.FileBytes +
+                    " file=" + SafeOneLine(record.FilePath, 180));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _cacheStatus = "deserialize_ex=" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 80);
+                ReleaseUnregisteredGraph(navMesh, host, "disk_deserialize_failed");
+                FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_invalid map=" + SafeMap(mapName) +
+                    " reason=" + SafeOneLine(_cacheStatus, 120));
+                return false;
+            }
+        }
+
+        private static bool ProbeDiskCacheCapabilities(RainNavMesh navMesh, out string detail)
+        {
+            try
+            {
+                if (navMesh == null || navMesh.Graph == null)
+                {
+                    detail = "graph=null";
+                    return false;
+                }
+                Type graphType = navMesh.Graph.GetType();
+                if (graphType.GetMethod("Serialize", BindingFlags.Instance | BindingFlags.Public, null,
+                    Type.EmptyTypes, null) == null)
+                {
+                    detail = "method=Serialize";
+                    return false;
+                }
+                if (graphType.GetMethod("Deserialize", BindingFlags.Instance | BindingFlags.Public, null,
+                    new Type[] { typeof(byte[]) }, null) == null)
+                {
+                    detail = "method=Deserialize(Byte[])";
+                    return false;
+                }
+                detail = "ok";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                detail = ex.GetType().Name + ":" + SafeOneLine(ex.Message, 80);
+                return false;
+            }
+        }
+
+        private static void ApplyCacheTelemetry(CachedNavMeshEntry cached, string source, string status)
+        {
+            if (cached == null) return;
+            _cacheSource = source;
+            _cacheStatus = status;
+            _progress = 1f;
+            _graphSize = cached.GraphSize;
+            _colliderCount = cached.ColliderCount;
+            _boundsSize = cached.BoundsSize;
+            _cacheBytes = cached.CacheBytes;
+        }
+
+        private static string GetRainIdentity()
+        {
+            try
+            {
+                Assembly assembly = typeof(RainNavMesh).Assembly;
+                return assembly.FullName + "|mvid=" + assembly.ManifestModule.ModuleVersionId.ToString("D");
+            }
+            catch (Exception ex)
+            {
+                return "unknown:" + ex.GetType().Name;
             }
         }
 
@@ -339,10 +552,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _reusePending = false;
                 _state = RuntimeRainNavState.Ready;
                 _readyAt = Time.realtimeSinceStartup;
-                _detail = "ready cached=1 nodes=" + graphSize;
+                _progress = 1f;
+                _graphSize = graphSize;
+                _detail = "ready cached=1 source=" + _cacheSource + " nodes=" + graphSize;
                 FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_reused generation=" + _generation +
                     " map=" + SafeMap(_mapName) + " nodes=" + graphSize +
-                    " cacheCount=" + CachedMaps.Count);
+                    " source=" + _cacheSource + " cacheCount=" + CachedMaps.Count);
             }
             catch (Exception ex)
             {
@@ -376,23 +591,25 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
 
             float now = Time.realtimeSinceStartup;
-            if (now - _buildStartedAt >= BuildTimeoutSeconds)
-            {
-                Fail("build_timeout progress=" + _navMesh.CreatingProgress.ToString("0.000"));
-                return;
-            }
-
             try
             {
+                _progress = Mathf.Clamp01(_navMesh.CreatingProgress);
+                if (now - _buildStartedAt >= BuildTimeoutSeconds)
+                {
+                    Fail("build_timeout progress=" + _progress.ToString("0.000"));
+                    return;
+                }
+
                 if (_navMesh.Creating) _navMesh.CreateContours();
                 if (_navMesh.Creating)
                 {
-                    _detail = "building progress=" + _navMesh.CreatingProgress.ToString("0.000");
+                    _progress = Mathf.Clamp01(_navMesh.CreatingProgress);
+                    _detail = "building progress=" + _progress.ToString("0.000");
                     if (now >= _nextLogAt)
                     {
                         _nextLogAt = now + 1f;
                         FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_building generation=" + _generation +
-                            " map=" + SafeMap(_mapName) + " progress=" + _navMesh.CreatingProgress.ToString("0.000") +
+                            " map=" + SafeMap(_mapName) + " progress=" + _progress.ToString("0.000") +
                             " wait=" + (now - _buildStartedAt).ToString("0.0"));
                     }
                     return;
@@ -405,6 +622,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     return;
                 }
 
+                _progress = 1f;
+                _graphSize = graphSize;
+                _lastBuildSeconds = now - _buildStartedAt;
+                PersistCurrentGraph(graphSize);
                 _navMesh.RegisterNavigationGraph();
                 _registered = true;
                 _state = RuntimeRainNavState.Ready;
@@ -417,16 +638,55 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     CachedMaps.Remove(_mapName);
                     ReleaseCacheEntry(oldCache, "cache_replace");
                 }
-                _activeCache = new CachedNavMeshEntry(_mapName, _host, _navMesh, graphSize, _generation);
+                _activeCache = new CachedNavMeshEntry(_mapName, _host, _navMesh, graphSize, _generation,
+                    _colliderCount, _boundsSize, _cacheBytes);
                 CachedMaps[_mapName] = _activeCache;
                 FileLogger.Log("AUTO-BATTLE][NAVMESH", "runtime_ready generation=" + _generation +
                     " map=" + SafeMap(_mapName) + " nodes=" + graphSize +
-                    " build=" + (now - _buildStartedAt).ToString("0.0") +
-                    " cached=1 cacheCount=" + CachedMaps.Count);
+                    " build=" + _lastBuildSeconds.ToString("0.0") +
+                    " cached=1 disk=" + SafeOneLine(_cacheStatus, 80) +
+                    " cacheCount=" + CachedMaps.Count);
             }
             catch (Exception ex)
             {
                 Fail("build_tick_ex:" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 96));
+            }
+        }
+
+        private static void PersistCurrentGraph(int graphSize)
+        {
+            string capability;
+            if (!ProbeDiskCacheCapabilities(_navMesh, out capability))
+            {
+                _cacheStatus = "api_missing=" + capability;
+                FileLogger.Log("AUTO-BATTLE][NAVCACHE", "save_skipped map=" + SafeMap(_mapName) +
+                    " reason=" + SafeOneLine(_cacheStatus, 100));
+                return;
+            }
+
+            try
+            {
+                _cacheStatus = "saving";
+                byte[] payload = _navMesh.Graph.Serialize();
+                string path;
+                long fileBytes;
+                string status;
+                bool saved = RuntimeRainNavDiskCache.TrySave(_mapName, GetRainIdentity(), GeneratorSignature,
+                    _host.transform.position, _boundsSize, _colliderCount, graphSize, payload,
+                    out fileBytes, out path, out status);
+                _cacheStatus = status;
+                _cacheFileName = System.IO.Path.GetFileName(path);
+                if (saved) _cacheBytes = fileBytes;
+                FileLogger.Log("AUTO-BATTLE][NAVCACHE", (saved ? "disk_saved" : "disk_save_failed") +
+                    " map=" + SafeMap(_mapName) + " nodes=" + graphSize + " payload=" +
+                    (payload == null ? 0 : payload.Length) + " bytes=" + fileBytes +
+                    " status=" + SafeOneLine(status, 100) + " file=" + SafeOneLine(path, 180));
+            }
+            catch (Exception ex)
+            {
+                _cacheStatus = "serialize_ex=" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 80);
+                FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_save_failed map=" + SafeMap(_mapName) +
+                    " reason=" + SafeOneLine(_cacheStatus, 120));
             }
         }
 
@@ -539,6 +799,26 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 " generation=" + entry.Generation + " reason=" + SafeOneLine(reason, 80));
         }
 
+        private static void ReleaseUnregisteredGraph(RainNavMesh navMesh, GameObject host, string reason)
+        {
+            try
+            {
+                if (navMesh != null && navMesh.Graph != null && navMesh.Graph.Size > 0)
+                    navMesh.ClearNavigationGraph();
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_release_ex=" + ex.GetType().Name + ":" +
+                    SafeOneLine(ex.Message, 80));
+            }
+            if (host != null)
+            {
+                try { UnityEngine.Object.Destroy(host); }
+                catch { }
+            }
+            FileLogger.Log("AUTO-BATTLE][NAVCACHE", "disk_graph_released reason=" + SafeOneLine(reason, 80));
+        }
+
         private sealed class CachedNavMeshEntry
         {
             public readonly string MapName;
@@ -546,15 +826,21 @@ namespace ASWDEBUG.Cheats.AutoBattle
             public readonly RainNavMesh NavMesh;
             public readonly int GraphSize;
             public readonly int Generation;
+            public readonly int ColliderCount;
+            public readonly Vector3 BoundsSize;
+            public readonly long CacheBytes;
 
             public CachedNavMeshEntry(string mapName, GameObject host, RainNavMesh navMesh,
-                int graphSize, int generation)
+                int graphSize, int generation, int colliderCount, Vector3 boundsSize, long cacheBytes)
             {
                 MapName = mapName;
                 Host = host;
                 NavMesh = navMesh;
                 GraphSize = graphSize;
                 Generation = generation;
+                ColliderCount = colliderCount;
+                BoundsSize = boundsSize;
+                CacheBytes = cacheBytes;
             }
         }
 

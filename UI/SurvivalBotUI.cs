@@ -24,7 +24,7 @@ namespace ASWDEBUG.UI
         }
 
         private const float WindowWidth = 388f;
-        private const float WindowHeight = 402f;
+        private const float WindowHeight = 520f;
         private const float RowHeight = 26f;
 
         private static readonly string[] TacticsNames = { "稳健", "标准", "激进" };
@@ -136,7 +136,11 @@ namespace ASWDEBUG.UI
             y += 33f;
 
             float statusTop = _window.yMax - 53f;
-            _rowStride = Mathf.Clamp((statusTop - y - 2f) / 11f, 17f, RowHeight + 1f);
+            bool compactNavigation = _window.height < 470f;
+            float navigationHeight = compactNavigation ? 52f : 112f;
+            float navigationTop = statusTop - navigationHeight - 5f;
+            _rowStride = Mathf.Clamp((navigationTop - y - 2f) / 11f,
+                compactNavigation ? 13f : 17f, RowHeight + 1f);
 
             DrawDropdownRow(ref y, "战术", DropdownId.Tactics, TacticsNames, SurvivalBotSettings.TacticsMode);
             DrawDropdownRow(ref y, "职业策略", DropdownId.Role, RoleNames, SurvivalBotSettings.RoleStrategyEnabled ? 0 : 1);
@@ -149,6 +153,8 @@ namespace ASWDEBUG.UI
             DrawDropdownRow(ref y, "躲避刷新", DropdownId.SafePointRefresh, SafePointRefreshNames, FindNearest(SafePointRefreshValues, SurvivalBotSettings.SafePointRefreshSeconds));
             DrawDropdownRow(ref y, "自杀兜底", DropdownId.SuicideFallback, SuicideFallbackNames, FindNearest(SuicideFallbackValues, SurvivalBotSettings.SuicideFallbackSeconds));
             DrawDropdownRow(ref y, "GM 停机", DropdownId.GmStopRounds, GmStopRoundNames, SurvivalBotSettings.GmStopRounds - 1);
+
+            DrawNavigationPanel(new Rect(x, navigationTop, width, navigationHeight), compactNavigation);
 
             Rect status = new Rect(x, _window.yMax - 53f, width, 45f);
             DrawPanel(status, _panelInnerTexture, _borderTexture);
@@ -163,10 +169,69 @@ namespace ASWDEBUG.UI
             DrawDropdownOverlay();
         }
 
+        private static void DrawNavigationPanel(Rect panel, bool compact)
+        {
+            RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
+            DrawPanel(panel, _panelInnerTexture, _borderTexture);
+
+            float textX = panel.x + 7f;
+            float textWidth = panel.width - 14f;
+            string header = "导航  " + NavigationStageName(snapshot) + "  " +
+                (snapshot.Progress01 * 100f).ToString("0.0") + "%  |  " +
+                (string.IsNullOrEmpty(snapshot.MapName) ? "-" : snapshot.MapName) + "  #" + snapshot.Generation;
+            GUI.Label(new Rect(textX, panel.y + 1f, textWidth, 18f),
+                ClipToWidth(header, _secondaryLabelStyle, textWidth), _secondaryLabelStyle);
+
+            Rect progressTrack = new Rect(textX, panel.y + 20f, textWidth, 5f);
+            GUI.DrawTexture(progressTrack, _borderTexture);
+            float fillWidth = Mathf.Clamp(progressTrack.width * snapshot.Progress01, 0f, progressTrack.width);
+            if (fillWidth > 0f)
+                GUI.DrawTexture(new Rect(progressTrack.x, progressTrack.y, fillWidth, progressTrack.height), _accentTexture);
+
+            string cacheLine = "缓存  " + CacheStateName(snapshot) + "  |  " +
+                FormatBytes(snapshot.CacheBytes) + "  |  " + snapshot.CacheFileName +
+                "  |  内存 " + snapshot.CacheCount;
+            if (compact)
+            {
+                GUI.Label(new Rect(textX, panel.y + 28f, textWidth, 20f),
+                    ClipToWidth(cacheLine, _secondaryLabelStyle, textWidth), _secondaryLabelStyle);
+                return;
+            }
+
+            string buildLine = "构建  碰撞体 " + snapshot.ColliderCount + "  |  节点 " + snapshot.GraphSize +
+                "  |  " + snapshot.ElapsedSeconds.ToString("0.0") + " / " +
+                snapshot.TimeoutSeconds.ToString("0") + " 秒";
+            string boundsLine = "参数  范围 " + FormatBounds(snapshot.BoundsSize) + "  |  网格 " +
+                snapshot.CellSize.ToString("0.00") + " 米  |  Worker " + snapshot.WorkerCount;
+            string provider = SurvivalBotManager.CombatTestEnabled
+                ? AutoBattleManager.LastPathProvider
+                : SurvivalCombatAdapter.LastPathProvider;
+            string intent = SurvivalBotManager.CombatTestEnabled
+                ? AutoBattleManager.State.ToString()
+                : SurvivalCombatAdapter.LastPathIntent;
+            string path = SurvivalBotManager.CombatTestEnabled
+                ? AutoBattleManager.LastPath
+                : SurvivalCombatAdapter.LastPath;
+            string pathLine = "路径  " + provider + "  |  " + intent + "  |  " + path;
+            string detailLine = "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
+
+            DrawClippedLine(panel.y + 27f, buildLine, textX, textWidth);
+            DrawClippedLine(panel.y + 44f, boundsLine, textX, textWidth);
+            DrawClippedLine(panel.y + 61f, cacheLine, textX, textWidth);
+            DrawClippedLine(panel.y + 78f, pathLine, textX, textWidth);
+            DrawClippedLine(panel.y + 95f, detailLine, textX, textWidth);
+        }
+
+        private static void DrawClippedLine(float y, string text, float x, float width)
+        {
+            GUI.Label(new Rect(x, y, width, 17f),
+                ClipToWidth(text, _secondaryLabelStyle, width), _secondaryLabelStyle);
+        }
+
         private static void DrawDropdownRow(ref float y, string label, DropdownId id, string[] options, int selected)
         {
             selected = Clamp(selected, 0, options.Length - 1);
-            float rowHeight = Mathf.Max(17f, _rowStride - 1f);
+            float rowHeight = Mathf.Max(12f, _rowStride - 1f);
             Rect row = new Rect(_window.x + 8f, y, _window.width - 16f, rowHeight);
             GUI.Label(new Rect(row.x + 4f, row.y, 88f, row.height), label, _labelStyle);
 
@@ -400,6 +465,59 @@ namespace ASWDEBUG.UI
                 else high = middle - 1;
             }
             return text.Substring(0, low) + suffix;
+        }
+
+        private static string NavigationStageName(RuntimeRainNavSnapshot snapshot)
+        {
+            if (snapshot.CacheSource == "native") return "原生资源";
+            if (snapshot.State == RuntimeRainNavState.Building) return "生成中";
+            if (snapshot.State == RuntimeRainNavState.Ready) return "已就绪";
+            if (snapshot.State == RuntimeRainNavState.Failed) return "生成失败";
+            if (snapshot.State == RuntimeRainNavState.WaitingScene)
+            {
+                if (snapshot.CacheSource == "memory" || snapshot.CacheSource == "disk") return "等待注册";
+                if (snapshot.Detail == "waiting_activation") return "等待启用";
+                if (snapshot.Detail.StartsWith("waiting_level")) return "等待场景";
+                if (snapshot.Detail == "waiting_terrain_colliders") return "收集碰撞体";
+                return "准备中";
+            }
+            return "未启用";
+        }
+
+        private static string CacheStateName(RuntimeRainNavSnapshot snapshot)
+        {
+            if (snapshot.CacheSource == "native") return "原生资源·无需生成";
+            if (snapshot.CacheSource == "memory") return "内存命中";
+            if (snapshot.CacheSource == "disk") return "磁盘命中";
+            if (snapshot.CacheStatus == "saved") return "已写入磁盘";
+            if (snapshot.CacheStatus == "saving") return "正在写入";
+            if (snapshot.CacheStatus == "building") return "未命中·实时生成";
+            if (snapshot.CacheStatus == "checking") return "检查中";
+            if (snapshot.CacheStatus == "miss") return "无缓存";
+            if (snapshot.CacheStatus == "content_changed") return "地图已更新·重建";
+            if (snapshot.CacheStatus == "settings_changed") return "参数已更新·重建";
+            if (snapshot.CacheStatus == "rain_changed") return "RAIN 已更新·重建";
+            if (snapshot.CacheStatus != null &&
+                (snapshot.CacheStatus.StartsWith("invalid_") ||
+                 snapshot.CacheStatus.StartsWith("payload_") ||
+                 snapshot.CacheStatus.StartsWith("deserialize_ex")))
+                return "校验失败·重建";
+            return string.IsNullOrEmpty(snapshot.CacheStatus) ? "-" : snapshot.CacheStatus;
+        }
+
+        private static string FormatBounds(Vector3 size)
+        {
+            if (size.sqrMagnitude <= 0.001f) return "-";
+            return size.x.ToString("0") + " x " + size.y.ToString("0") + " x " +
+                size.z.ToString("0") + " 米";
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes <= 0L) return "-";
+            if (bytes >= 1024L * 1024L) return (bytes / (1024f * 1024f)).ToString("0.0") + " MB";
+            if (bytes >= 1024L) return (bytes / 1024f).ToString("0.0") + " KB";
+            return bytes + " B";
         }
 
         private static string PhaseName(SurvivalBotPhase phase)

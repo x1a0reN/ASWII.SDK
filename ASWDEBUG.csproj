@@ -76,6 +76,7 @@
     <Compile Include="Cheats\AutoBattle\AutoBattleManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleTakeoverManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
+    <Compile Include="Cheats\AutoBattle\RuntimeRainNavDiskCache.cs" />
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavMesh.cs" />
     <Compile Include="Cheats\Player\AutoFire.cs" />
     <Compile Include="Cheats\SurvivalBot\SurvivalBotManager.cs" />
