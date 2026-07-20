@@ -1653,8 +1653,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             public bool Matches(Vector3 from, Vector3 to, Transform ignoreRoot)
             {
                 return IgnoreRoot == ignoreRoot &&
-                       XZDistance(QueryFrom, from) <= 10.0f &&
-                       Mathf.Abs(QueryFrom.y - from.y) <= 2.5f &&
+                       XZDistance(QueryFrom, from) <= 3.25f &&
+                       Mathf.Abs(QueryFrom.y - from.y) <= 1.5f &&
                        XZDistance(QueryTo, to) <= 0.45f &&
                        Mathf.Abs(QueryTo.y - to.y) <= 0.50f;
             }

@@ -57,6 +57,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _nextLobbyTraceAt;
         private static float _nextSafePointAt;
         private static float _nextAttackPointAt;
+        private static float _attackPointSetAt;
+        private static float _attackPointReachedAt;
+        private static float _attackPointLastProgressAt;
+        private static float _attackPointLastDistance;
+        private static float _nextAttackSearchTraceAt;
         private static float _attackTargetVisibleAt;
         private static float _attackTargetLockedAt;
         private static float _attackEngagementStartedAt;
@@ -76,15 +81,29 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _nextGmLeaveAt;
         private static float _lastCliffProgressAt;
         private static float _lastCliffDistance;
+        private static float _nextCliffTraceAt;
+        private static float _nextSuicideRequestAt;
         private static Vector3 _safePoint;
         private static Vector3 _attackPoint;
+        private static Vector3 _attackPointTargetPosition;
+        private static Vector3 _attackSearchLookDirection;
         private static Vector3 _cliffEdge;
         private static Vector3 _cliffOutward;
-        private static Vector3 _failedCandidate;
-        private static float _failedCandidateUntil;
+        private static readonly Vector3[] FailedCandidates = new Vector3[5];
+        private static readonly float[] FailedCandidateUntil = new float[5];
+        private static readonly Vector3[] FailedAttackCandidates = new Vector3[24];
+        private static readonly float[] FailedAttackCandidateUntil = new float[24];
+        private static int _failedCandidateCursor;
+        private static int _failedAttackCandidateCursor;
+        private static int _attackPointRevision;
+        private static int _attackSearchSideSign = 1;
+        private static int _combatStrafeSign = 1;
         private static bool _hasSafePoint;
         private static bool _hasAttackPoint;
         private static bool _hasCliff;
+        private static bool _cliffJumpLogged;
+        private static bool _serverSuicideRequested;
+        private static bool _combatStrafeActive;
         private static Character _attackTarget;
         private static Character _searchTarget;
         private static float _searchTargetLockedAt;
@@ -213,6 +232,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _emergencyTarget = null;
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
+            ResetAttackSearchRuntime();
             AutoBattleManager.SetEnabled(true, "combat_test_start");
             Phase = SurvivalBotPhase.CombatTest;
             StatusText = "战斗测试已开启，等待进入对局";
@@ -248,6 +268,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _emergencyTarget = null;
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
+            ResetAttackSearchRuntime();
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "战斗测试已关闭";
             FileLogger.Log("AUTO-BATTLE", "combat test disabled reason=" + reason);
@@ -407,6 +428,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _hasAttackPoint = false;
             _hasCliff = false;
             _attackTarget = null;
+            _searchTarget = null;
+            _searchTargetLockedAt = 0f;
             _attackTargetVisibleAt = 0f;
             _attackTargetLockedAt = 0f;
             _attackEngagementStartedAt = 0f;
@@ -423,9 +446,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             catch { _lastPlayerShield = 0; }
             _safePointLeaseUntil = 0f;
             _lastExposureCount = 0;
-            _failedCandidateUntil = 0f;
+            ClearFailedCandidates();
             _nextSafePointAt = 0f;
             _nextAttackPointAt = 0f;
+            ResetAttackSearchRuntime();
+            _nextCliffTraceAt = 0f;
+            _cliffJumpLogged = false;
+            _nextSuicideRequestAt = 0f;
+            _serverSuicideRequested = false;
             SurvivalCombatAdapter.ResetSurvivalRuntime("round_start");
             CaptureParticipants(GameApp.Instance, level, player);
             Phase = SurvivalBotPhase.CaptureParticipants;
@@ -806,8 +834,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             bool strictLine;
             float distance;
             bool fired = SurvivalCombatAdapter.AttackSurvival(player, _attackTarget, camera, out strictLine, out distance);
+            if (strictLine) SurvivalCombatAdapter.SuspendSurvivalNavigation("combat");
             SurvivalCombatAdapter.LogCombatState(player, _attackTarget, strictLine, distance, fired);
-            if (!opportunityOnly && engagementElapsed > 5f && Time.time - _attackLastDamageAt > 1.2f)
+            if (!opportunityOnly && engagementElapsed > 8f && Time.time - _attackLastDamageAt > 2.5f)
             {
                 SurvivalCombatAdapter.CancelSurvivalAttack();
                 SetAttackTarget(null, "engagement_budget");
@@ -844,31 +873,83 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static void TickAttackSearch(Character player, Camera camera, Character searchTarget)
         {
-            if (!_hasAttackPoint || Time.time >= _nextAttackPointAt ||
-                XzDistance(player.transform.position, _attackPoint) < 1.2f)
+            Vector3 playerPosition = player.transform.position;
+            Vector3 targetPosition = searchTarget.transform.position;
+            float pointDistance = _hasAttackPoint ? XzDistance(playerPosition, _attackPoint) : float.MaxValue;
+            float targetMoved = _hasAttackPoint ? XzDistance(_attackPointTargetPosition, targetPosition) : float.MaxValue;
+            if (_hasAttackPoint && pointDistance <= 1.2f)
             {
-                _attackPoint = SelectAttackPoint(player, searchTarget);
-                _hasAttackPoint = true;
-                _nextAttackPointAt = Time.time + 1.2f;
+                if (_attackPointReachedAt <= 0f) _attackPointReachedAt = Time.time;
             }
+            else _attackPointReachedAt = 0f;
+            if (_hasAttackPoint && pointDistance + 0.35f < _attackPointLastDistance)
+            {
+                _attackPointLastDistance = pointDistance;
+                _attackPointLastProgressAt = Time.time;
+            }
+            if (_hasAttackPoint && SurvivalCombatAdapter.LastActualPathProgressAt > _attackPointLastProgressAt)
+                _attackPointLastProgressAt = SurvivalCombatAdapter.LastActualPathProgressAt;
+
+            if (!_hasAttackPoint && Time.time < _nextAttackPointAt)
+            {
+                AutoBattleInput.ClearMovement();
+                TraceAttackSearch(player, searchTarget, Vector3.zero, targetMoved, "point_retry_cooldown");
+                return;
+            }
+
+            string refreshReason = null;
+            if (!_hasAttackPoint) refreshReason = "missing";
+            else if (IsAttackCandidateFailed(_attackPoint)) refreshReason = "candidate_failed";
+            else if (targetMoved >= 5f) refreshReason = "target_moved_hard";
+            else if (Time.time >= _nextAttackPointAt && targetMoved >= 2f) refreshReason = "target_moved";
+            else if (Time.time - _attackPointLastProgressAt >= 5.5f) refreshReason = "point_no_progress";
+            else if (_attackPointReachedAt > 0f && Time.time - _attackPointReachedAt >= 0.55f)
+                refreshReason = "reached_without_line";
+
+            if (string.Equals(refreshReason, "reached_without_line", StringComparison.Ordinal) ||
+                string.Equals(refreshReason, "point_no_progress", StringComparison.Ordinal))
+                MarkAttackCandidateFailed(_attackPoint);
+            if (refreshReason != null && !RefreshAttackPoint(player, searchTarget, refreshReason))
+            {
+                AutoBattleInput.ClearMovement();
+                TraceAttackSearch(player, searchTarget, Vector3.zero, targetMoved, "no_candidate");
+                return;
+            }
+            if (refreshReason != null) targetMoved = 0f;
 
             Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _attackPoint, false, "attack");
             if (move.sqrMagnitude <= 0.01f && IsRouteFailure("attack"))
             {
-                MarkCandidateFailed(_attackPoint);
+                FileLogger.Log("SURVIVAL", "hunt route rejected uid=" + searchTarget.uid +
+                    " goal=" + FormatVec(_attackPoint) + " path=" + SurvivalCombatAdapter.LastPath);
+                MarkAttackCandidateFailed(_attackPoint);
                 _hasAttackPoint = false;
+                _attackPointRevision = 0;
                 _nextAttackPointAt = 0f;
             }
             if (move.sqrMagnitude > 0.01f)
             {
                 AutoBattleInput.SetMoveWorld(player, move, false);
                 if (camera != null)
-                    SurvivalCombatAdapter.LookSurvival(player, camera, player.transform.position + move * 8f + Vector3.up);
+                {
+                    Vector3 desiredLook = move.normalized;
+                    if (_attackSearchLookDirection.sqrMagnitude < 0.01f) _attackSearchLookDirection = desiredLook;
+                    else
+                    {
+                        _attackSearchLookDirection = Vector3.Slerp(_attackSearchLookDirection, desiredLook,
+                            Mathf.Clamp01(Time.deltaTime * 5f));
+                        _attackSearchLookDirection.y = 0f;
+                        if (_attackSearchLookDirection.sqrMagnitude > 0.01f) _attackSearchLookDirection.Normalize();
+                    }
+                    SurvivalCombatAdapter.LookSurvival(player, camera,
+                        player.transform.position + _attackSearchLookDirection * 8f + Vector3.up);
+                }
             }
             else
             {
                 AutoBattleInput.ClearMovement();
             }
+            TraceAttackSearch(player, searchTarget, move, targetMoved, null);
         }
 
         private static void TickSuicide(GameApp app, Character player, Camera camera)
@@ -881,24 +962,68 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _hasCliff = false;
                 _lastCliffDistance = float.MaxValue;
                 _lastCliffProgressAt = Time.time;
+                _nextCliffTraceAt = 0f;
+                _cliffJumpLogged = false;
+                _nextSuicideRequestAt = 0f;
+                _serverSuicideRequested = false;
                 AutoBattleInput.ClearAll();
-                FileLogger.Log("SURVIVAL", "kill/assist complete; cliff suicide started");
+                FileLogger.Log("SURVIVAL", "suicide phase started; cliff preferred fallback=" +
+                    SurvivalBotSettings.SuicideFallbackSeconds.ToString("0") + "s");
+            }
+
+            if (_serverSuicideRequested)
+            {
+                AutoBattleInput.ClearAll();
+                StatusText = "已请求服务器自杀，等待结算";
+                return;
             }
 
             if (!_hasCliff && Time.time >= _nextCliffScanAt)
             {
                 _nextCliffScanAt = Time.time + 2f;
                 _hasCliff = TryFindCliff(player, out _cliffEdge, out _cliffOutward);
+                if (_hasCliff)
+                {
+                    _lastCliffDistance = XzDistance(player.transform.position, _cliffEdge);
+                    _lastCliffProgressAt = Time.time;
+                    _cliffJumpLogged = false;
+                    FileLogger.Log("SURVIVAL", "reachable cliff candidate edge=" + FormatVec(_cliffEdge) +
+                        " outward=" + FormatVec(_cliffOutward) + " dist=" + _lastCliffDistance.ToString("0.0"));
+                }
+                else if (Time.time >= _nextCliffTraceAt)
+                {
+                    _nextCliffTraceAt = Time.time + 4f;
+                    FileLogger.Log("SURVIVAL", "no directly reachable cliff; waiting for server-suicide fallback");
+                }
             }
 
             if (Time.time - _suicideStartedAt >= SurvivalBotSettings.SuicideFallbackSeconds &&
+                Time.time >= _nextSuicideRequestAt &&
                 app != null && app.channel_connection != null)
             {
-                app.channel_connection.Suicide(player.uid);
-                _suicideStartedAt = Time.time + 3600f;
+                _nextSuicideRequestAt = Time.time + 2f;
                 AutoBattleInput.ClearAll();
-                StatusText = "跳崖超时，已请求自杀兜底";
-                FileLogger.Log("SURVIVAL", "cliff timeout; Suicide(uid) fallback sent");
+                try
+                {
+                    app.channel_connection.Suicide(player.uid);
+                    _serverSuicideRequested = true;
+                    StatusText = "未找到可用悬崖，已请求服务器自杀";
+                    FileLogger.Log("SURVIVAL", "death request=server_suicide_sent uid=" + player.uid +
+                        " reason=cliff_timeout position=" + FormatVec(player.transform.position));
+                }
+                catch (Exception ex)
+                {
+                    StatusText = "服务器自杀请求失败，准备重试";
+                    FileLogger.Log("SURVIVAL", "server suicide request failed: " + ex.Message);
+                }
+                return;
+            }
+
+            if (_cliffJumpLogged)
+            {
+                AutoBattleInput.SetMoveWorld(player, _cliffOutward, false);
+                AutoBattleInput.HoldAction(ActionType.kActionJump, 0.18f);
+                StatusText = "任务完成，保持向外坠落";
                 return;
             }
 
@@ -912,10 +1037,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 }
                 else if (Time.time - _lastCliffProgressAt > 5f)
                 {
+                    MarkCandidateFailed(_cliffEdge);
                     _hasCliff = false;
                     _nextCliffScanAt = 0f;
                     AutoBattleInput.ClearMovement();
                     StatusText = "悬崖路径无进展，重新搜索";
+                    FileLogger.Log("SURVIVAL", "cliff candidate abandoned reason=no_progress edge=" +
+                        FormatVec(_cliffEdge) + " dist=" + edgeDistance.ToString("0.0"));
                     return;
                 }
 
@@ -924,6 +1052,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     Vector3 move = SurvivalCombatAdapter.NavigateSurvival(player, _cliffEdge, false, "suicide");
                     if (move.sqrMagnitude <= 0.01f && IsRouteFailure("suicide"))
                     {
+                        FileLogger.Log("SURVIVAL", "cliff candidate abandoned reason=" +
+                            SurvivalCombatAdapter.LastPath + " edge=" + FormatVec(_cliffEdge));
                         MarkCandidateFailed(_cliffEdge);
                         _hasCliff = false;
                         _nextCliffScanAt = 0f;
@@ -940,6 +1070,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 AutoBattleInput.SetMoveWorld(player, _cliffOutward, false);
                 AutoBattleInput.PressAction(ActionType.kActionJump, 0.12f);
                 AutoBattleInput.HoldAction(ActionType.kActionJump, 0.38f);
+                if (!_cliffJumpLogged)
+                {
+                    _cliffJumpLogged = true;
+                    FileLogger.Log("SURVIVAL", "cliff jump issued edge=" + FormatVec(_cliffEdge) +
+                        " outward=" + FormatVec(_cliffOutward));
+                }
                 StatusText = "任务完成，跳崖结束对局";
                 return;
             }
@@ -1444,38 +1580,73 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             catch { return false; }
         }
 
-        private static Vector3 SelectAttackPoint(Character player, Character target)
+        private static bool RefreshAttackPoint(Character player, Character target, string reason)
         {
+            Vector3 selected;
+            if (!TrySelectAttackPoint(player, target, out selected))
+            {
+                _hasAttackPoint = false;
+                _nextAttackPointAt = Time.time + 0.4f;
+                if (Time.time >= _nextAttackSearchTraceAt)
+                {
+                    _nextAttackSearchTraceAt = Time.time + 0.9f;
+                    FileLogger.Log("SURVIVAL", "hunt point unavailable uid=" + target.uid + " reason=" + reason);
+                }
+                return false;
+            }
+
+            Vector3 previous = _attackPoint;
+            _attackPoint = selected;
+            _attackPointTargetPosition = target.transform.position;
+            _attackPointSetAt = Time.time;
+            _attackPointReachedAt = 0f;
+            _attackPointLastDistance = XzDistance(player.transform.position, selected);
+            _attackPointLastProgressAt = Time.time;
+            _nextAttackPointAt = Time.time + 4.5f;
+            _hasAttackPoint = true;
+            _attackPointRevision++;
+            SurvivalCombatAdapter.SuspendSurvivalNavigation("attack_point_refresh");
+            FileLogger.Log("SURVIVAL", "hunt point rev=" + _attackPointRevision + " uid=" + target.uid +
+                " reason=" + reason + " old=" + FormatVec(previous) + " new=" + FormatVec(selected) +
+                " target=" + FormatVec(_attackPointTargetPosition));
+            return true;
+        }
+
+        private static bool TrySelectAttackPoint(Character player, Character target, out Vector3 selected)
+        {
+            selected = Vector3.zero;
+            if (player == null || player.transform == null || target == null || target.transform == null) return false;
             Vector3 playerPos = player.transform.position;
             Vector3 targetPos = target.transform.position;
             float currentDistance = XzDistance(playerPos, targetPos);
-            if (currentDistance < 9f)
-            {
-                Vector3 away = playerPos - targetPos;
-                away.y = 0f;
-                if (away.sqrMagnitude < 0.01f) away = -target.transform.forward;
-                away.Normalize();
-                Vector3 retreat;
-                if (TryProjectGround(playerPos + away * 7f, playerPos.y, 3f, out retreat) &&
-                    !IsFailedCandidate(retreat) &&
-                    AutoBattleRoutePlanner.CandidatePenalty(playerPos, retreat, player.transform.root) < 120f)
-                    return retreat;
-            }
+            Vector3 radial = playerPos - targetPos;
+            radial.y = 0f;
+            if (radial.sqrMagnitude < 0.01f) radial = -target.transform.forward;
+            radial.y = 0f;
+            if (radial.sqrMagnitude < 0.01f) radial = Vector3.forward;
+            radial.Normalize();
 
-            Vector3 best = playerPos;
+            Vector3 best = Vector3.zero;
             float bestScore = float.MaxValue;
-            for (int i = 0; i < 24; i++)
+            float configuredRadius = Mathf.Max(6f, SurvivalBotSettings.AttackStandOffDistance);
+            float attackRadius = Mathf.Min(configuredRadius, Mathf.Max(5f, currentDistance));
+            float[] offsets = { 0f, 20f, 40f, 60f, 85f, -20f, -40f, -60f, -85f, 115f, -115f, 150f, -150f };
+            for (int i = 0; i < offsets.Length; i++)
             {
-                float angle = i * 15f;
-                Vector3 dir = Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward;
+                float offset = offsets[i] * _attackSearchSideSign;
+                Vector3 dir = Quaternion.AngleAxis(offset, Vector3.up) * radial;
                 Vector3 point;
-                float attackRadius = SurvivalBotSettings.AttackStandOffDistance;
                 if (!TryProjectGround(targetPos + dir * attackRadius, playerPos.y, 4f, out point)) continue;
-                if (IsFailedCandidate(point)) continue;
+                if (IsAttackCandidateFailed(point)) continue;
                 float routePenalty = AutoBattleRoutePlanner.CandidatePenalty(playerPos, point, player.transform.root);
                 if (routePenalty >= 120f) continue;
                 bool clearLane = !HasMapBlock(point + Vector3.up * 1.2f, targetPos + Vector3.up * 1.1f);
-                float score = routePenalty + XzDistance(playerPos, point) + (clearLane ? -80f : 120f);
+                float pointDistance = XzDistance(playerPos, point);
+                float score = routePenalty * 1.5f + pointDistance + Mathf.Abs(offset) * 0.15f +
+                    (clearLane ? -95f : 35f);
+                if (pointDistance < 1.5f && !clearLane) score += 90f;
+                if (_attackPointRevision > 0 && !IsAttackCandidateFailed(_attackPoint))
+                    score += XzDistance(point, _attackPoint) * 1.4f;
                 if (score < bestScore)
                 {
                     bestScore = score;
@@ -1495,13 +1666,31 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                         Vector3 fallback;
                         float step = Mathf.Max(2.5f, advance - i * 2.5f);
                         if (!TryProjectGround(playerPos + toward * step, playerPos.y, 4f, out fallback)) continue;
-                        if (IsFailedCandidate(fallback)) continue;
+                        if (IsAttackCandidateFailed(fallback)) continue;
                         if (AutoBattleRoutePlanner.CandidatePenalty(playerPos, fallback, player.transform.root) >= 120f) continue;
-                        return fallback;
+                        selected = fallback;
+                        return true;
                     }
                 }
             }
-            return best;
+            if (bestScore == float.MaxValue) return false;
+            selected = best;
+            return true;
+        }
+
+        private static void TraceAttackSearch(Character player, Character target, Vector3 move,
+            float targetMoved, string note)
+        {
+            if (Time.time < _nextAttackSearchTraceAt || player == null || target == null) return;
+            _nextAttackSearchTraceAt = Time.time + 0.9f;
+            FileLogger.Log("SURVIVAL", "hunt trace uid=" + target.uid +
+                " player=" + FormatVec(player.transform.position) +
+                " target=" + FormatVec(target.transform.position) +
+                " goal=" + (_hasAttackPoint ? FormatVec(_attackPoint) : "none") +
+                " goalAge=" + (_hasAttackPoint ? (Time.time - _attackPointSetAt).ToString("0.0") : "-") +
+                " targetMoved=" + (_hasAttackPoint ? targetMoved.ToString("0.0") : "-") +
+                " move=" + FormatVec(move) + " path=" + SurvivalCombatAdapter.LastPath +
+                (string.IsNullOrEmpty(note) ? string.Empty : " note=" + note));
         }
 
         private static void UpdateEnemyTracks(Character player, Camera camera)
@@ -1634,9 +1823,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Character best = SelectBestTarget(player);
             if (!IsAttackTargetUsable(_searchTarget))
             {
-                _searchTarget = best;
-                _searchTargetLockedAt = Time.time;
-                _hasAttackPoint = false;
+                SetSearchTarget(best, "acquire");
                 return _searchTarget;
             }
             if (best == null || best == _searchTarget || Time.time - _searchTargetLockedAt < 1.5f)
@@ -1645,11 +1832,28 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             float bestScore = ScoreAttackTarget(player, best, false);
             if (bestScore + 18f < currentScore)
             {
-                _searchTarget = best;
-                _searchTargetLockedAt = Time.time;
-                _hasAttackPoint = false;
+                SetSearchTarget(best, "score_advantage");
             }
             return _searchTarget;
+        }
+
+        private static void SetSearchTarget(Character target, string reason)
+        {
+            if (_searchTarget == target) return;
+            int oldUid = _searchTarget == null ? 0 : _searchTarget.uid;
+            int newUid = target == null ? 0 : target.uid;
+            ClearFailedAttackCandidates();
+            _searchTarget = target;
+            _searchTargetLockedAt = Time.time;
+            _hasAttackPoint = false;
+            _nextAttackPointAt = 0f;
+            _attackPointReachedAt = 0f;
+            _attackPointRevision = 0;
+            _attackPointLastProgressAt = 0f;
+            _attackPointLastDistance = float.MaxValue;
+            _attackSearchSideSign = target == null || (target.uid & 1) == 0 ? 1 : -1;
+            SurvivalCombatAdapter.SuspendSurvivalNavigation("search_target_change");
+            FileLogger.Log("SURVIVAL", "hunt target " + oldUid + "->" + newUid + " reason=" + reason);
         }
 
         private static Character SelectBestVisibleTarget(Character player, Camera camera, bool opportunityOnly)
@@ -1732,7 +1936,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             int oldUid = _attackTarget == null ? 0 : _attackTarget.uid;
             int newUid = target == null ? 0 : target.uid;
             _attackTarget = target;
-            if (target != null) _searchTarget = null;
+            if (target != null)
+            {
+                _searchTarget = null;
+                _combatStrafeSign = (target.uid & 1) == 0 ? 1 : -1;
+                _combatStrafeActive = false;
+                SurvivalCombatAdapter.SuspendSurvivalNavigation("combat");
+            }
             _hasAttackPoint = false;
             _nextAttackPointAt = 0f;
             _attackTargetLockedAt = Time.time;
@@ -1793,14 +2003,29 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Vector3 toTarget = target.transform.position - player.transform.position;
             toTarget.y = 0f;
             if (toTarget.sqrMagnitude < 0.01f) return;
-            toTarget.Normalize();
-            Vector3 side = Vector3.Cross(Vector3.up, toTarget);
-            if (((target.uid + Mathf.FloorToInt(Time.time * 0.55f)) & 1) == 0) side = -side;
-            if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, side, player.transform.root)) side = -side;
-            if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, side, player.transform.root))
+            float distance = toTarget.magnitude;
+            if (_combatStrafeActive)
+            {
+                if (distance >= 15f) _combatStrafeActive = false;
+            }
+            else if (distance <= 13f) _combatStrafeActive = true;
+            if (!_combatStrafeActive)
             {
                 AutoBattleInput.ClearMovement();
                 return;
+            }
+            toTarget.Normalize();
+            Vector3 side = Vector3.Cross(Vector3.up, toTarget) * _combatStrafeSign;
+            if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, side, player.transform.root))
+            {
+                Vector3 opposite = -side;
+                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, opposite, player.transform.root))
+                {
+                    AutoBattleInput.ClearMovement();
+                    return;
+                }
+                side = opposite;
+                _combatStrafeSign = -_combatStrafeSign;
             }
             AutoBattleInput.SetMoveWorld(player, side, false);
         }
@@ -1906,13 +2131,16 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                         continue;
                     }
 
-                    if (lastSafeDistance < 3f || !IsFatalDrop(lastGround, dir)) break;
-                    Vector3 candidate = lastGround - dir * 0.8f;
+                    if (lastSafeDistance < 4f || !IsFatalDrop(lastGround, dir)) break;
+                    Vector3 candidate = lastGround - dir * 1.1f;
                     if (IsFailedCandidate(candidate)) break;
+                    if (!HasCliffExitClearance(candidate, dir)) break;
                     float routePenalty = AutoBattleRoutePlanner.CandidatePenalty(origin, candidate, player.transform.root);
-                    if (routePenalty < 120f && lastSafeDistance + routePenalty * 0.03f < bestDistance)
+                    bool directlyReachable = routePenalty <= 0.01f &&
+                        AutoBattleRoutePlanner.CanFollowSegment(origin, candidate, player.transform.root);
+                    if (directlyReachable && lastSafeDistance < bestDistance)
                     {
-                        bestDistance = lastSafeDistance + routePenalty * 0.03f;
+                        bestDistance = lastSafeDistance;
                         edge = candidate;
                         outward = dir;
                     }
@@ -1988,6 +2216,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             catch { return false; }
         }
 
+        private static bool HasCliffExitClearance(Vector3 edgeGround, Vector3 outward)
+        {
+            outward.y = 0f;
+            if (outward.sqrMagnitude < 0.01f) return false;
+            outward.Normalize();
+            Vector3 from = edgeGround + outward * 0.15f;
+            Vector3 to = edgeGround + outward * 2.6f;
+            return !HasMapBlock(from + Vector3.up * 0.65f, to + Vector3.up * 0.65f) &&
+                   !HasMapBlock(from + Vector3.up * 1.25f, to + Vector3.up * 1.25f);
+        }
+
         private static bool IsRouteFailure(string intent)
         {
             if (!string.Equals(SurvivalCombatAdapter.LastPathIntent, intent, StringComparison.Ordinal)) return false;
@@ -1996,18 +2235,88 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                    string.Equals(SurvivalCombatAdapter.LastPath, "empty_route_repath", StringComparison.Ordinal) ||
                    string.Equals(SurvivalCombatAdapter.LastPath, "stuck_repath", StringComparison.Ordinal) ||
                    string.Equals(SurvivalCombatAdapter.LastPath, "jump_lane_blocked", StringComparison.Ordinal) ||
-                   string.Equals(SurvivalCombatAdapter.LastPath, "wall_repath", StringComparison.Ordinal);
+                   string.Equals(SurvivalCombatAdapter.LastPath, "wall_repath", StringComparison.Ordinal) ||
+                   string.Equals(SurvivalCombatAdapter.LastPath, "path_pending_timeout", StringComparison.Ordinal) ||
+                   string.Equals(SurvivalCombatAdapter.LastPath, "path_candidate_rejected", StringComparison.Ordinal);
         }
 
         private static void MarkCandidateFailed(Vector3 point)
         {
-            _failedCandidate = point;
-            _failedCandidateUntil = Time.time + 8f;
+            FailedCandidates[_failedCandidateCursor] = point;
+            FailedCandidateUntil[_failedCandidateCursor] = Time.time + 8f;
+            _failedCandidateCursor = (_failedCandidateCursor + 1) % FailedCandidates.Length;
         }
 
         private static bool IsFailedCandidate(Vector3 point)
         {
-            return Time.time < _failedCandidateUntil && XzDistance(point, _failedCandidate) < 3f;
+            for (int i = 0; i < FailedCandidates.Length; i++)
+            {
+                if (Time.time < FailedCandidateUntil[i] && XzDistance(point, FailedCandidates[i]) < 3f)
+                    return true;
+            }
+            return false;
+        }
+
+        private static void MarkAttackCandidateFailed(Vector3 point)
+        {
+            FailedAttackCandidates[_failedAttackCandidateCursor] = point;
+            FailedAttackCandidateUntil[_failedAttackCandidateCursor] = Time.time + 10f;
+            _failedAttackCandidateCursor = (_failedAttackCandidateCursor + 1) % FailedAttackCandidates.Length;
+        }
+
+        private static bool IsAttackCandidateFailed(Vector3 point)
+        {
+            for (int i = 0; i < FailedAttackCandidates.Length; i++)
+            {
+                if (Time.time < FailedAttackCandidateUntil[i] &&
+                    XzDistance(point, FailedAttackCandidates[i]) < 3f)
+                    return true;
+            }
+            return false;
+        }
+
+        private static void ClearFailedCandidates()
+        {
+            for (int i = 0; i < FailedCandidateUntil.Length; i++)
+            {
+                FailedCandidates[i] = Vector3.zero;
+                FailedCandidateUntil[i] = 0f;
+            }
+            _failedCandidateCursor = 0;
+            ClearFailedAttackCandidates();
+        }
+
+        private static void ClearFailedAttackCandidates()
+        {
+            for (int i = 0; i < FailedAttackCandidateUntil.Length; i++)
+            {
+                FailedAttackCandidates[i] = Vector3.zero;
+                FailedAttackCandidateUntil[i] = 0f;
+            }
+            _failedAttackCandidateCursor = 0;
+        }
+
+        private static void ResetAttackSearchRuntime()
+        {
+            _hasAttackPoint = false;
+            _attackPoint = Vector3.zero;
+            _attackPointTargetPosition = Vector3.zero;
+            _attackSearchLookDirection = Vector3.zero;
+            _attackPointSetAt = 0f;
+            _attackPointReachedAt = 0f;
+            _attackPointLastProgressAt = 0f;
+            _attackPointLastDistance = float.MaxValue;
+            _nextAttackSearchTraceAt = 0f;
+            _attackPointRevision = 0;
+            _attackSearchSideSign = 1;
+            _combatStrafeSign = 1;
+            _combatStrafeActive = false;
+        }
+
+        private static string FormatVec(Vector3 value)
+        {
+            return "(" + value.x.ToString("0.0") + "," + value.y.ToString("0.0") + "," +
+                value.z.ToString("0.0") + ")";
         }
 
         private static int CompareHitDistance(RaycastHit a, RaycastHit b)
