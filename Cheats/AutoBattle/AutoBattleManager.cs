@@ -77,6 +77,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
             get { return _lastActualPathProgressAt; }
         }
 
+        internal static bool CopyActiveRoute(List<Vector3> output)
+        {
+            if (output == null) return false;
+            output.Clear();
+            int start = Mathf.Clamp(_pathIndex, 0, Path.Count);
+            for (int i = start; i < Path.Count; i++) output.Add(Path[i]);
+            if (_hasDestination &&
+                (output.Count == 0 || XzDistance(output[output.Count - 1], _destination) > 0.20f))
+                output.Add(_destination);
+            return output.Count > 0;
+        }
+
         public static void ResetSurvivalRuntime(string reason)
         {
             AutoBattleInput.ClearAll();

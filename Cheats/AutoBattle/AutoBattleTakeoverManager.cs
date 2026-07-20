@@ -52,6 +52,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public static string LastAction = "-";
         public static string CurrentRole = "通用";
 
+        internal static bool CopyActiveRoute(List<Vector3> output)
+        {
+            if (output == null) return false;
+            output.Clear();
+            int start = Mathf.Clamp(_pathIndex, 0, Path.Count);
+            for (int i = start; i < Path.Count; i++) output.Add(Path[i]);
+            if (_hasDestination &&
+                (output.Count == 0 || XZDistanceSq(output[output.Count - 1], _destination) > 0.04f))
+                output.Add(_destination);
+            return output.Count > 0;
+        }
+
         private const float TargetRefreshInterval = 0.14f;
         private const float RepathInterval = 0.32f;
         private const float CornerReachDistance = 0.55f;

@@ -37,6 +37,9 @@ Press `Delete` to show or hide the project-style configuration panel. Its naviga
 card shows build phase, progress, elapsed time, colliders, graph nodes, bounds,
 worker count, cache source/status/size, and the active route provider. Press `F8`
 to stop or restart the loop. Settings are persisted with namespaced `PlayerPrefs`.
+While either bot mode is active, the remaining route is rendered in world space as
+a terrain-snapped red/orange guide line with waypoint markers. The next point is
+yellow and the final destination is green; world geometry occludes the guide.
 
 ## Second-client network route
 

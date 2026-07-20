@@ -49,6 +49,7 @@ namespace ASWDEBUG.Main
                 AutoBattleRoutePlanner.TickNavigation(level, player,
                     SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled);
                 SurvivalBotManager.Tick(level, player, CameraMain);
+                NavigationPathVisualizer.Tick(level, player);
             }
             catch (Exception ex)
             {
@@ -67,6 +68,7 @@ namespace ASWDEBUG.Main
             if (Instance != this) return;
             Instance = null;
             SurvivalBotManager.Stop("plugin_destroyed");
+            NavigationPathVisualizer.Shutdown();
             AutoBattleRoutePlanner.ShutdownNavigation("plugin_destroyed");
             NetworkRouteManager.Shutdown();
         }

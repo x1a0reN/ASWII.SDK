@@ -212,7 +212,8 @@ namespace ASWDEBUG.UI
             string path = SurvivalBotManager.CombatTestEnabled
                 ? AutoBattleManager.LastPath
                 : SurvivalCombatAdapter.LastPath;
-            string pathLine = "路径  " + provider + "  |  " + intent + "  |  " + path;
+            string pathLine = "路径  " + provider + "  |  导航点 " +
+                NavigationPathVisualizer.VisiblePointCount + "  |  " + intent + "  |  " + path;
             string detailLine = "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
 
             DrawClippedLine(panel.y + 27f, buildLine, textX, textWidth);
