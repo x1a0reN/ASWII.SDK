@@ -79,6 +79,13 @@ The renderer tries compatible built-in shaders first, then reuses a compatible
 shader from a loaded scene material, so stripped legacy shader names do not disable
 the guide or produce per-frame log spam.
 
+`level33 Navigation Patrol` is a navigation-only cache test. It directly loads the
+survival level that resolves to physical `level33`, constrains the player and four
+stationary Bots to the level Lua `map_center` / `map_size` interior, rejects points
+inside the game's `DeadSpace` volumes, and requires complete paths on the cached RAIN
+graph. The player walks to each Bot in sequence and then advances to the next one.
+Target combat selection, role tactics, aiming, scoping, skills, and firing are not run.
+
 `Open Room Test` is a separate direct-combat mode for manually created rooms. It
 never starts matching or runs rank, suicide, reward-card, or rematch behavior. It
 waits for a ready `Level`, local player, camera, and either the normal in-game

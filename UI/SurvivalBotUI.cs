@@ -164,8 +164,8 @@ namespace ASWDEBUG.UI
 
             Rect level33TestButton = new Rect(x, y, width, 27f);
             string level33TestText = SurvivalBotManager.Level33TestEnabled
-                ? "level33 生存实战测试：开"
-                : "一键进入 level33 生存实战测试";
+                ? "level33 纯寻路巡回：开"
+                : "一键进入 level33 纯寻路巡回";
             if (GUI.Button(level33TestButton, level33TestText, _buttonCenterStyle))
             {
                 SurvivalBotManager.SetLevel33TestEnabled(!SurvivalBotManager.Level33TestEnabled, "ui");
@@ -641,7 +641,7 @@ namespace ASWDEBUG.UI
             if (phase == SurvivalBotPhase.GmExit) return "GM 退出";
             if (phase == SurvivalBotPhase.CombatTest) return "战斗测试";
             if (phase == SurvivalBotPhase.RoomTest) return "开房测试";
-            if (phase == SurvivalBotPhase.Level33Test) return "level33 实战";
+            if (phase == SurvivalBotPhase.Level33Test) return "level33 寻路";
             if (phase == SurvivalBotPhase.MapBake) return "地图建图";
             return "已停止";
         }

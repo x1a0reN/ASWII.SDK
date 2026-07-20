@@ -1,4 +1,5 @@
 using ASWDEBUG.Cheats.Player;
+using ASWDEBUG.Cheats.SurvivalBot;
 using ASWDEBUG.Logger;
 using RAIN.Navigation;
 using System;
@@ -110,6 +111,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static readonly float[] TargetScanScores = new float[MaxDetailedTargetCandidates];
 
         private static Character _target;
+        private static Character _localPatrolTarget;
+        private static float _localPatrolReachedAt;
+        private static int _localPatrolIndex = -1;
 
         internal static Character CurrentTarget
         {
@@ -315,6 +319,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (Time.time < _manualUntil)
             {
                 AutoBattleInput.ClearAll();
+                return;
+            }
+
+            if (LocalNavigationCombatTest.Running)
+            {
+                RunLocalNavigationPatrol(player, cam);
                 return;
             }
 
@@ -558,11 +568,96 @@ namespace ASWDEBUG.Cheats.AutoBattle
             LogMaybe(player, sense, LastAction);
         }
 
+        private static void RunLocalNavigationPatrol(Character player, Camera cam)
+        {
+            AutoBattleInput.ClearAll();
+            _target = null;
+            CurrentRole = "纯寻路";
+            _lastFireBlock = "navigation_only";
+
+            Character patrolTarget;
+            int patrolIndex;
+            if (!LocalNavigationCombatTest.TryGetPatrolTarget(out patrolTarget, out patrolIndex) ||
+                patrolTarget == null || patrolTarget.transform == null)
+            {
+                _localPatrolTarget = null;
+                _localPatrolIndex = -1;
+                _localPatrolReachedAt = 0f;
+                State = AutoBattleState.Idle;
+                LastTarget = "-";
+                LastAction = "等待 Bot";
+                LastStatus = "纯寻路巡回等待可用 Bot";
+                AutoBattleInput.ClearMovement();
+                return;
+            }
+
+            if (_localPatrolTarget != patrolTarget || _localPatrolIndex != patrolIndex)
+            {
+                _localPatrolTarget = patrolTarget;
+                _localPatrolIndex = patrolIndex;
+                _localPatrolReachedAt = 0f;
+                ClearCurrentPath();
+                _pathIndex = 0;
+                _hasDestination = false;
+                _nextRepath = 0f;
+                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "patrol_target index=" + (patrolIndex + 1) +
+                    " target=" + SafeTargetName(patrolTarget) +
+                    " pos=" + FormatVec(patrolTarget.transform.position));
+            }
+
+            LastTarget = SafeTargetName(patrolTarget);
+            Vector3 destination = patrolTarget.transform.position;
+            float horizontal = Mathf.Sqrt(XZDistanceSq(player.transform.position, destination));
+            float vertical = Mathf.Abs(player.transform.position.y - destination.y);
+            if (horizontal <= 1.85f && vertical <= 2.4f)
+            {
+                AutoBattleInput.ClearMovement();
+                State = AutoBattleState.Idle;
+                LastPath = "patrol_arrived";
+                LastAction = "已到达 Bot " + (patrolIndex + 1);
+                LastStatus = "纯寻路巡回 | 已到达 " + (patrolIndex + 1) +
+                             "/" + LocalNavigationCombatTest.BotCount;
+                if (_localPatrolReachedAt <= 0f) _localPatrolReachedAt = Time.time;
+                if (Time.time - _localPatrolReachedAt >= 0.65f)
+                {
+                    LocalNavigationCombatTest.AdvancePatrolTarget(patrolTarget);
+                    _localPatrolTarget = null;
+                    _localPatrolIndex = -1;
+                    _localPatrolReachedAt = 0f;
+                    ClearCurrentPath();
+                    _hasDestination = false;
+                    _nextRepath = 0f;
+                }
+                LogMaybe(player, null, "navigation_patrol_arrived");
+                return;
+            }
+
+            _localPatrolReachedAt = 0f;
+            State = AutoBattleState.RouteToEngage;
+            Vector3 moveDir = UpdateNavigation(player, destination, null, false, true);
+            AutoBattleInput.SetMoveWorld(player, moveDir, false);
+            Vector3 routeLook = GetPathLookDirection(player, moveDir);
+            if (routeLook.sqrMagnitude > 0.01f)
+            {
+                Vector3 lookPoint = player.transform.position + Vector3.up * 0.9f + routeLook * 10f;
+                LookAtPoint(player, cam, lookPoint, LookIntentKind.Route);
+            }
+            LastAction = "寻路巡回";
+            LastStatus = "纯寻路巡回 | 目标 " + (patrolIndex + 1) +
+                         "/" + LocalNavigationCombatTest.BotCount +
+                         " | 距离 " + horizontal.ToString("0.0") +
+                         " | 路径 " + LastPath;
+            LogMaybe(player, null, "navigation_patrol");
+        }
+
         private static void ResetRuntime(string reason)
         {
             AutoBattleInput.ClearAll();
             RestoreAutoUseIfNeeded();
             _target = null;
+            _localPatrolTarget = null;
+            _localPatrolReachedAt = 0f;
+            _localPatrolIndex = -1;
             ClearCurrentPath();
             TemporarilySkippedTargets.Clear();
             _pathIndex = 0;

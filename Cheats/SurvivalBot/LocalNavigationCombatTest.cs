@@ -41,11 +41,29 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _startedAt;
         private static float _nextStatusAt;
         private static int _spawnSequence;
+        private static int _patrolIndex;
+        private static PlayableBounds _playableBounds;
 
         private sealed class LocalBotEntry
         {
             internal Character Character;
             internal float RespawnAt;
+        }
+
+        private struct PlayableBounds
+        {
+            internal bool Valid;
+            internal float CenterX;
+            internal float CenterZ;
+            internal float HalfX;
+            internal float HalfZ;
+
+            internal bool Contains(Vector3 point)
+            {
+                return Valid &&
+                       Mathf.Abs(point.x - CenterX) <= HalfX &&
+                       Mathf.Abs(point.z - CenterZ) <= HalfZ;
+            }
         }
 
         internal static bool Enabled
@@ -88,7 +106,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         static LocalNavigationCombatTest()
         {
             State = LocalNavigationTestState.Idle;
-            StatusText = "level33 本地测试未启动";
+            StatusText = "level33 纯寻路巡回未启动";
         }
 
         internal static bool RequestStart(out string detail)
@@ -96,7 +114,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             detail = string.Empty;
             if (_enabled)
             {
-                detail = "level33 本地测试已在运行";
+                detail = "level33 纯寻路巡回已在运行";
                 return true;
             }
 
@@ -121,6 +139,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _enabled = true;
             _ownsDirectScene = true;
             _actorsPrepared = false;
+            _patrolIndex = 0;
+            _playableBounds = new PlayableBounds();
             _startedAt = Time.realtimeSinceStartup;
             _nextStatusAt = 0f;
             State = LocalNavigationTestState.Loading;
@@ -231,7 +251,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (now >= _nextStatusAt)
             {
                 _nextStatusAt = now + 0.25f;
-                StatusText = "level33 实战测试 | Bot " + AliveBotCount + "/" + Bots.Count +
+                StatusText = "level33 纯寻路巡回 | Bot " + AliveBotCount + "/" + Bots.Count +
+                    " | 当前目标 " + (_patrolIndex + 1) + "/" + Bots.Count +
                     " | " + CacheSourceName(snapshot.CacheSource) + " " + snapshot.GraphSize + " 节点" +
                     " | 路径 " + AutoBattleManager.LastPathProvider;
             }
@@ -242,6 +263,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             bool wasEnabled = _enabled;
             _enabled = false;
             _actorsPrepared = false;
+            _patrolIndex = 0;
+            _playableBounds = new PlayableBounds();
             AutoBattleManager.SetEnabled(false, "level33_test_stop:" + reason);
             AutoBattleInput.ClearAll();
             DestroyBots();
@@ -257,10 +280,41 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _ownsDirectScene = false;
                 MapBakeSceneLoader.CancelPending("level33_test_stop:" + reason);
                 State = LocalNavigationTestState.Idle;
-                StatusText = wasEnabled ? "level33 本地测试已关闭" : StatusText;
+                StatusText = wasEnabled ? "level33 纯寻路巡回已关闭" : StatusText;
             }
             FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "stopped reason=" + reason +
                 " return=" + (returnToLobby ? "1" : "0"));
+        }
+
+        internal static bool TryGetPatrolTarget(out Character target, out int index)
+        {
+            target = null;
+            index = -1;
+            if (!Running || Bots.Count == 0) return false;
+
+            _patrolIndex = Mathf.Clamp(_patrolIndex, 0, Bots.Count - 1);
+            for (int offset = 0; offset < Bots.Count; offset++)
+            {
+                int candidateIndex = (_patrolIndex + offset) % Bots.Count;
+                Character candidate = Bots[candidateIndex] == null ? null : Bots[candidateIndex].Character;
+                if (candidate == null || candidate.IsDied || candidate.transform == null) continue;
+                _patrolIndex = candidateIndex;
+                target = candidate;
+                index = candidateIndex;
+                return true;
+            }
+            return false;
+        }
+
+        internal static void AdvancePatrolTarget(Character reachedTarget)
+        {
+            if (Bots.Count == 0) return;
+            Character current = Bots[_patrolIndex] == null ? null : Bots[_patrolIndex].Character;
+            if (reachedTarget != null && current != reachedTarget) return;
+            int previous = _patrolIndex;
+            _patrolIndex = (_patrolIndex + 1) % Bots.Count;
+            FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "patrol_advance from=" + (previous + 1) +
+                " to=" + (_patrolIndex + 1));
         }
 
         internal static void NotifyLevelExit()
@@ -269,6 +323,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _enabled = false;
             _ownsDirectScene = false;
             _actorsPrepared = false;
+            _patrolIndex = 0;
+            _playableBounds = new PlayableBounds();
             Bots.Clear();
             AutoBattleManager.SetEnabled(false, "level33_test_level_exit");
             AutoBattleInput.ClearAll();
@@ -336,10 +392,16 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return false;
             }
 
-            Vector3 playerSpawn;
-            if (!TrySampleGraphPoint(graph, Vector3.zero, 0f, float.MaxValue, null, out playerSpawn))
+            if (!TryGetPlayableBounds(level, out _playableBounds))
             {
-                error = "无法抽取玩家导航出生点";
+                error = "地图未提供有效的实际可玩区域";
+                return false;
+            }
+
+            Vector3 playerSpawn;
+            if (!TrySelectPlayableAnchor(graph, _playableBounds, out playerSpawn))
+            {
+                error = "实际可玩区域内没有可用的玩家导航出生点";
                 return false;
             }
             if (!InitializePlayer(player, playerSpawn, out error)) return false;
@@ -348,7 +410,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             for (int i = 0; i < DesiredBotCount; i++)
             {
                 Vector3 botSpawn;
-                if (!TrySampleGraphPoint(graph, playerSpawn, 16f, 95f, Bots, out botSpawn))
+                if (!TrySampleGraphPoint(graph, _playableBounds, playerSpawn, 12f, 52f, Bots, out botSpawn))
                 {
                     error = "只能生成 " + Bots.Count + "/" + DesiredBotCount + " 个导航 Bot";
                     return false;
@@ -359,7 +421,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "actors_ready player=" + FormatVector(playerSpawn) +
-                " bots=" + Bots.Count + " graph=" + graph.Size);
+                " bots=" + Bots.Count + " graph=" + graph.Size +
+                " bounds=center(" + _playableBounds.CenterX.ToString("0.0") + "," +
+                _playableBounds.CenterZ.ToString("0.0") + ") half(" +
+                _playableBounds.HalfX.ToString("0.0") + "," + _playableBounds.HalfZ.ToString("0.0") + ")");
             return true;
         }
 
@@ -509,7 +574,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 if (now < entry.RespawnAt) continue;
 
                 Vector3 spawn;
-                if (!TrySampleGraphPoint(graph, player.transform.position, 14f, 75f, Bots, out spawn))
+                if (!TrySampleGraphPoint(graph, _playableBounds, player.transform.position, 12f, 52f, Bots, out spawn))
                     spawn = bot.transform.position - Vector3.up;
                 Quaternion rotation = FaceTowards(spawn, player.transform.position);
                 bot.Rebirth(ActorHealth, 0, spawn, rotation);
@@ -524,13 +589,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
         }
 
-        private static bool TrySampleGraphPoint(RAINNavigationGraph graph, Vector3 origin,
+        private static bool TrySampleGraphPoint(RAINNavigationGraph graph, PlayableBounds bounds, Vector3 origin,
             float minDistance, float maxDistance, List<LocalBotEntry> existing, out Vector3 point)
         {
             point = Vector3.zero;
-            if (graph == null || graph.Size <= 0) return false;
+            if (graph == null || graph.Size <= 0 || !bounds.Valid) return false;
             int pathChecks = 0;
-            for (int attempt = 0; attempt < 2500; attempt++)
+            for (int attempt = 0; attempt < 12000; attempt++)
             {
                 NavigationGraphNode node;
                 try { node = graph.GetNode(UnityEngine.Random.Range(0, graph.Size)); }
@@ -538,7 +603,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 NavMeshPoly poly = node as NavMeshPoly;
                 if (poly == null || poly.Unwalkable || poly.TriangleCount <= 0 || !IsWellConnected(poly)) continue;
                 Vector3 candidate = poly.Position;
-                if (!IsFinite(candidate)) continue;
+                if (!IsPlayableCandidate(bounds, candidate)) continue;
                 float distance = minDistance <= 0f ? 0f : XzDistance(origin, candidate);
                 if (distance < minDistance || distance > maxDistance) continue;
                 if (!IsSeparated(candidate, existing, 8f)) continue;
@@ -548,11 +613,41 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     if (!HasCompleteGraphPath(graph, origin, candidate)) continue;
                 }
                 Vector3 grounded;
-                if (!TryValidateSpawnPoint(candidate, out grounded)) continue;
+                if (!TryValidateSpawnPoint(bounds, candidate, out grounded)) continue;
                 point = grounded;
                 return true;
             }
             return false;
+        }
+
+        private static bool TrySelectPlayableAnchor(RAINNavigationGraph graph, PlayableBounds bounds, out Vector3 point)
+        {
+            point = Vector3.zero;
+            if (graph == null || graph.Size <= 0 || !bounds.Valid) return false;
+
+            float bestScore = float.MaxValue;
+            for (int i = 0; i < graph.Size; i++)
+            {
+                NavigationGraphNode node;
+                try { node = graph.GetNode(i); }
+                catch { continue; }
+                NavMeshPoly poly = node as NavMeshPoly;
+                if (poly == null || poly.Unwalkable || poly.TriangleCount <= 0 || !IsWellConnected(poly)) continue;
+                Vector3 candidate = poly.Position;
+                if (!IsPlayableCandidate(bounds, candidate)) continue;
+
+                float dx = (candidate.x - bounds.CenterX) / Mathf.Max(1f, bounds.HalfX);
+                float dz = (candidate.z - bounds.CenterZ) / Mathf.Max(1f, bounds.HalfZ);
+                float score = dx * dx + dz * dz;
+                if (score >= bestScore) continue;
+
+                Vector3 grounded;
+                if (!TryValidateSpawnPoint(bounds, candidate, out grounded)) continue;
+                point = grounded;
+                bestScore = score;
+                if (bestScore <= 0.0004f) break;
+            }
+            return bestScore < float.MaxValue;
         }
 
         private static bool IsWellConnected(NavMeshPoly poly)
@@ -570,7 +665,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return sharedEdges >= 2;
         }
 
-        private static bool TryValidateSpawnPoint(Vector3 candidate, out Vector3 grounded)
+        private static bool TryValidateSpawnPoint(PlayableBounds bounds, Vector3 candidate, out Vector3 grounded)
         {
             grounded = candidate;
             try
@@ -589,9 +684,40 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     found = true;
                 }
                 if (!found) return false;
+                if (!bounds.Contains(grounded) || DeadSpace.inDeadSpace(grounded + Vector3.up * 0.8f)) return false;
                 return !Physics.CheckCapsule(grounded + Vector3.up * 0.35f,
                     grounded + Vector3.up * 1.55f, 0.28f);
             }
+            catch { return false; }
+        }
+
+        private static bool TryGetPlayableBounds(Level level, out PlayableBounds bounds)
+        {
+            bounds = new PlayableBounds();
+            try
+            {
+                MapInfo info = level == null ? null : level.mapinfo;
+                if (info == null || Mathf.Abs(info.map_size.x) < 8f || Mathf.Abs(info.map_size.y) < 8f)
+                    return false;
+
+                float rawHalfX = Mathf.Abs(info.map_size.y) * 0.5f;
+                float rawHalfZ = Mathf.Abs(info.map_size.x) * 0.5f;
+                float marginX = Mathf.Clamp(rawHalfX * 0.08f, 2.5f, 12f);
+                float marginZ = Mathf.Clamp(rawHalfZ * 0.08f, 2.5f, 12f);
+                bounds.Valid = true;
+                bounds.CenterX = info.map_center.x;
+                bounds.CenterZ = info.map_center.y;
+                bounds.HalfX = Mathf.Max(3f, rawHalfX - marginX);
+                bounds.HalfZ = Mathf.Max(3f, rawHalfZ - marginZ);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static bool IsPlayableCandidate(PlayableBounds bounds, Vector3 point)
+        {
+            if (!IsFinite(point) || !bounds.Contains(point)) return false;
+            try { return !DeadSpace.inDeadSpace(point + Vector3.up * 0.8f); }
             catch { return false; }
         }
 
@@ -872,6 +998,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             _enabled = false;
             _actorsPrepared = false;
+            _patrolIndex = 0;
+            _playableBounds = new PlayableBounds();
             AutoBattleManager.SetEnabled(false, "level33_test_failed");
             AutoBattleInput.ClearAll();
             DestroyBots();
