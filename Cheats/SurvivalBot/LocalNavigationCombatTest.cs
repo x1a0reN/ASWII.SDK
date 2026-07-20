@@ -265,7 +265,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             _navigationWasReady = true;
             _navigationLostAt = 0f;
-            if (AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(player.transform.position, 1.25f))
+            if (AutoBattleRoutePlanner.IsSafeRainNavigationAnchor(
+                player.transform.position, player.transform.root))
             {
                 _hasLastNavigablePlayerPosition = true;
                 _lastNavigablePlayerPosition = player.transform.position;

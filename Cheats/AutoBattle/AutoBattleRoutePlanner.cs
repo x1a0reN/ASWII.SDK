@@ -59,12 +59,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const bool RainOnlyRoutingEnabled = true;
         private const float MaxWalkableRampGrade = 0.92f;
         private const float RainCornerClearanceRadius = 0.62f;
+        private const float NavigationBodyRadius = 0.48f;
+        private const float RainShortcutCorridorRadius = 0.28f;
 
         private static readonly int[] Dx = { 1, -1, 0, 0, 1, 1, -1, -1 };
         private static readonly int[] Dz = { 0, 0, 1, -1, 1, -1, 1, -1 };
         private static readonly float[] MoveCost = { 1f, 1f, 1f, 1f, 1.4142f, 1.4142f, 1.4142f, 1.4142f };
         private static readonly float[] WalkProbeHeights = { 0.35f, 0.9f, 1.45f };
         private static readonly float[] JumpProbeHeights = { 0.32f, 1.12f };
+        private static readonly float[] NavigationProbeHeights = { 0.38f, 0.92f, 1.42f };
+        private static readonly float[] NavigationProbeOffsetScales = { -1f, 0f, 1f };
 
         private static int _groundMask = int.MinValue;
         private static int _blockMask = int.MinValue;
@@ -116,6 +120,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 return false;
             }
+        }
+
+        internal static bool IsSafeRainNavigationAnchor(Vector3 point, Transform ignoreRoot)
+        {
+            return IsPointOnOwnedRainGraph(point, 0.85f) &&
+                   HasStandingSpace(point, ignoreRoot) &&
+                   MeasureWallClearance(point, ignoreRoot) >= NavigationBodyRadius + 0.12f;
         }
 
         internal static void TickNavigation(Level level, Character player, bool navigationActive)
@@ -418,16 +429,22 @@ namespace ASWDEBUG.Cheats.AutoBattle
             List<Vector3> simplified = new List<Vector3>(clean.Count);
             Vector3 anchor = from;
             int cursor = 0;
+            int shortcuts = 0;
             while (cursor < clean.Count)
             {
                 int selected = cursor;
-                int furthest = Mathf.Min(clean.Count - 1, cursor + 14);
+                int furthest = Mathf.Min(clean.Count - 1, cursor + 6);
                 for (int candidate = furthest; candidate > cursor; candidate--)
                 {
-                    if (!CanTraverseWalkableSurface(anchor, clean[candidate], ignoreRoot)) continue;
+                    if (!RainShortcutFollowsRawCorridor(anchor, clean, cursor, candidate,
+                        RainShortcutCorridorRadius)) continue;
+                    if (!CanTraverseWalkableSurface(anchor, clean[candidate], ignoreRoot) ||
+                        !HasNavigationBodyClearance(anchor, clean[candidate], ignoreRoot,
+                            NavigationBodyRadius)) continue;
                     selected = candidate;
                     break;
                 }
+                if (selected > cursor) shortcuts += selected - cursor;
                 simplified.Add(clean[selected]);
                 anchor = clean[selected];
                 cursor = selected + 1;
@@ -443,7 +460,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (incoming.sqrMagnitude < 0.36f || outgoing.sqrMagnitude < 0.36f) continue;
                 incoming.Normalize();
                 outgoing.Normalize();
-                if (Vector3.Dot(incoming, outgoing) > 0.86f) continue;
+                bool sharpTurn = Vector3.Dot(incoming, outgoing) <= 0.92f;
+                if (!sharpTurn && MeasureWallClearance(simplified[i], ignoreRoot) >= 0.78f) continue;
 
                 Vector3 expanded;
                 if (TryExpandRainCorner(simplified[i - 1], simplified[i], simplified[i + 1],
@@ -456,9 +474,31 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             timer.Stop();
             detail = "opt=rain raw=" + rawCount + " clean=" + clean.Count +
-                     " smooth=" + simplified.Count + " corners=" + adjustedCorners +
-                     " optMs=" + timer.ElapsedMilliseconds;
+                      " smooth=" + simplified.Count + " corners=" + adjustedCorners +
+                      " shortcuts=" + shortcuts +
+                      " body=" + NavigationBodyRadius.ToString("0.00") +
+                      " corridor=" + RainShortcutCorridorRadius.ToString("0.00") +
+                      " optMs=" + timer.ElapsedMilliseconds;
             return simplified;
+        }
+
+        private static bool RainShortcutFollowsRawCorridor(Vector3 from, List<Vector3> points,
+            int first, int last, float maxDeviation)
+        {
+            if (points == null || first < 0 || last >= points.Count || first > last) return false;
+            Vector3 to = points[last];
+            Vector2 segment = new Vector2(to.x - from.x, to.z - from.z);
+            float lengthSq = segment.sqrMagnitude;
+            if (lengthSq < 0.01f) return false;
+            float maxDeviationSq = maxDeviation * maxDeviation;
+            for (int i = first; i < last; i++)
+            {
+                Vector2 relative = new Vector2(points[i].x - from.x, points[i].z - from.z);
+                float t = Mathf.Clamp01(Vector2.Dot(relative, segment) / lengthSq);
+                Vector2 nearest = segment * t;
+                if ((relative - nearest).sqrMagnitude > maxDeviationSq) return false;
+            }
+            return true;
         }
 
         private static bool TryExpandRainCorner(Vector3 previous, Vector3 corner, Vector3 next,
@@ -481,10 +521,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     if (!IsPointOnOwnedRainGraph(candidate, 1.0f)) continue;
                     if (!HasStandingSpace(candidate, ignoreRoot)) continue;
                     if (!CanTraverseWalkableSurface(previous, candidate, ignoreRoot) ||
-                        !CanTraverseWalkableSurface(candidate, next, ignoreRoot))
+                        !CanTraverseWalkableSurface(candidate, next, ignoreRoot) ||
+                        !HasNavigationBodyClearance(previous, candidate, ignoreRoot,
+                            NavigationBodyRadius) ||
+                        !HasNavigationBodyClearance(candidate, next, ignoreRoot,
+                            NavigationBodyRadius))
                         continue;
 
                     float clearance = MeasureWallClearance(candidate, ignoreRoot);
+                    if (clearance < NavigationBodyRadius + 0.10f) continue;
                     float detour = XZDistance(previous, candidate) + XZDistance(candidate, next) -
                                    XZDistance(previous, corner) - XZDistance(corner, next);
                     float score = clearance * 3f - radius * 0.35f - Mathf.Max(0f, detour) * 0.18f;
@@ -524,13 +569,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (!TrySnapToGroundNear(raw, from.y, 1.35f, out grounded, false)) continue;
                 if (!IsPointOnOwnedRainGraph(grounded, 1.0f)) continue;
                 if (!CanTraverseWalkableSurface(from, grounded, ignoreRoot)) continue;
+                if (!HasNavigationBodyClearance(from, grounded, ignoreRoot, NavigationBodyRadius)) continue;
+                float clearance = MeasureWallClearance(grounded, ignoreRoot);
+                if (clearance < NavigationBodyRadius + 0.10f) continue;
 
                 Vector3 move = grounded - from;
                 move.y = 0f;
                 if (move.sqrMagnitude < 0.16f) continue;
                 move.Normalize();
                 float score = Vector3.Dot(move, desiredDirection) * 1.4f +
-                              MeasureWallClearance(grounded, ignoreRoot) * 0.8f;
+                              clearance * 0.8f;
                 if (score <= bestScore) continue;
                 bestScore = score;
                 bestAngle = angles[i];
@@ -709,12 +757,68 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (dir.sqrMagnitude < 0.01f) return false;
             dir.Normalize();
             Vector3 to = from + dir * 1.05f;
-            return !CanTraverseWalkableSurface(from, to, ignoreRoot);
+            return !CanTraverseWalkableSurface(from, to, ignoreRoot) ||
+                   !HasNavigationBodyClearance(from, to, ignoreRoot, NavigationBodyRadius, false);
         }
 
         public static bool CanFollowSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
         {
-            return CanTraverseWalkableSurface(from, to, ignoreRoot);
+            return CanTraverseWalkableSurface(from, to, ignoreRoot) &&
+                   HasNavigationBodyClearance(from, to, ignoreRoot, NavigationBodyRadius);
+        }
+
+        private static bool HasNavigationBodyClearance(Vector3 from, Vector3 to,
+            Transform ignoreRoot, float radius)
+        {
+            return HasNavigationBodyClearance(from, to, ignoreRoot, radius, true);
+        }
+
+        private static bool HasNavigationBodyClearance(Vector3 from, Vector3 to,
+            Transform ignoreRoot, float radius, bool sampleRadialClearance)
+        {
+            Vector3 flat = to - from;
+            flat.y = 0f;
+            float distance = flat.magnitude;
+            if (distance < 0.08f) return true;
+            Vector3 direction = flat / distance;
+            Vector3 side = Vector3.Cross(Vector3.up, direction).normalized;
+            try
+            {
+                for (int o = 0; o < NavigationProbeOffsetScales.Length; o++)
+                {
+                    for (int h = 0; h < NavigationProbeHeights.Length; h++)
+                    {
+                        Vector3 origin = from + side * (NavigationProbeOffsetScales[o] * radius) +
+                                         Vector3.up * NavigationProbeHeights[h];
+                        RaycastHit[] hits = Physics.RaycastAll(origin, direction, distance, BlockMask);
+                        if (HasBlockingWallHit(hits, ignoreRoot)) return false;
+                    }
+                }
+
+                if (!sampleRadialClearance) return true;
+                if (MeasureWallClearance(to, ignoreRoot) < radius) return false;
+                if (distance > 2.5f &&
+                    MeasureWallClearance(Vector3.Lerp(from, to, 0.5f), ignoreRoot) < radius)
+                    return false;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasBlockingWallHit(RaycastHit[] hits, Transform ignoreRoot)
+        {
+            if (hits == null) return false;
+            for (int i = 0; i < hits.Length; i++)
+            {
+                Collider collider = hits[i].collider;
+                if (collider == null || collider.isTrigger ||
+                    IsIgnored(collider.transform, ignoreRoot)) continue;
+                if (hits[i].normal.y < 0.55f) return true;
+            }
+            return false;
         }
 
         public static bool ShouldJumpForwardObstacle(Vector3 from, Vector3 dir, Transform ignoreRoot)
