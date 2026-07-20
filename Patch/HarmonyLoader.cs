@@ -264,7 +264,7 @@ namespace ASWDEBUG.Patch
         {
             LocalNavigationCombatTest.NotifyLevelExit();
             MapBakeSceneLoader.NotifyLevelExit();
-            AutoBattleRoutePlanner.DeactivateNavigation("level_exit");
+            AutoBattleRoutePlanner.DeactivateNavigationForSceneExit("level_exit");
         }
 
         private static bool PlayerSyncPrefix()

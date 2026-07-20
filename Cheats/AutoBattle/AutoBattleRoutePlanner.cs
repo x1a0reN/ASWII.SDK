@@ -84,6 +84,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _sliceBudgetMilliseconds;
         private static float _sliceSpentMilliseconds;
         private static float _frameMillisecondsEma = TargetFrameMilliseconds;
+        private static string _mapBakeDeferredReason = string.Empty;
 
         internal static AutoBattleNavResourceState NavigationState
         {
@@ -134,6 +135,16 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         internal static void DeactivateNavigation(string reason)
         {
+            DeactivateNavigation(reason, false);
+        }
+
+        internal static void DeactivateNavigationForSceneExit(string reason)
+        {
+            DeactivateNavigation(reason, true);
+        }
+
+        private static void DeactivateNavigation(string reason, bool releaseMemoryCache)
+        {
             _physicsSearchJob = null;
             _rainSearchJob = null;
             if (SurvivalBotManager.MapBakeEnabled && RuntimeRainNavMesh.IsHighDetail &&
@@ -144,6 +155,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return;
             }
             RuntimeRainNavMesh.Deactivate(reason);
+            if (releaseMemoryCache)
+                RuntimeRainNavMesh.ReleaseMemoryCache("scene_exit:" + reason);
             ResetNavigationState();
         }
 
@@ -166,7 +179,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (declared && !loadNavmesh)
                 loadNavmesh = true;
 
-            if (bakeMode && RuntimeRainNavMesh.IsHighDetail && RuntimeRainNavMesh.IsBuilding)
+            if (bakeMode && RuntimeRainNavMesh.IsHighDetail && RuntimeRainNavMesh.IsBuilding &&
+                string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized, StringComparison.OrdinalIgnoreCase))
             {
                 FileLogger.Log("AUTO-BATTLE][NAVMESH", "background_build_kept activeMap=" +
                     SafeMap(RuntimeRainNavMesh.CurrentMapName) + " incomingMap=" + SafeMap(normalized));
@@ -196,6 +210,40 @@ namespace ASWDEBUG.Cheats.AutoBattle
         internal static void EnsureMapBake(Level level)
         {
             if (level == null || string.IsNullOrEmpty(level.map_name)) return;
+            string deferredReason = string.Empty;
+            if (MapBakeSceneLoader.IsTransitioning)
+            {
+                deferredReason = "scene_transition";
+            }
+            else
+            {
+                try
+                {
+                    GameStateManager stateManager = ASSingleton<GameStateManager>.Instance;
+                    if (stateManager != null && stateManager.CurStateType == GameStateType.Lobby)
+                        deferredReason = "lobby_stale_level";
+                    else if (stateManager != null && stateManager.CurStateType == GameStateType.GameLoading)
+                        deferredReason = "game_loading";
+                }
+                catch
+                {
+                    deferredReason = "state_unavailable";
+                }
+            }
+            if (string.IsNullOrEmpty(deferredReason) && MapBakeSceneLoader.DirectSceneActive &&
+                !MapBakeSceneLoader.IsExpectedDirectScene(level.map_name))
+                deferredReason = "unexpected_direct_scene:" + SafeMap(level.map_name);
+            if (!string.IsNullOrEmpty(deferredReason))
+            {
+                if (!string.Equals(_mapBakeDeferredReason, deferredReason, StringComparison.Ordinal))
+                {
+                    _mapBakeDeferredReason = deferredReason;
+                    FileLogger.Log("AUTO-BATTLE][NAVMESH", "map_bake_deferred reason=" + deferredReason);
+                }
+                return;
+            }
+
+            _mapBakeDeferredReason = string.Empty;
             string normalized = level.map_name.Trim().ToLowerInvariant();
             if (RuntimeRainNavMesh.IsHighDetail && RuntimeRainNavMesh.IsBuilding) return;
             if (RuntimeRainNavMesh.Requested && RuntimeRainNavMesh.IsHighDetail &&

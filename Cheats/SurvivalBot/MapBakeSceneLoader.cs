@@ -201,6 +201,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return false;
             }
 
+            // A disk cache is reusable; a large live RAIN graph is not safe to carry through
+            // Unity's unload/load cycle in this 32-bit client.
+            AutoBattleRoutePlanner.ShutdownNavigation("direct_map_transition:" + option.Key);
             _pendingOption = option;
             _pendingMap = option.Token;
             _resolvedSceneMap = string.Empty;

@@ -279,10 +279,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         internal static void Shutdown(string reason)
         {
             Deactivate("shutdown:" + reason);
-            List<CachedNavMeshEntry> entries = new List<CachedNavMeshEntry>(CachedMaps.Values);
-            CachedMaps.Clear();
-            for (int i = 0; i < entries.Count; i++)
-                ReleaseCacheEntry(entries[i], reason);
+            ReleaseMemoryCache(reason);
             _requested = false;
             _state = RuntimeRainNavState.Idle;
             _mapName = string.Empty;
@@ -291,6 +288,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _waitStartedAt = 0f;
             _buildStartedAt = 0f;
             _readyAt = 0f;
+        }
+
+        internal static void ReleaseMemoryCache(string reason)
+        {
+            List<CachedNavMeshEntry> entries = new List<CachedNavMeshEntry>(CachedMaps.Values);
+            CachedMaps.Clear();
+            for (int i = 0; i < entries.Count; i++)
+                ReleaseCacheEntry(entries[i], reason);
+            if (entries.Count > 0)
+                FileLogger.Log("AUTO-BATTLE][NAVMESH", "memory_cache_cleared count=" + entries.Count +
+                    " reason=" + SafeOneLine(reason, 80));
         }
 
         internal static void Deactivate(string reason)
