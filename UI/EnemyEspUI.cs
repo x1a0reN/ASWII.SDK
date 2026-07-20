@@ -21,8 +21,9 @@ namespace ASWDEBUG.UI
             if (current != null && current.type != EventType.Repaint) return;
 
             GameApp app = GameApp.Instance;
-            if (app == null || app.channel_connection == null ||
-                app.channel_connection.state != ChannelConnection.State.kInGame) return;
+            bool localLevel33Test = SurvivalBotManager.Level33TestEnabled && MapBakeSceneLoader.DirectSceneActive;
+            if (!localLevel33Test && (app == null || app.channel_connection == null ||
+                app.channel_connection.state != ChannelConnection.State.kInGame)) return;
 
             Level level;
             Character player;

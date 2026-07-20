@@ -12,8 +12,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
     internal static class MapBakeSceneLoader
     {
         private const string SelectedMapKey = "ASWDEBUG.SurvivalBot.MapBakeTarget";
+        private const string PreferredLevel33SurvivalMap = "level46";
         private static readonly Regex ScenePattern = new Regex(
             "FilePath=\"Prefab/Scene/([^\"]+)\\.scene\"", RegexOptions.IgnoreCase);
+        private static readonly Regex SetMeshPattern = new Regex(
+            @"(?:level\.)?SetMesh\s*\(\s*[""']([^""']+)[""']", RegexOptions.IgnoreCase);
+        private static readonly Regex LuaBlockCommentPattern = new Regex(
+            @"--\[\[.*?\]\]", RegexOptions.Singleline);
+        private static readonly Regex LuaLineCommentPattern = new Regex(@"--[^\r\n]*");
 
         private sealed class MapOption
         {
@@ -134,6 +140,45 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 detail = "没有找到可加载的地图资源";
                 return false;
             }
+            MapOption option = FindOption(_selectedMap);
+            if (option == null)
+            {
+                detail = "所选地图已失效，请重新选择";
+                return false;
+            }
+            return QueueOption(option, out detail);
+        }
+
+        internal static bool RequestPhysicalScene(string sceneName, RoomInfo.GameType gameType, out string detail)
+        {
+            EnsureMapsLoaded();
+            RefreshMapOptions(true);
+            string normalized = (sceneName ?? string.Empty).Trim().ToLowerInvariant();
+            if (!_authoritativeOptionsReady)
+            {
+                detail = "地图列表尚未同步，请稍后重试";
+                return false;
+            }
+            if (string.IsNullOrEmpty(normalized))
+            {
+                detail = "物理地图名称为空";
+                return false;
+            }
+
+            string resolution;
+            MapOption option = FindOptionForPhysicalScene(normalized, gameType, out resolution);
+            if (option == null)
+            {
+                detail = string.IsNullOrEmpty(resolution)
+                    ? "没有找到加载 " + normalized + " 的" + GameTypeName(gameType) + "关卡"
+                    : resolution;
+                return false;
+            }
+            return QueueOption(option, out detail);
+        }
+
+        private static bool QueueOption(MapOption option, out string detail)
+        {
             if (_directSceneActive)
             {
                 detail = "当前已在直接加载的地图中，请先退出该场景";
@@ -150,13 +195,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 detail = "已有地图正在生成，不能替换当前构建";
                 return false;
             }
-
-            MapOption option = FindOption(_selectedMap);
-            if (option == null)
+            if (option == null || string.IsNullOrEmpty(option.Key) || option.Id == 0UL)
             {
-                detail = "所选地图已失效，请重新选择";
+                detail = "地图配置无效";
                 return false;
             }
+
             _pendingOption = option;
             _pendingMap = option.Token;
             _resolvedSceneMap = string.Empty;
@@ -232,7 +276,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 }
 
                 _returnRequested = true;
-                detail = "建图缓存已保存，正在销毁场景并返回大厅";
+                detail = "正在销毁本地场景并返回大厅";
                 StatusText = detail;
                 FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "auto_return_requested logical=" + Safe(_activeMap) +
                     " scene=" + Safe(_resolvedSceneMap));
@@ -324,7 +368,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 loading.load_navmesh = false;
                 loading.gameMode = (byte)option.GameType;
                 Character player = level.GetPlayer();
-                loading.player_id = player == null ? 0u : player.uid;
+                loading.player_id = player == null || player.uid == 0 ? 1u : player.uid;
 
                 manager.ChangeState(GameStateType.GameLoading);
                 StatusText = "正在直接加载 " + option.DisplayName;
@@ -485,12 +529,79 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return null;
         }
 
+        private static MapOption FindOptionForPhysicalScene(string sceneName, RoomInfo.GameType gameType,
+            out string resolution)
+        {
+            resolution = string.Empty;
+            if (_mapOptions == null || string.IsNullOrEmpty(sceneName)) return null;
+            TableManager table = ASSingleton<TableManager>.Instance;
+            if (table == null) return null;
+            List<MapOption> candidates = new List<MapOption>();
+
+            for (int i = 0; i < _mapOptions.Length; i++)
+            {
+                MapOption option = _mapOptions[i];
+                if (option == null || option.GameType != gameType || string.IsNullOrEmpty(option.Key)) continue;
+                string lua = table.LoadAssetBundle("level/" + option.Key.ToLowerInvariant());
+                if (string.IsNullOrEmpty(lua)) continue;
+                lua = LuaLineCommentPattern.Replace(LuaBlockCommentPattern.Replace(lua, string.Empty), string.Empty);
+                MatchCollection matches = SetMeshPattern.Matches(lua);
+                string onlyScene = string.Empty;
+                bool ambiguousScript = false;
+                for (int j = 0; j < matches.Count; j++)
+                {
+                    string resolved = matches[j].Groups[1].Value.Trim().ToLowerInvariant();
+                    if (string.IsNullOrEmpty(onlyScene)) onlyScene = resolved;
+                    else if (!string.Equals(onlyScene, resolved, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ambiguousScript = true;
+                        break;
+                    }
+                }
+                if (!ambiguousScript && string.Equals(onlyScene, sceneName, StringComparison.OrdinalIgnoreCase))
+                    candidates.Add(option);
+            }
+            if (candidates.Count == 0) return null;
+
+            MapOption selected = candidates.Count == 1 ? candidates[0] : null;
+            if (selected == null && string.Equals(sceneName, "level33", StringComparison.OrdinalIgnoreCase) &&
+                gameType == RoomInfo.GameType.kGameTypeChiji)
+            {
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    if (string.Equals(candidates[i].Key, PreferredLevel33SurvivalMap,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        selected = candidates[i];
+                        break;
+                    }
+                }
+            }
+
+            string candidateNames = string.Empty;
+            for (int i = 0; i < candidates.Count; i++)
+                candidateNames += (i == 0 ? string.Empty : ",") + candidates[i].Key + "#" + candidates[i].Id;
+            if (selected == null)
+            {
+                resolution = "物理地图映射不唯一: " + candidateNames;
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "physical_scene_ambiguous scene=" + sceneName +
+                    " gameType=" + (byte)gameType + " candidates=" + candidateNames);
+                return null;
+            }
+
+            FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "physical_scene_match scene=" + sceneName +
+                " token=" + selected.Token + " logical=" + selected.Key + " gameType=" + (byte)gameType +
+                " candidates=" + candidateNames);
+            return selected;
+        }
+
         private static int FindOptionIndex(string key)
         {
             if (_mapOptions == null || string.IsNullOrEmpty(key)) return -1;
             for (int i = 0; i < _mapOptions.Length; i++)
             {
-                if (string.Equals(_mapOptions[i].Key, key, StringComparison.OrdinalIgnoreCase)) return i;
+                if (string.Equals(_mapOptions[i].Token, key, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(_mapOptions[i].Key, key, StringComparison.OrdinalIgnoreCase)) return i;
             }
             return -1;
         }

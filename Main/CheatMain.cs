@@ -50,7 +50,8 @@ namespace ASWDEBUG.Main
                     AutoBattleRoutePlanner.EnsureMapBake(level);
                 AutoBattleRoutePlanner.TickNavigation(level, player,
                     SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled ||
-                    SurvivalBotManager.RoomTestEnabled || SurvivalBotManager.MapBakeEnabled);
+                    SurvivalBotManager.RoomTestEnabled || SurvivalBotManager.MapBakeEnabled ||
+                    SurvivalBotManager.Level33TestEnabled);
                 SurvivalBotManager.Tick(level, player, CameraMain);
                 NavigationPathVisualizer.Tick(level, player);
             }

@@ -25,7 +25,7 @@ namespace ASWDEBUG.UI
         }
 
         private const float WindowWidth = 388f;
-        private const float WindowHeight = 520f;
+        private const float WindowHeight = 552f;
         private const float RowHeight = 26f;
 
         private static readonly string[] TacticsNames = { "稳健", "标准", "激进" };
@@ -106,9 +106,12 @@ namespace ASWDEBUG.UI
             Rect summary = new Rect(x, y, width, 24f);
             DrawPanel(summary, _panelInnerTexture, _borderTexture);
             string phase = PhaseName(SurvivalBotManager.Phase);
-            string players = SurvivalBotManager.InitialPlayers + " / " + SurvivalBotManager.RemainingPlayers;
+            string players = SurvivalBotManager.Level33TestEnabled
+                ? LocalNavigationCombatTest.AliveBotCount + " / " + LocalNavigationCombatTest.BotCount
+                : SurvivalBotManager.InitialPlayers + " / " + SurvivalBotManager.RemainingPlayers;
             string currentRole = SurvivalBotManager.MapBakeEnabled ? "不接管" :
-                SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled
+                SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled ||
+                SurvivalBotManager.Level33TestEnabled
                     ? AutoBattleManager.CurrentRole
                     : SurvivalCombatAdapter.CurrentRole;
             GUI.Label(new Rect(summary.x + 7f, summary.y, summary.width * 0.62f, summary.height),
@@ -158,6 +161,19 @@ namespace ASWDEBUG.UI
                 GUI.DrawTexture(new Rect(mapBakeButton.xMax - 5f, mapBakeButton.y + 3f, 3f,
                     mapBakeButton.height - 6f), _accentTexture);
             y += 33f;
+
+            Rect level33TestButton = new Rect(x, y, width, 27f);
+            string level33TestText = SurvivalBotManager.Level33TestEnabled
+                ? "level33 生存实战测试：开"
+                : "一键进入 level33 生存实战测试";
+            if (GUI.Button(level33TestButton, level33TestText, _buttonCenterStyle))
+            {
+                SurvivalBotManager.SetLevel33TestEnabled(!SurvivalBotManager.Level33TestEnabled, "ui");
+            }
+            if (SurvivalBotManager.Level33TestEnabled)
+                GUI.DrawTexture(new Rect(level33TestButton.xMax - 5f, level33TestButton.y + 3f, 3f,
+                    level33TestButton.height - 6f), _accentTexture);
+            y += 32f;
 
             DrawMapBakeLaunchRow(ref y, x, width);
 
@@ -235,7 +251,8 @@ namespace ASWDEBUG.UI
             string boundsLine = "参数  范围 " + FormatBounds(snapshot.BoundsSize) + "  |  网格 " +
                 snapshot.CellSize.ToString("0.00") + " 米  |  Worker " + snapshot.WorkerCount +
                 "  |  " + (snapshot.Profile == "max_detail" ? "极限精度" : "运行精度");
-            bool directCombatTest = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled;
+            bool directCombatTest = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled ||
+                SurvivalBotManager.Level33TestEnabled;
             string provider = directCombatTest
                 ? AutoBattleManager.LastPathProvider
                 : SurvivalCombatAdapter.LastPathProvider;
@@ -247,7 +264,10 @@ namespace ASWDEBUG.UI
                 : SurvivalCombatAdapter.LastPath;
             string pathLine = "路径  " + provider + "  |  导航点 " +
                 NavigationPathVisualizer.VisiblePointCount + "  |  " + intent + "  |  " + path;
-            string detailLine = "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
+            string detailLine = SurvivalBotManager.Level33TestEnabled
+                ? "测试  Bot " + LocalNavigationCombatTest.AliveBotCount + "/" +
+                  LocalNavigationCombatTest.BotCount + "  |  " + LocalNavigationCombatTest.StatusText
+                : "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
 
             DrawClippedLine(panel.y + 27f, buildLine, textX, textWidth);
             DrawClippedLine(panel.y + 44f, boundsLine, textX, textWidth);
@@ -621,6 +641,7 @@ namespace ASWDEBUG.UI
             if (phase == SurvivalBotPhase.GmExit) return "GM 退出";
             if (phase == SurvivalBotPhase.CombatTest) return "战斗测试";
             if (phase == SurvivalBotPhase.RoomTest) return "开房测试";
+            if (phase == SurvivalBotPhase.Level33Test) return "level33 实战";
             if (phase == SurvivalBotPhase.MapBake) return "地图建图";
             return "已停止";
         }

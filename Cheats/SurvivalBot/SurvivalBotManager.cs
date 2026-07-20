@@ -21,6 +21,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         GmExit,
         CombatTest,
         RoomTest,
+        Level33Test,
         MapBake,
         Stopped
     }
@@ -118,6 +119,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static bool CombatTestEnabled { get; private set; }
         public static bool RoomTestEnabled { get; private set; }
         public static bool MapBakeEnabled { get; private set; }
+        public static bool Level33TestEnabled
+        {
+            get { return LocalNavigationCombatTest.Enabled; }
+        }
         public static SurvivalBotPhase Phase = SurvivalBotPhase.Lobby;
         public static string StatusText = "等待初始化";
         public static int InitialPlayers { get; private set; }
@@ -142,6 +147,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static void Tick(Level level, Character player, Camera camera)
         {
             AutoBattleInput.BeginFrame();
+
+            // The direct level33 test is fully local and intentionally bypasses proxy/channel state checks.
+            if (Level33TestEnabled)
+            {
+                LocalNavigationCombatTest.Tick(level, player, camera);
+                Phase = LocalNavigationCombatTest.Enabled
+                    ? SurvivalBotPhase.Level33Test
+                    : SurvivalBotPhase.Stopped;
+                StatusText = LocalNavigationCombatTest.StatusText;
+                return;
+            }
 
             // Map baking is a local, read-only scene operation and must not depend on the game proxy.
             if (MapBakeEnabled)
@@ -210,6 +226,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (CombatTestEnabled) DisableCombatTest("survival_loop_enabled");
             if (RoomTestEnabled) DisableRoomTest("survival_loop_enabled");
             if (MapBakeEnabled) DisableMapBake("survival_loop_enabled");
+            if (Level33TestEnabled) LocalNavigationCombatTest.Stop("survival_loop_enabled", true);
             Enabled = true;
             _consecutiveGmRounds = 0;
             _pendingGmUid = 0;
@@ -238,6 +255,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (CombatTestEnabled) return;
             if (RoomTestEnabled) DisableRoomTest("combat_test_enabled");
             if (MapBakeEnabled) DisableMapBake("combat_test_enabled");
+            if (Level33TestEnabled) LocalNavigationCombatTest.Stop("combat_test_enabled", true);
             DisableSurvivalLoopForCombatTest();
             CombatTestEnabled = true;
             _attackTarget = null;
@@ -264,6 +282,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (RoomTestEnabled) return;
             if (CombatTestEnabled) DisableCombatTest("room_test_enabled");
             if (MapBakeEnabled) DisableMapBake("room_test_enabled");
+            if (Level33TestEnabled) LocalNavigationCombatTest.Stop("room_test_enabled", true);
             DisableSurvivalLoopForCombatTest();
             RoomTestEnabled = true;
             _attackTarget = null;
@@ -290,6 +309,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (MapBakeEnabled) return;
             if (CombatTestEnabled) DisableCombatTest("map_bake_enabled");
             if (RoomTestEnabled) DisableRoomTest("map_bake_enabled");
+            if (Level33TestEnabled) LocalNavigationCombatTest.Stop("map_bake_enabled", true);
             DisableSurvivalLoopForCombatTest();
             MapBakeEnabled = true;
             AutoBattleInput.ClearAll();
@@ -314,14 +334,47 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_accepted source=" + reason);
         }
 
+        public static void SetLevel33TestEnabled(bool enabled, string reason)
+        {
+            if (!enabled)
+            {
+                LocalNavigationCombatTest.Stop(reason, true);
+                Phase = SurvivalBotPhase.Stopped;
+                StatusText = LocalNavigationCombatTest.StatusText;
+                return;
+            }
+
+            if (Level33TestEnabled) return;
+            if (CombatTestEnabled) DisableCombatTest("level33_test_enabled");
+            if (RoomTestEnabled) DisableRoomTest("level33_test_enabled");
+            if (MapBakeEnabled) DisableMapBake("level33_test_enabled");
+            DisableSurvivalLoopForCombatTest();
+            AutoBattleInput.ClearAll();
+            AutoBattleManager.SetEnabled(false, "level33_test_request");
+            SurvivalCombatAdapter.ResetSurvivalRuntime("level33_test_request");
+
+            string detail;
+            if (!LocalNavigationCombatTest.RequestStart(out detail))
+            {
+                Phase = SurvivalBotPhase.Stopped;
+                StatusText = "level33 测试 | " + detail;
+                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "request_rejected reason=" + detail);
+                return;
+            }
+            Phase = SurvivalBotPhase.Level33Test;
+            StatusText = detail;
+            FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "enabled reason=" + reason);
+        }
+
         public static void Stop(string reason)
         {
-            if (!Enabled && !CombatTestEnabled && !RoomTestEnabled && !MapBakeEnabled &&
+            if (!Enabled && !CombatTestEnabled && !RoomTestEnabled && !MapBakeEnabled && !Level33TestEnabled &&
                 Phase == SurvivalBotPhase.Stopped) return;
             Enabled = false;
             CombatTestEnabled = false;
             RoomTestEnabled = false;
             MapBakeEnabled = false;
+            if (Level33TestEnabled) LocalNavigationCombatTest.Stop("manager_stop:" + reason, true);
             MapBakeSceneLoader.CancelPending("stop:" + reason);
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;

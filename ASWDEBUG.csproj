@@ -80,6 +80,7 @@
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavMesh.cs" />
     <Compile Include="Cheats\Player\AutoFire.cs" />
     <Compile Include="Cheats\SurvivalBot\MapBakeSceneLoader.cs" />
+    <Compile Include="Cheats\SurvivalBot\LocalNavigationCombatTest.cs" />
     <Compile Include="Cheats\SurvivalBot\SurvivalBotManager.cs" />
     <Compile Include="Cheats\SurvivalBot\SurvivalBotSettings.cs" />
     <Compile Include="Loader\ConsoleManager.cs" />

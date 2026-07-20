@@ -90,6 +90,7 @@ namespace ASWDEBUG.Patch
             PatchByName(harmony, typeof(ChannelConnection), "ParseCharacterInfo", 1, "CharacterInfoPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseGameEnd", 1, "GameEndPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "SyncPlayerData", 1, "PlayerSyncPrefix", null);
+            PatchByName(harmony, typeof(ChannelConnection), "Shoot", 6, "LocalTestShotPrefix", null);
             PatchByName(harmony, typeof(LobbyConnection), "RequestMatching", 2, "MatchingRequestedPrefix", null);
             PatchByName(harmony, typeof(LobbyConnection), "ResponseMatching", 0, null, "MatchingResponsePostfix");
             PatchByName(harmony, typeof(LobbyConnection), "ResponseCancelMatching", 0, null, "MatchingCancelResponsePostfix");
@@ -261,6 +262,7 @@ namespace ASWDEBUG.Patch
 
         private static void LevelExitPrefix()
         {
+            LocalNavigationCombatTest.NotifyLevelExit();
             MapBakeSceneLoader.NotifyLevelExit();
             AutoBattleRoutePlanner.DeactivateNavigation("level_exit");
         }
@@ -268,6 +270,18 @@ namespace ASWDEBUG.Patch
         private static bool PlayerSyncPrefix()
         {
             return !MapBakeSceneLoader.DirectSceneActive;
+        }
+
+        private static bool LocalTestShotPrefix(HitMessage __2)
+        {
+            if (!LocalNavigationCombatTest.InterceptShots) return true;
+            try { LocalNavigationCombatTest.TryHandleLocalShot(__2); }
+            catch (Exception ex)
+            {
+                FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "shot_prefix_ex=" + ex.GetType().Name + ":" + ex.Message);
+            }
+            // The direct test is network-isolated: misses stay misses, but no shot is forwarded.
+            return false;
         }
 
         private static void CharacterInfoPrefix(NetworkStream reader)

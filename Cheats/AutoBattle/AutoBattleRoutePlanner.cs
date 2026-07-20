@@ -135,6 +135,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool original = loadNavmesh;
             bool declared = ManifestDeclaresNavMesh(normalized);
             bool bakeMode = SurvivalBotManager.MapBakeEnabled;
+            bool level33Test = SurvivalBotManager.Level33TestEnabled;
 
             if (declared && !loadNavmesh)
                 loadNavmesh = true;
@@ -146,7 +147,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return;
             }
 
-            RuntimeRainNavMesh.PrepareMap(normalized, bakeMode || !declared, bakeMode);
+            RuntimeRainNavMesh.PrepareMap(normalized, bakeMode || level33Test || !declared,
+                bakeMode || level33Test);
 
             _navMapName = normalized;
             _navResourceDeclared = declared;
