@@ -16,7 +16,11 @@ The original physics-grid 2.5D route planner is retained as the fallback. Maps t
 do not ship a native navigation prefab, including `level33`, build an owned RAIN
 NavMesh from the active terrain colliders after the scene reaches `Level.State.kReady`.
 The route order is direct physics, validated RAIN path, then the 2.5D grid. Runtime
-RAIN graphs are unregistered on map exit and never replace the game's own graphs.
+RAIN graphs are generated once per map and cached for the lifetime of the game
+process. Map exit only unregisters the graph; returning to the same map registers
+the cached graph immediately. Plugin shutdown releases every cached graph. The
+first build uses RAIN's automatic half-CPU worker count and a `0.25` cell size so
+the pre-round wait is used for maximum generation throughput and path detail.
 
 Forced hunt does not select a standoff or interception point. It follows the live
 enemy position directly in open space, falls back to global routing only when

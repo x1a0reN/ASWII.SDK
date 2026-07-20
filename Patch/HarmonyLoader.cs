@@ -254,12 +254,12 @@ namespace ASWDEBUG.Patch
 
         private static void LevelLoadMapPostfix(bool __result)
         {
-            if (!__result) AutoBattleRoutePlanner.ShutdownNavigation("load_map_rejected");
+            if (!__result) AutoBattleRoutePlanner.DeactivateNavigation("load_map_rejected");
         }
 
         private static void LevelExitPrefix()
         {
-            AutoBattleRoutePlanner.ShutdownNavigation("level_exit");
+            AutoBattleRoutePlanner.DeactivateNavigation("level_exit");
         }
 
         private static void CharacterInfoPrefix(NetworkStream reader)

@@ -102,6 +102,19 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _physicsSearchJob = null;
             _rainSearchJob = null;
             RuntimeRainNavMesh.Shutdown(reason);
+            ResetNavigationState();
+        }
+
+        internal static void DeactivateNavigation(string reason)
+        {
+            _physicsSearchJob = null;
+            _rainSearchJob = null;
+            RuntimeRainNavMesh.Deactivate(reason);
+            ResetNavigationState();
+        }
+
+        private static void ResetNavigationState()
+        {
             _navMapName = string.Empty;
             _navResourceDeclared = false;
             _navLoadRequested = false;
