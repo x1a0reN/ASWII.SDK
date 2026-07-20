@@ -3063,7 +3063,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _nextPathJumpTime = Time.time + 0.45f;
                 FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=follow jump=1 corner=" + (_pathIndex + 1) + "/" + Path.Count + " dist=" + d.ToString("0.0") + " targetY=" + next.y.ToString("0.0"));
             }
-            if (!jumpEdge && AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, dir, SafeRoot(player)))
+            bool trustedRainRoute = string.Equals(LastPathProvider, "rain_navmesh", StringComparison.Ordinal);
+            if (!jumpEdge && !trustedRainRoute && AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, dir, SafeRoot(player)))
             {
                 if (Time.time < _nextWallRecoveryTime) return Vector3.zero;
                 _nextWallRecoveryTime = Time.time + 0.18f;

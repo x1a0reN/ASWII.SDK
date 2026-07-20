@@ -243,10 +243,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (TryBuildRainPath(from, to, out points, out rainDetail, out rainPending, out rainPartial))
                 {
                     string validationDetail = "not_checked";
-                    if (!rainPartial && ValidateRainPath(from, points, ignoreRoot, out validationDetail))
+                    bool physicsValidated = !rainPartial && ValidateRainPath(from, points, ignoreRoot, out validationDetail);
+                    bool trustedRuntimeGraph = !rainPartial &&
+                                               RuntimeRainNavMesh.Requested &&
+                                               RuntimeRainNavMesh.OwnedGraph != null;
+                    if (physicsValidated || trustedRuntimeGraph)
                     {
                         _physicsSearchJob = null;
-                        route = FromPoints("rain_navmesh", false, points, rainDetail + " validate=ok");
+                        string validation = physicsValidated
+                            ? " validate=ok"
+                            : " validate=owned_graph_trusted(" + validationDetail + ")";
+                        route = FromPoints("rain_navmesh", false, points, rainDetail + validation);
                         AnnotateBuiltInJumpFlags(route, from, capabilities, ignoreRoot);
                         LogRoute(route);
                         return route;
