@@ -17,6 +17,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private sealed class MapOption
         {
+            internal string Token;
             internal string Key;
             internal string DisplayName;
             internal ulong Id;
@@ -28,7 +29,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static MapOption[] _mapOptions;
         private static string _selectedMap;
         private static string _pendingMap = string.Empty;
+        private static MapOption _pendingOption;
         private static string _activeMap = string.Empty;
+        private static string _activeDisplayName = string.Empty;
+        private static string _activeOptionToken = string.Empty;
         private static string _resolvedSceneMap = string.Empty;
         private static string _lastResolvedSceneMap = string.Empty;
         private static string _lastResolvedDisplayName = string.Empty;
@@ -73,7 +77,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         internal static string SelectedMapDisplayName
         {
-            get { return DisplayNameFor(SelectedMap); }
+            get
+            {
+                MapOption option = FindOption(SelectedMap);
+                return option == null ? "-" : option.DisplayName;
+            }
         }
 
         internal static bool IsTransitioning
@@ -118,7 +126,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             RefreshMapOptions(true);
             if (!_authoritativeOptionsReady)
             {
-                detail = "生存地图列表尚未同步，请稍后重试";
+                detail = "地图列表尚未同步，请稍后重试";
                 return false;
             }
             if (_availableMaps.Length == 0 || string.IsNullOrEmpty(_selectedMap))
@@ -143,13 +151,21 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return false;
             }
 
-            _pendingMap = _selectedMap;
+            MapOption option = FindOption(_selectedMap);
+            if (option == null)
+            {
+                detail = "所选地图已失效，请重新选择";
+                return false;
+            }
+            _pendingOption = option;
+            _pendingMap = option.Token;
             _resolvedSceneMap = string.Empty;
             _transitioning = true;
             _returnRequested = false;
-            StatusText = "准备直接加载 " + SelectedMapDisplayName;
+            StatusText = "准备直接加载 " + option.DisplayName;
             detail = StatusText;
-            FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_requested map=" + _selectedMap);
+            FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_requested token=" + option.Token +
+                " logical=" + option.Key + " mapId=" + option.Id + " gameType=" + (byte)option.GameType);
             return true;
         }
 
@@ -157,8 +173,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             if (!string.IsNullOrEmpty(_pendingMap))
             {
-                string requested = _pendingMap;
+                MapOption requested = _pendingOption;
                 _pendingMap = string.Empty;
+                _pendingOption = null;
                 Launch(requested);
             }
 
@@ -177,6 +194,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         internal static void CancelPending(string reason)
         {
             _pendingMap = string.Empty;
+            _pendingOption = null;
             _transitioning = false;
             StatusText = "直接加载已取消";
             if (!_directSceneActive) RestoreAutoLeave();
@@ -189,10 +207,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_scene_exit logical=" + Safe(_activeMap) +
                 " scene=" + Safe(_resolvedSceneMap));
             _lastResolvedSceneMap = _resolvedSceneMap;
-            _lastResolvedDisplayName = DisplayNameFor(_activeMap);
+            _lastResolvedDisplayName = _activeDisplayName;
             _directSceneActive = false;
             _transitioning = false;
             _activeMap = string.Empty;
+            _activeDisplayName = string.Empty;
+            _activeOptionToken = string.Empty;
             _resolvedSceneMap = string.Empty;
             _returnRequested = false;
             RestoreAutoLeave();
@@ -250,11 +270,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             EnsureMapsLoaded();
             RefreshMapOptions();
             if (string.IsNullOrEmpty(mapName)) return "-";
-            for (int i = 0; i < _availableMaps.Length; i++)
-            {
-                if (string.Equals(_availableMaps[i], mapName, StringComparison.OrdinalIgnoreCase))
-                    return _displayNames[i];
-            }
+            MapOption option = FindOption(mapName) ?? FindOptionByKey(mapName);
+            if (option != null) return option.DisplayName;
             return "地图资源（编号 " + ParseMapId(mapName ?? string.Empty) + "）";
         }
 
@@ -263,14 +280,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (_directSceneActive &&
                 (string.Equals(mapName, _resolvedSceneMap, StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(mapName, _activeMap, StringComparison.OrdinalIgnoreCase)))
-                return DisplayNameFor(_activeMap);
+                return _activeDisplayName;
             if (!string.IsNullOrEmpty(_lastResolvedDisplayName) &&
                 string.Equals(mapName, _lastResolvedSceneMap, StringComparison.OrdinalIgnoreCase))
                 return _lastResolvedDisplayName;
             return DisplayNameFor(mapName);
         }
 
-        private static void Launch(string mapName)
+        private static void Launch(MapOption option)
         {
             try
             {
@@ -284,31 +301,36 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_failed reason=state_not_initialized");
                     return;
                 }
+                if (option == null || string.IsNullOrEmpty(option.Key) || option.Id == 0UL)
+                {
+                    _transitioning = false;
+                    StatusText = "直接加载失败：地图配置无效";
+                    FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_failed reason=invalid_option");
+                    return;
+                }
 
                 CaptureAndDisableAutoLeave();
-                MapOption option = FindOption(mapName);
-                ulong mapId = option == null || option.Id == 0UL ? (ulong)ParseMapId(mapName) : option.Id;
-                RoomInfo.GameType gameType = option == null
-                    ? RoomInfo.GameType.kGameTypeChiji
-                    : option.GameType;
-                _activeMap = mapName;
+                _activeMap = option.Key;
+                _activeDisplayName = option.DisplayName;
+                _activeOptionToken = option.Token;
                 _resolvedSceneMap = string.Empty;
                 _directSceneActive = true;
-                level.game_type = gameType;
+                level.game_type = option.GameType;
                 level.match_type = 0;
 
-                loading.map_name = mapName;
+                loading.map_name = option.Key;
                 loading.mesh_name = string.Empty;
-                loading.map_id = (ObscuredULong)mapId;
+                loading.map_id = (ObscuredULong)option.Id;
                 loading.load_navmesh = false;
-                loading.gameMode = (byte)gameType;
+                loading.gameMode = (byte)option.GameType;
                 Character player = level.GetPlayer();
                 loading.player_id = player == null ? 0u : player.uid;
 
                 manager.ChangeState(GameStateType.GameLoading);
-                StatusText = "正在直接加载 " + DisplayNameFor(mapName);
-                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_started logical=" + mapName +
-                    " mapId=" + mapId + " gameType=" + (byte)gameType + " player=" + loading.player_id +
+                StatusText = "正在直接加载 " + option.DisplayName;
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_started token=" + option.Token +
+                    " logical=" + option.Key + " mapId=" + option.Id + " gameType=" +
+                    (byte)option.GameType + " player=" + loading.player_id +
                     " scene=pending autoLeave=0 nativeNav=0");
             }
             catch (Exception ex)
@@ -338,6 +360,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                         continue;
                     options.Add(new MapOption
                     {
+                        Token = BuildToken((ulong)ParseMapId(name), RoomInfo.GameType.kGameTypeChiji, name),
                         Key = name,
                         DisplayName = "地图资源（编号 " + ParseMapId(name) + "）",
                         Id = (ulong)ParseMapId(name),
@@ -355,6 +378,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 options.Add(new MapOption
                 {
+                    Token = BuildToken(33UL, RoomInfo.GameType.kGameTypeChiji, "level33"),
                     Key = "level33",
                     DisplayName = "地图资源（编号 33）",
                     Id = 33UL,
@@ -387,33 +411,36 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             for (int i = 0; i < lobby.level_list.Count; i++)
             {
                 LevelInfo info = lobby.level_list[i];
-                if (info == null || info.game_type != RoomInfo.GameType.kGameTypeChiji ||
-                    string.IsNullOrEmpty(info.name) || ContainsOption(options, info.name)) continue;
+                if (info == null || string.IsNullOrEmpty(info.name)) continue;
                 string key = info.name.Trim().ToLowerInvariant();
                 if (!key.StartsWith("level", StringComparison.OrdinalIgnoreCase)) continue;
+                ulong id = (ulong)info.id;
+                string token = BuildToken(id, info.game_type, key);
+                if (ContainsOption(options, token)) continue;
                 string localized = string.IsNullOrEmpty(info.show_name)
                     ? string.Empty
                     : info.show_name.valueByThisKey();
-                ulong id = (ulong)info.id;
                 if (string.IsNullOrEmpty(localized) || !ContainsChinese(localized))
-                    localized = "生存地图（编号 " + (id == 0UL ? (ulong)ParseMapId(key) : id) + "）";
+                    localized = "地图（编号 " + (id == 0UL ? (ulong)ParseMapId(key) : id) + "）";
                 options.Add(new MapOption
                 {
+                    Token = token,
                     Key = key,
-                    DisplayName = localized,
+                    DisplayName = GameTypeName(info.game_type) + " · " + localized,
                     Id = id,
                     GameType = info.game_type
                 });
             }
             if (options.Count == 0) return;
+            EnsureUniqueDisplayNames(options);
 
             string[] signatureParts = new string[options.Count];
             for (int i = 0; i < options.Count; i++)
-                signatureParts[i] = options[i].Key + ":" + options[i].Id + ":" + options[i].DisplayName;
+                signatureParts[i] = options[i].Token + ":" + options[i].DisplayName;
             string signature = string.Join("|", signatureParts);
             if (string.Equals(signature, _mapOptionSignature, StringComparison.Ordinal)) return;
             _mapOptionSignature = signature;
-            ApplyOptions(options, "lobby_survival_levels", true);
+            ApplyOptions(options, "lobby_all_levels", true);
         }
 
         private static void ApplyOptions(List<MapOption> options, string source, bool authoritative)
@@ -425,12 +452,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _displayNames = new string[_mapOptions.Length];
             for (int i = 0; i < _mapOptions.Length; i++)
             {
-                _availableMaps[i] = _mapOptions[i].Key;
+                _availableMaps[i] = _mapOptions[i].Token;
                 _displayNames[i] = _mapOptions[i].DisplayName;
             }
 
             if (FindOptionIndex(previous) >= 0) _selectedMap = previous;
             else if (FindOptionIndex(saved) >= 0) _selectedMap = saved;
+            else if (FindOptionByKey(previous) != null) _selectedMap = FindOptionByKey(previous).Token;
+            else if (FindOptionByKey(saved) != null) _selectedMap = FindOptionByKey(saved).Token;
             else _selectedMap = _availableMaps[0];
             _authoritativeOptionsReady = authoritative;
             MapOptionsVersion++;
@@ -445,6 +474,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return index < 0 ? null : _mapOptions[index];
         }
 
+        private static MapOption FindOptionByKey(string key)
+        {
+            if (_mapOptions == null || string.IsNullOrEmpty(key)) return null;
+            for (int i = 0; i < _mapOptions.Length; i++)
+            {
+                if (string.Equals(_mapOptions[i].Key, key, StringComparison.OrdinalIgnoreCase))
+                    return _mapOptions[i];
+            }
+            return null;
+        }
+
         private static int FindOptionIndex(string key)
         {
             if (_mapOptions == null || string.IsNullOrEmpty(key)) return -1;
@@ -455,14 +495,56 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return -1;
         }
 
-        private static bool ContainsOption(List<MapOption> options, string key)
+        private static bool ContainsOption(List<MapOption> options, string token)
         {
-            if (string.IsNullOrEmpty(key)) return false;
+            if (string.IsNullOrEmpty(token)) return false;
             for (int i = 0; i < options.Count; i++)
             {
-                if (string.Equals(options[i].Key, key.Trim(), StringComparison.OrdinalIgnoreCase)) return true;
+                if (string.Equals(options[i].Token, token, StringComparison.OrdinalIgnoreCase)) return true;
             }
             return false;
+        }
+
+        private static void EnsureUniqueDisplayNames(List<MapOption> options)
+        {
+            for (int i = 0; i < options.Count; i++)
+            {
+                int matches = 0;
+                for (int j = 0; j < options.Count; j++)
+                {
+                    if (string.Equals(options[i].DisplayName, options[j].DisplayName,
+                        StringComparison.OrdinalIgnoreCase)) matches++;
+                }
+                if (matches > 1) options[i].DisplayName += " · ID " + options[i].Id;
+            }
+        }
+
+        private static string BuildToken(ulong id, RoomInfo.GameType gameType, string key)
+        {
+            return id + "|" + (byte)gameType + "|" + (key ?? string.Empty).Trim().ToLowerInvariant();
+        }
+
+        private static string GameTypeName(RoomInfo.GameType gameType)
+        {
+            switch (gameType)
+            {
+                case RoomInfo.GameType.kGameTypeRandom: return "随机";
+                case RoomInfo.GameType.kGameTypeContention: return "占点";
+                case RoomInfo.GameType.kGameTypeOccupy: return "夺旗";
+                case RoomInfo.GameType.kGameTypeSnatch: return "夺宝";
+                case RoomInfo.GameType.kGameTypeTeamDead: return "团战";
+                case RoomInfo.GameType.kGameTypeHero: return "英雄";
+                case RoomInfo.GameType.kGameTypeRound: return "回合";
+                case RoomInfo.GameType.kGameTypeNovice: return "新手";
+                case RoomInfo.GameType.kGameTypeBlast: return "爆破";
+                case RoomInfo.GameType.kGameTypeBoss: return "BOSS";
+                case RoomInfo.GameType.kGameTypeBioche: return "生化";
+                case RoomInfo.GameType.kGameTypeKillAll: return "歼灭";
+                case RoomInfo.GameType.kGameTypeWerewolf: return "狼人";
+                case RoomInfo.GameType.kGameTypeBiocheHunter: return "救世主";
+                case RoomInfo.GameType.kGameTypeChiji: return "生存";
+                default: return "其他";
+            }
         }
 
         private static bool ContainsChinese(string value)

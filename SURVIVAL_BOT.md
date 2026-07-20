@@ -50,10 +50,11 @@ names are discovered from the installed `FileInfo.xml`. The action uses the nati
 creating or joining a server match. Native navigation loading stays disabled so the
 maximum-detail runtime graph is built. AFK auto-leave is disabled for this private
 scene, and local `SyncPlayerData` packets are suppressed until the scene exits, so
-the scene can remain open until disk serialization completes. The selector displays
-the localized `LevelInfo.show_name` supplied by the game's own channel level table;
-internal `levelXX` resource keys are not shown in the UI. Each option retains its
-authoritative `LevelInfo.id`, and the native level Lua remains responsible for resolving
+the scene can remain open until disk serialization completes. The selector enumerates
+every game mode and map from the game's channel `level_list`, displaying
+`mode + localized LevelInfo.show_name`; internal `levelXX` resource keys are not shown
+in the UI. Each option is uniquely identified by its exact `LevelInfo.id`, logical key,
+and `game_type`, and the native level Lua remains responsible for resolving
 the final scene through `SetMesh`. The `Level.LoadMap` hook records that resolved scene
 without rewriting it, keeping the Chinese name, camera data, map parameters, and scene
 geometry aligned. After a non-empty disk cache is confirmed, the
