@@ -89,6 +89,7 @@ namespace ASWDEBUG.Patch
             PatchByName(harmony, typeof(Level), "OnExit", 0, "LevelExitPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseCharacterInfo", 1, "CharacterInfoPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseGameEnd", 1, "GameEndPrefix", null);
+            PatchByName(harmony, typeof(ChannelConnection), "SyncPlayerData", 1, "PlayerSyncPrefix", null);
             PatchByName(harmony, typeof(LobbyConnection), "RequestMatching", 2, "MatchingRequestedPrefix", null);
             PatchByName(harmony, typeof(LobbyConnection), "ResponseMatching", 0, null, "MatchingResponsePostfix");
             PatchByName(harmony, typeof(LobbyConnection), "ResponseCancelMatching", 0, null, "MatchingCancelResponsePostfix");
@@ -259,7 +260,13 @@ namespace ASWDEBUG.Patch
 
         private static void LevelExitPrefix()
         {
+            MapBakeSceneLoader.NotifyLevelExit();
             AutoBattleRoutePlanner.DeactivateNavigation("level_exit");
+        }
+
+        private static bool PlayerSyncPrefix()
+        {
+            return !MapBakeSceneLoader.DirectSceneActive;
         }
 
         private static void CharacterInfoPrefix(NetworkStream reader)

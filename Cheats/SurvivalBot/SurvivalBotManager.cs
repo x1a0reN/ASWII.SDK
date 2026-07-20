@@ -146,6 +146,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             // Map baking is a local, read-only scene operation and must not depend on the game proxy.
             if (MapBakeEnabled)
             {
+                MapBakeSceneLoader.Tick();
                 TickMapBake(level, player);
                 return;
             }
@@ -299,6 +300,20 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("AUTO-BATTLE][NAVMESH", "map bake enabled reason=" + reason);
         }
 
+        public static void RequestDirectMapBake(string reason)
+        {
+            if (!MapBakeEnabled) SetMapBakeEnabled(true, "direct_map_load");
+            string detail;
+            if (!MapBakeSceneLoader.RequestSelectedMap(out detail))
+            {
+                StatusText = "地图建图 | " + detail;
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_rejected reason=" + detail);
+                return;
+            }
+            StatusText = "地图建图 | " + detail;
+            FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_accepted source=" + reason);
+        }
+
         public static void Stop(string reason)
         {
             if (!Enabled && !CombatTestEnabled && !RoomTestEnabled && !MapBakeEnabled &&
@@ -307,6 +322,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             CombatTestEnabled = false;
             RoomTestEnabled = false;
             MapBakeEnabled = false;
+            MapBakeSceneLoader.CancelPending("stop:" + reason);
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;
             AutoBattleInput.ClearAll();
@@ -356,6 +372,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (!MapBakeEnabled) return;
             MapBakeEnabled = false;
             AutoBattleInput.ClearAll();
+            MapBakeSceneLoader.CancelPending(reason);
             RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
             if (snapshot.State == RuntimeRainNavState.WaitingScene ||
                 snapshot.State == RuntimeRainNavState.Building)
@@ -656,6 +673,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 StatusText = "地图建图 | 极限精度生成中 " +
                     (snapshot.Progress01 * 100f).ToString("0.0") + "% | 已用 " +
                     snapshot.ElapsedSeconds.ToString("0") + " 秒 | 不限时";
+                return;
+            }
+            if (MapBakeSceneLoader.IsTransitioning)
+            {
+                StatusText = "地图建图 | " + MapBakeSceneLoader.StatusText;
                 return;
             }
             if (level == null || level.state != Level.State.kReady)

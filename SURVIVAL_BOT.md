@@ -44,6 +44,14 @@ the game process still loses an unfinished RAIN build because RAIN exposes graph
 serialization only after contour generation completes; this is background
 continuation, not a cross-process checkpoint.
 
+The UI also exposes a map-resource selector and `Direct Load and Bake` action. Map
+names are discovered from the installed `FileInfo.xml`. The action uses the native
+`GameLoadingState -> Level.Initialize -> Level.LoadMap -> Fight` transition without
+creating or joining a server match. Native navigation loading stays disabled so the
+maximum-detail runtime graph is built. AFK auto-leave is disabled for this private
+scene, and local `SyncPlayerData` packets are suppressed until the scene exits, so
+the scene can remain open until disk serialization completes.
+
 Forced hunt does not select a standoff or interception point. It follows the live
 enemy position directly in open space, falls back to global routing only when
 blocked or crossing levels, and keeps pursuit movement active while ranged fire is

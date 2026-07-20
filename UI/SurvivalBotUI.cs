@@ -20,7 +20,8 @@ namespace ASWDEBUG.UI
             EmergencyDistance,
             SafePointRefresh,
             SuicideFallback,
-            GmStopRounds
+            GmStopRounds,
+            MapBakeTarget
         }
 
         private const float WindowWidth = 388f;
@@ -55,6 +56,7 @@ namespace ASWDEBUG.UI
         private static Rect _dropdownAnchor;
         private static string[] _dropdownOptions;
         private static int _dropdownSelected;
+        private static int _dropdownFirstVisible;
         private static float _rowStride = RowHeight + 1f;
 
         private static GUIStyle _titleStyle;
@@ -155,6 +157,8 @@ namespace ASWDEBUG.UI
                 GUI.DrawTexture(new Rect(mapBakeButton.xMax - 5f, mapBakeButton.y + 3f, 3f,
                     mapBakeButton.height - 6f), _accentTexture);
             y += 33f;
+
+            DrawMapBakeLaunchRow(ref y, x, width);
 
             float statusTop = _window.yMax - 53f;
             bool compactNavigation = _window.height < 470f;
@@ -275,9 +279,41 @@ namespace ASWDEBUG.UI
                     _dropdownAnchor = button;
                     _dropdownOptions = options;
                     _dropdownSelected = selected;
+                    _dropdownFirstVisible = Mathf.Max(0, selected - 6);
                 }
             }
             y += _rowStride;
+        }
+
+        private static void DrawMapBakeLaunchRow(ref float y, float x, float width)
+        {
+            string[] maps = MapBakeSceneLoader.AvailableMaps;
+            int selected = MapBakeSceneLoader.SelectedMapIndex();
+            Rect row = new Rect(x, y, width, 27f);
+            GUI.Label(new Rect(row.x + 4f, row.y, 58f, row.height), "建图地图", _labelStyle);
+            Rect selector = new Rect(row.x + 64f, row.y + 1f, row.width - 174f, row.height - 2f);
+            string selectedName = maps.Length == 0 ? "-" : maps[Mathf.Clamp(selected, 0, maps.Length - 1)];
+            if (GUI.Button(selector, selectedName + "  ▼", _buttonStyle))
+            {
+                if (_openDropdown == DropdownId.MapBakeTarget)
+                {
+                    _openDropdown = DropdownId.None;
+                }
+                else
+                {
+                    _openDropdown = DropdownId.MapBakeTarget;
+                    _dropdownAnchor = selector;
+                    _dropdownOptions = maps;
+                    _dropdownSelected = selected;
+                    _dropdownFirstVisible = Mathf.Max(0, selected - 6);
+                }
+            }
+
+            Rect launch = new Rect(selector.xMax + 4f, row.y + 1f, row.xMax - selector.xMax - 4f,
+                row.height - 2f);
+            if (GUI.Button(launch, "直接加载并建图", _buttonCenterStyle))
+                SurvivalBotManager.RequestDirectMapBake("ui");
+            y += 31f;
         }
 
         private static void DrawDropdownOverlay()
@@ -285,7 +321,11 @@ namespace ASWDEBUG.UI
             if (_openDropdown == DropdownId.None || _dropdownOptions == null || _dropdownOptions.Length == 0) return;
 
             float rowHeight = 24f;
-            float height = _dropdownOptions.Length * rowHeight + 8f;
+            int maxVisible = Mathf.Max(1, Mathf.FloorToInt((Screen.height - 24f) / rowHeight));
+            int visibleCount = Mathf.Min(_dropdownOptions.Length, maxVisible);
+            int maxFirst = Mathf.Max(0, _dropdownOptions.Length - visibleCount);
+            _dropdownFirstVisible = Mathf.Clamp(_dropdownFirstVisible, 0, maxFirst);
+            float height = visibleCount * rowHeight + 8f;
             float y = _dropdownAnchor.yMax + 2f;
             if (y + height > Screen.height - 4f) y = Mathf.Max(4f, _dropdownAnchor.y - height - 2f);
             float x = Mathf.Clamp(_dropdownAnchor.x, 4f, Mathf.Max(4f, Screen.width - _dropdownAnchor.width - 4f));
@@ -311,12 +351,22 @@ namespace ASWDEBUG.UI
                 current.Use();
                 return;
             }
+            if (current != null && current.type == EventType.ScrollWheel && popup.Contains(current.mousePosition) &&
+                _dropdownOptions.Length > visibleCount)
+            {
+                int direction = current.delta.y > 0f ? 3 : -3;
+                _dropdownFirstVisible = Mathf.Clamp(_dropdownFirstVisible + direction, 0, maxFirst);
+                current.Use();
+            }
 
             DrawPanel(popup, _popupTexture, _popupBorderTexture);
-            for (int i = 0; i < _dropdownOptions.Length; i++)
+            for (int rowIndex = 0; rowIndex < visibleCount; rowIndex++)
             {
-                Rect row = new Rect(popup.x + 4f, popup.y + 4f + i * rowHeight, popup.width - 8f, rowHeight - 1f);
-                string text = i == _dropdownSelected ? "<color=#E71200>●</color>  " + _dropdownOptions[i] : _dropdownOptions[i];
+                int i = _dropdownFirstVisible + rowIndex;
+                Rect row = new Rect(popup.x + 4f, popup.y + 4f + rowIndex * rowHeight,
+                    popup.width - 8f, rowHeight - 1f);
+                string text = i == _dropdownSelected ? "<color=#E71200>●</color>  " + _dropdownOptions[i] :
+                    _dropdownOptions[i];
                 if (!GUI.Button(row, text, _buttonStyle)) continue;
                 ApplyDropdownSelection(_openDropdown, i);
                 _openDropdown = DropdownId.None;
@@ -337,6 +387,7 @@ namespace ASWDEBUG.UI
             else if (id == DropdownId.SafePointRefresh) SurvivalBotSettings.SetSafePointRefreshSeconds(SafePointRefreshValues[Clamp(selected, 0, SafePointRefreshValues.Length - 1)]);
             else if (id == DropdownId.SuicideFallback) SurvivalBotSettings.SetSuicideFallbackSeconds(SuicideFallbackValues[Clamp(selected, 0, SuicideFallbackValues.Length - 1)]);
             else if (id == DropdownId.GmStopRounds) SurvivalBotSettings.SetGmStopRounds(Clamp(selected, 0, 2) + 1);
+            else if (id == DropdownId.MapBakeTarget) MapBakeSceneLoader.SelectMap(selected);
         }
 
         private static void HandleVisibilityHotkey()
