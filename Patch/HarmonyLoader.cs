@@ -61,9 +61,15 @@ namespace ASWDEBUG.Patch
         private static uint _aimSyntheticPrng = 0x6D2B79F5u;
         private static int _aimSyntheticPrecisionMm = 190;
         private static int _aimSyntheticVelocityMm;
+        private static int _aimHistoryCacheFrame = -1;
+        private static int _aimHistoryCacheTargetUid;
+        private static int _aimHistoryCacheHitUid;
+        private static bool[] _aimHistoryCacheMask;
+        private static short[] _aimHistoryCacheValues;
         private const int AimPrecisionSuspiciousThresholdMm = 120;
         private const int AimPrecisionHumanizedMinMm = 120;
         private const int AimPrecisionHumanizedMaxMm = 300;
+        private const int AimPrecisionSuspiciousRunMinSamples = 3;
         private static int _assistToolCheckSuppressCount;
         private static int _extendedDetectorSuppressCount;
         private static int _clientFileMd5LogSuppressCount;
@@ -401,7 +407,7 @@ namespace ASWDEBUG.Patch
             // plain version 8 means the sample was missing. Keep the native lifecycle so this
             // distinction and the variable sample count reach the packet builder intact.
             FileLogger.Log("ASWDEBUG",
-                "[HarmonyLoader] AimAssistDetector v8 lifecycle left native; active-shot history humanization enabled.");
+                "[HarmonyLoader] AimAssistDetector v8 lifecycle left native; sustained-run convergence enabled.");
 
             TryPatchAllOverloads(harmony, asm, "GunBaseController", "AssitToolCheck",
                 "Protection_BlockAssistToolCheckPrefix");
@@ -1557,25 +1563,21 @@ namespace ASWDEBUG.Patch
                 int targetUid = ReadRuntimeFieldInt(hitMessage, "aim_target_uid", 0);
                 PrepareAimSyntheticSession(targetUid);
 
-                int adjusted = 0;
                 short[] samples = ReadRuntimeShortArray(hitMessage, "aim_precision_samples");
+                int adjusted = 0;
                 if (samples != null && samples.Length > 0)
                 {
-                    short[] normalizedSamples = (short[])samples.Clone();
-                    bool samplesChanged = false;
-                    for (int i = 0; i < normalizedSamples.Length; i++)
-                    {
-                        short normalized = HumanizeHistoricalPrecisionCode(normalizedSamples[i]);
-                        if (normalized == normalizedSamples[i]) continue;
-
-                        normalizedSamples[i] = normalized;
-                        samplesChanged = true;
-                        adjusted++;
-                    }
+                    int hitUid = ReadRuntimeFieldInt(hitMessage, "uid", 0);
+                    short[] normalizedSamples;
+                    adjusted = HumanizeHistoricalPrecisionRuns(
+                        samples,
+                        targetUid,
+                        hitUid,
+                        out normalizedSamples);
 
                     // ChannelConnection writes this array's length before entering the payload
                     // builder. Never change the length here or the outer frame becomes inconsistent.
-                    if (samplesChanged)
+                    if (adjusted > 0 && normalizedSamples != null)
                     {
                         TrySetRuntimeField(hitMessage, "aim_precision_samples", normalizedSamples);
                     }
@@ -1623,43 +1625,208 @@ namespace ASWDEBUG.Patch
             _aimSyntheticPrng ^= unchecked((uint)Time.frameCount * 0x9E3779B9u);
             _aimSyntheticPrecisionMm = 165 + (int)(NextAimSyntheticUInt() % 111u);
             _aimSyntheticVelocityMm = -8 + (int)(NextAimSyntheticUInt() % 17u);
+            _aimHistoryCacheFrame = -1;
+            _aimHistoryCacheMask = null;
+            _aimHistoryCacheValues = null;
         }
 
-        private static short HumanizeHistoricalPrecisionCode(short code)
+        private static int HumanizeHistoricalPrecisionRuns(
+            short[] samples,
+            int targetUid,
+            int hitUid,
+            out short[] normalizedSamples)
         {
-            if (code < 0) return code;
+            normalizedSamples = null;
+            if (samples == null || samples.Length == 0) return 0;
 
-            int millimeters = code / 10;
-            if (millimeters >= AimPrecisionSuspiciousThresholdMm)
+            bool[] adjustmentMask = BuildAimPrecisionAdjustmentMask(samples);
+            int adjustedCount = CountTrue(adjustmentMask);
+            if (adjustedCount == 0) return 0;
+
+            if (TryReuseAimHistoryCache(samples, adjustmentMask, targetUid, hitUid, out normalizedSamples))
             {
-                if (millimeters <= 330)
+                return adjustedCount;
+            }
+
+            normalizedSamples = (short[])samples.Clone();
+            int index = 0;
+            while (index < adjustmentMask.Length)
+            {
+                if (!adjustmentMask[index])
                 {
-                    int observed = Mathf.Clamp(millimeters, AimPrecisionHumanizedMinMm, AimPrecisionHumanizedMaxMm);
-                    _aimSyntheticPrecisionMm = (_aimSyntheticPrecisionMm * 3 + observed) / 4;
+                    index++;
+                    continue;
                 }
-                return code;
+
+                int runStart = index;
+                while (index < adjustmentMask.Length && adjustmentMask[index]) index++;
+                int runEndExclusive = index;
+
+                int tailMillimeters;
+                if (runEndExclusive >= samples.Length ||
+                    !TryDecodePrecisionMillimeters(samples[runEndExclusive], out tailMillimeters))
+                {
+                    tailMillimeters = 55 + (int)(NextAimSyntheticUInt() % 61u);
+                }
+
+                int observedBeforeRun;
+                if (runStart > 0 &&
+                    TryDecodePrecisionMillimeters(samples[runStart - 1], out observedBeforeRun) &&
+                    observedBeforeRun >= AimPrecisionSuspiciousThresholdMm &&
+                    observedBeforeRun <= 330)
+                {
+                    _aimSyntheticPrecisionMm = (_aimSyntheticPrecisionMm * 2 + observedBeforeRun) / 3;
+                }
+
+                int startMillimeters = Mathf.Clamp(
+                    _aimSyntheticPrecisionMm + (int)(NextAimSyntheticUInt() % 31u) - 15,
+                    AimPrecisionHumanizedMinMm + 25,
+                    AimPrecisionHumanizedMaxMm);
+                int endMillimeters = Mathf.Clamp(
+                    tailMillimeters + 30 + (int)(NextAimSyntheticUInt() % 51u),
+                    40,
+                    175);
+                endMillimeters = Mathf.Min(endMillimeters, startMillimeters - 8);
+                int runLength = runEndExclusive - runStart;
+                int previousMillimeters = startMillimeters;
+
+                for (int offset = 0; offset < runLength; offset++)
+                {
+                    float progress = (float)(offset + 1) / (float)(runLength + 1);
+                    float smoothProgress = progress * progress * (3f - 2f * progress);
+                    int idealMillimeters = Mathf.RoundToInt(Mathf.Lerp(
+                        startMillimeters,
+                        endMillimeters,
+                        smoothProgress));
+
+                    int acceleration = (int)(NextAimSyntheticUInt() % 5u) - 2;
+                    int jitter = (int)(NextAimSyntheticUInt() % 11u) - 5;
+                    _aimSyntheticVelocityMm = Mathf.Clamp(_aimSyntheticVelocityMm + acceleration, -12, 12);
+                    int humanizedMillimeters = Mathf.Clamp(
+                        idealMillimeters + _aimSyntheticVelocityMm + jitter,
+                        30,
+                        AimPrecisionHumanizedMaxMm);
+
+                    // Preserve an overall approach shape while allowing small corrections.
+                    humanizedMillimeters = Mathf.Min(humanizedMillimeters, previousMillimeters + 9);
+                    previousMillimeters = humanizedMillimeters;
+                    normalizedSamples[runStart + offset] = EncodePrecisionMillimeters(humanizedMillimeters);
+                }
+
+                _aimSyntheticPrecisionMm = Mathf.Clamp(
+                    (previousMillimeters * 3 + tailMillimeters) / 4,
+                    30,
+                    AimPrecisionHumanizedMaxMm);
             }
 
-            int acceleration = (int)(NextAimSyntheticUInt() % 7u) - 3;
-            int jitter = (int)(NextAimSyntheticUInt() % 15u) - 7;
-            _aimSyntheticVelocityMm = Mathf.Clamp(_aimSyntheticVelocityMm + acceleration, -18, 18);
-            _aimSyntheticPrecisionMm += _aimSyntheticVelocityMm + jitter;
+            StoreAimHistoryCache(adjustmentMask, normalizedSamples, targetUid, hitUid);
+            return adjustedCount;
+        }
 
-            if (_aimSyntheticPrecisionMm < AimPrecisionHumanizedMinMm)
+        private static bool[] BuildAimPrecisionAdjustmentMask(short[] samples)
+        {
+            bool[] mask = new bool[samples.Length];
+            int index = 0;
+            while (index < samples.Length)
             {
-                _aimSyntheticPrecisionMm = AimPrecisionHumanizedMinMm +
-                                           (int)(NextAimSyntheticUInt() % 31u);
-                _aimSyntheticVelocityMm = Math.Abs(_aimSyntheticVelocityMm) + 3;
+                int millimeters;
+                if (!TryDecodePrecisionMillimeters(samples[index], out millimeters) ||
+                    millimeters >= AimPrecisionSuspiciousThresholdMm)
+                {
+                    index++;
+                    continue;
+                }
+
+                int runStart = index;
+                while (index < samples.Length)
+                {
+                    if (!TryDecodePrecisionMillimeters(samples[index], out millimeters) ||
+                        millimeters >= AimPrecisionSuspiciousThresholdMm)
+                    {
+                        break;
+                    }
+                    index++;
+                }
+
+                int runLength = index - runStart;
+                if (runLength < AimPrecisionSuspiciousRunMinSamples) continue;
+
+                // Keep the newest sample native so history still converges to the untouched
+                // shot-moment precision instead of ending at an unrelated synthetic value.
+                for (int i = runStart; i < index - 1; i++) mask[i] = true;
             }
-            else if (_aimSyntheticPrecisionMm > AimPrecisionHumanizedMaxMm)
+            return mask;
+        }
+
+        private static bool TryReuseAimHistoryCache(
+            short[] samples,
+            bool[] adjustmentMask,
+            int targetUid,
+            int hitUid,
+            out short[] normalizedSamples)
+        {
+            normalizedSamples = null;
+            if (_aimHistoryCacheFrame != Time.frameCount ||
+                _aimHistoryCacheTargetUid != targetUid ||
+                _aimHistoryCacheHitUid != hitUid ||
+                _aimHistoryCacheMask == null ||
+                _aimHistoryCacheValues == null ||
+                _aimHistoryCacheMask.Length != adjustmentMask.Length ||
+                _aimHistoryCacheValues.Length != samples.Length)
             {
-                _aimSyntheticPrecisionMm = AimPrecisionHumanizedMaxMm -
-                                           (int)(NextAimSyntheticUInt() % 31u);
-                _aimSyntheticVelocityMm = -Math.Abs(_aimSyntheticVelocityMm) - 3;
+                return false;
             }
 
-            _aimSyntheticVelocityMm = Mathf.Clamp(_aimSyntheticVelocityMm, -18, 18);
-            return EncodePrecisionMillimeters(_aimSyntheticPrecisionMm);
+            for (int i = 0; i < adjustmentMask.Length; i++)
+            {
+                if (_aimHistoryCacheMask[i] != adjustmentMask[i]) return false;
+            }
+
+            normalizedSamples = (short[])samples.Clone();
+            for (int i = 0; i < adjustmentMask.Length; i++)
+            {
+                if (adjustmentMask[i]) normalizedSamples[i] = _aimHistoryCacheValues[i];
+            }
+            return true;
+        }
+
+        private static void StoreAimHistoryCache(
+            bool[] adjustmentMask,
+            short[] normalizedSamples,
+            int targetUid,
+            int hitUid)
+        {
+            _aimHistoryCacheFrame = Time.frameCount;
+            _aimHistoryCacheTargetUid = targetUid;
+            _aimHistoryCacheHitUid = hitUid;
+            _aimHistoryCacheMask = (bool[])adjustmentMask.Clone();
+            _aimHistoryCacheValues = (short[])normalizedSamples.Clone();
+        }
+
+        private static int CountTrue(bool[] values)
+        {
+            int count = 0;
+            if (values == null) return count;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i]) count++;
+            }
+            return count;
+        }
+
+        private static bool TryDecodePrecisionMillimeters(short code, out int millimeters)
+        {
+            millimeters = -1;
+            if (code < 0) return false;
+
+            millimeters = code / 10;
+            if (millimeters < 0 || millimeters > 3276) return false;
+
+            int expectedCheckDigit = Mathf.Abs(
+                millimeters / 100 % 10 +
+                millimeters / 10 % 10 -
+                millimeters % 10) % 10;
+            return code % 10 == expectedCheckDigit;
         }
 
         private static uint NextAimSyntheticUInt()
