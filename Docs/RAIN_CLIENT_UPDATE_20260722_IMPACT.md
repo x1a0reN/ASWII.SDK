@@ -1,7 +1,7 @@
 # 2026-07-22 客户端更新对 SurvivalBot / RAIN 的影响
 
-日期：2026-07-22  
-分支：`codex/survival-ai`  
+日期：2026-07-22
+分支：`codex/survival-ai`
 基线：`085f1cf test: validate compact navigation lifecycle`
 
 ## 1. 结论
