@@ -6,7 +6,9 @@ using System.IO;
 using System.Text;
 using System.Reflection;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using System.Threading;
+using ASWDEBUG.Logger;
 using UnityEngine;
 
 public static class StructuredILDump
@@ -14,6 +16,9 @@ public static class StructuredILDump
     public static string TARGET_ASSEMBLY_NAME = "Assembly-CSharp";
     public static int WAIT_SECONDS = 120;
     public static int EXTRA_DELAY_MS = 5000;
+    public static bool DUMP_PROTECTED_ASSEMBLY_BATCH;
+    public static string[] BATCH_TARGET_ASSEMBLY_NAMES = new string[0];
+    public static string[] REPACK_ASSEMBLY_NAMES = new string[0];
 
     static volatile bool _started;
 
@@ -40,9 +45,14 @@ public static class StructuredILDump
 
         if (EXTRA_DELAY_MS > 0) Thread.Sleep(EXTRA_DELAY_MS);
 
+        if (DUMP_PROTECTED_ASSEMBLY_BATCH)
+        {
+            DumpProtectedAssemblyBatch(persistentDir, tempRoot);
+            return;
+        }
+
         string tag = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        string mvid = "<unknown>";
-        try { mvid = target.ManifestModule.ModuleVersionId.ToString(); } catch { }
+        string mvid = SafeMvid(target);
         string packName = TARGET_ASSEMBLY_NAME + "__" + mvid + "__" + tag;
 
         string outTemp = Path.Combine(tempRoot, "STRUCTURED_" + packName);
@@ -60,6 +70,133 @@ public static class StructuredILDump
             SafeMkDir(outGame);
         }
 
+        DumpAssembly(target, outTemp, outGame, mvid);
+    }
+
+    static void DumpProtectedAssemblyBatch(string persistentDir, string tempRoot)
+    {
+        string tag = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        string parent = !string.IsNullOrEmpty(persistentDir)
+            ? Path.Combine(persistentDir, "Managed_Dump")
+            : tempRoot;
+        string batchRoot = Path.Combine(parent, "BATCH_" + tag);
+        SafeMkDir(batchRoot);
+
+        var manifest = new StringBuilder();
+        manifest.AppendLine("Time=" + DateTime.Now.ToString("O"));
+        manifest.AppendLine("TargetCount=" + (BATCH_TARGET_ASSEMBLY_NAMES == null ? 0 : BATCH_TARGET_ASSEMBLY_NAMES.Length));
+        manifest.AppendLine("Format=Name|Loaded|MVID|Location|RuntimeRead|RuntimeReadMZ|RuntimeReadSHA256|IL_OK|IL_SKIP|IL_ERR|Repack|Detail");
+        SafeWrite(batchRoot, "batch_manifest.txt", manifest.ToString());
+
+        string[] names = BATCH_TARGET_ASSEMBLY_NAMES ?? new string[0];
+        var targets = new List<Assembly>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < names.Length; i++)
+        {
+            string name = names[i];
+            if (string.IsNullOrEmpty(name) || !seen.Add(name)) continue;
+
+            Assembly assembly = FindAssembly(name);
+            if (assembly == null)
+            {
+                SafeAppend(batchRoot, "batch_manifest.txt",
+                    name + "|False|||||||||not-loaded|Assembly was not present in AppDomain\r\n");
+                continue;
+            }
+            targets.Add(assembly);
+        }
+
+        var roots = new Dictionary<Assembly, string>();
+        var runtimeTemplates = new Dictionary<Assembly, RuntimeReadResult>();
+
+        // Save every readable runtime image first, so a later heavy IL walk cannot lose easy dumps.
+        for (int i = 0; i < targets.Count; i++)
+        {
+            Assembly assembly = targets[i];
+            string name = SafeAssemblyName(assembly);
+            string mvid = SafeMvid(assembly);
+            string root = Path.Combine(batchRoot, "STRUCTURED_" + SafeFilePart(name) + "__" + mvid);
+            SafeMkDir(root);
+            roots[assembly] = root;
+
+            RuntimeReadResult read = DumpRuntimeReadableImage(assembly, root);
+            runtimeTemplates[assembly] = read;
+            FileLogger.Log("DUMP", "[BATCH] runtime-read " + name + " mz=" + read.IsMz + " bytes=" + read.Length + " detail=" + read.Detail);
+        }
+
+        for (int i = 0; i < targets.Count; i++)
+        {
+            Assembly assembly = targets[i];
+            string name = SafeAssemblyName(assembly);
+            string mvid = SafeMvid(assembly);
+            string root = roots[assembly];
+            RuntimeReadResult read = runtimeTemplates[assembly];
+            bool repackRequested = ShouldRepack(name);
+            DumpResult dump = new DumpResult();
+
+            string repackState = "not-requested";
+            string detail = read.Detail;
+            // A readable MZ image is already a complete decrypted assembly. Walking every
+            // framework method and loading every image into Cecil needlessly exhausts the
+            // 32-bit address space. Keep the expensive reflection pass only for selected
+            // game assemblies, or as a fallback when the runtime image is still opaque.
+            if (repackRequested || !read.IsMz)
+            {
+                dump = DumpAssembly(assembly, root, null, mvid);
+            }
+            else
+            {
+                detail = AppendDetail(detail, "structured=skipped-runtime-image");
+            }
+
+            if (repackRequested)
+            {
+                string template = read.IsMz ? read.OutputPath : SafeLocation(assembly);
+                string output = Path.Combine(root, SafeFilePart(name) + ".deobf.dll");
+                try
+                {
+                    FileLogger.Log("DUMP", "[BATCH] repack begin " + name + " template=" + template);
+                    bool previousVerbose = CecilRepacker.VerboseMethodLogging;
+                    try
+                    {
+                        CecilRepacker.VerboseMethodLogging = false;
+                        CecilRepacker.RepackFromLiveIL(assembly, template, output);
+                    }
+                    finally
+                    {
+                        CecilRepacker.VerboseMethodLogging = previousVerbose;
+                    }
+                    repackState = File.Exists(output) ? "ok" : "no-output";
+                }
+                catch (Exception ex)
+                {
+                    repackState = "failed";
+                    detail = AppendDetail(detail, "repack=" + ex.GetType().Name + ":" + ex.Message);
+                    SafeWrite(root, "__repack_error.txt", ex.ToString());
+                }
+            }
+
+            SafeAppend(batchRoot, "batch_manifest.txt",
+                name + "|True|" + mvid + "|" + SafeLocation(assembly) + "|" + read.OutputPath + "|" + read.IsMz + "|" +
+                read.Sha256 + "|" + dump.Ok + "|" + dump.Skip + "|" + dump.Error + "|" + repackState + "|" + detail + "\r\n");
+            FileLogger.Log("DUMP", "[BATCH] complete " + name + " ok=" + dump.Ok + " skip=" + dump.Skip + " err=" + dump.Error + " repack=" + repackState);
+
+            try
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
+            catch { }
+        }
+
+        SafeWrite(batchRoot, "__complete.txt", "Completed=" + DateTime.Now.ToString("O"));
+        FileLogger.Log("DUMP", "[BATCH] ALL DONE root=" + batchRoot);
+    }
+
+    static DumpResult DumpAssembly(Assembly target, string outPrimary, string outMirror, string mvid)
+    {
+        var result = new DumpResult();
         var man = new StringBuilder();
         try
         {
@@ -69,10 +206,9 @@ public static class StructuredILDump
             man.AppendLine("Time            : " + DateTime.Now.ToString("O"));
         }
         catch { }
-        SafeWrite(outTemp, "manifest.txt", man.ToString());
-        if (outGame != null) SafeWrite(outGame, "manifest.txt", man.ToString());
+        SafeWrite(outPrimary, "manifest.txt", man.ToString());
+        if (outMirror != null) SafeWrite(outMirror, "manifest.txt", man.ToString());
 
-        int ok = 0, skip = 0, err = 0;
         try
         {
             IList<Type> types = SafeGetTypes(target);
@@ -81,21 +217,20 @@ public static class StructuredILDump
                 Type t = types[ti];
                 if (t == null) continue;
 
-                MethodInfo[] methods = SafeGetMethods(t);
+                MethodBase[] methods = SafeGetMethods(t);
                 for (int mi = 0; mi < methods.Length; mi++)
                 {
-                    MethodInfo m = methods[mi];
-                    if (m == null) { skip++; continue; }
+                    MethodBase m = methods[mi];
+                    if (m == null) { result.Skip++; continue; }
 
                     MethodBody body = null;
                     try { body = m.GetMethodBody(); } catch { body = null; }
-                    if (body == null) { skip++; continue; }
+                    if (body == null) { result.Skip++; continue; }
 
                     byte[] il = null;
                     try { il = body.GetILAsByteArray(); } catch { il = null; }
-                    if (il == null || il.Length == 0) { skip++; continue; }
+                    if (il == null || il.Length == 0) { result.Skip++; continue; }
 
-                    // LocalSig blob
                     byte[] localSig = null;
                     try
                     {
@@ -109,29 +244,131 @@ public static class StructuredILDump
                     string file = "0x" + m.MetadataToken.ToString("X8") + ".bin";
                     try
                     {
-                        using (var fs = new FileStream(Path.Combine(outTemp, file), FileMode.Create, FileAccess.Write, FileShare.Read))
+                        string primaryFile = Path.Combine(outPrimary, file);
+                        using (var fs = new FileStream(primaryFile, FileMode.Create, FileAccess.Write, FileShare.Read))
                         using (var bw = new BinaryWriter(fs, Encoding.UTF8))
                         {
                             WriteMethodBin_V2(bw, m, body, il, localSig);
                         }
-                        if (outGame != null)
+                        if (outMirror != null)
                         {
-                            try { File.Copy(Path.Combine(outTemp, file), Path.Combine(outGame, file), true); } catch { }
+                            try { File.Copy(primaryFile, Path.Combine(outMirror, file), true); } catch { }
                         }
-                        ok++;
+                        result.Ok++;
                     }
-                    catch { err++; }
+                    catch { result.Error++; }
                 }
             }
         }
         catch (Exception ex)
         {
-            SafeWrite(outTemp, "__error.txt", ex.ToString());
-            if (outGame != null) SafeWrite(outGame, "__error.txt", ex.ToString());
+            SafeWrite(outPrimary, "__error.txt", ex.ToString());
+            if (outMirror != null) SafeWrite(outMirror, "__error.txt", ex.ToString());
+            result.Error++;
         }
 
-        SafeWrite(outTemp, "__summary.txt", "OK=" + ok + ", SKIP=" + skip + ", ERR=" + err);
-        if (outGame != null) SafeWrite(outGame, "__summary.txt", "OK=" + ok + ", SKIP=" + skip + ", ERR=" + err);
+        string summary = "OK=" + result.Ok + ", SKIP=" + result.Skip + ", ERR=" + result.Error;
+        SafeWrite(outPrimary, "__summary.txt", summary);
+        if (outMirror != null) SafeWrite(outMirror, "__summary.txt", summary);
+        return result;
+    }
+
+    static RuntimeReadResult DumpRuntimeReadableImage(Assembly assembly, string outputRoot)
+    {
+        var result = new RuntimeReadResult();
+        try
+        {
+            string location = SafeLocation(assembly);
+            if (string.IsNullOrEmpty(location) || !File.Exists(location))
+            {
+                result.Detail = "location-missing";
+                return result;
+            }
+
+            byte[] bytes = File.ReadAllBytes(location);
+            result.Length = bytes == null ? 0 : bytes.Length;
+            result.IsMz = bytes != null && bytes.Length >= 2 && bytes[0] == 0x4D && bytes[1] == 0x5A;
+            result.Sha256 = ComputeSha256(bytes);
+            string suffix = result.IsMz ? ".runtime-read.dll" : ".runtime-read.bin";
+            result.OutputPath = Path.Combine(outputRoot, SafeFilePart(SafeAssemblyName(assembly)) + suffix);
+            File.WriteAllBytes(result.OutputPath, bytes ?? new byte[0]);
+            result.Detail = result.IsMz ? "managed-image" : "encrypted-or-unreadable-image";
+        }
+        catch (Exception ex)
+        {
+            result.Detail = ex.GetType().Name + ":" + ex.Message;
+        }
+        SafeWrite(outputRoot, "__runtime_read.txt",
+            "Path=" + result.OutputPath + "\r\nLength=" + result.Length + "\r\nMZ=" + result.IsMz +
+            "\r\nSHA256=" + result.Sha256 + "\r\nDetail=" + result.Detail);
+        return result;
+    }
+
+    static bool ShouldRepack(string assemblyName)
+    {
+        string[] names = REPACK_ASSEMBLY_NAMES ?? new string[0];
+        for (int i = 0; i < names.Length; i++)
+            if (string.Equals(names[i], assemblyName, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    static string ComputeSha256(byte[] bytes)
+    {
+        try
+        {
+            using (SHA256Managed sha = new SHA256Managed())
+            {
+                byte[] hash = sha.ComputeHash(bytes ?? new byte[0]);
+                var sb = new StringBuilder(hash.Length * 2);
+                for (int i = 0; i < hash.Length; i++) sb.Append(hash[i].ToString("X2"));
+                return sb.ToString();
+            }
+        }
+        catch { return string.Empty; }
+    }
+
+    static string SafeAssemblyName(Assembly assembly)
+    {
+        try { return assembly.GetName().Name; } catch { return "unknown"; }
+    }
+
+    static string SafeMvid(Assembly assembly)
+    {
+        try { return assembly.ManifestModule.ModuleVersionId.ToString(); } catch { return "unknown"; }
+    }
+
+    static string SafeFilePart(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "unknown";
+        char[] chars = value.ToCharArray();
+        char[] invalid = Path.GetInvalidFileNameChars();
+        for (int i = 0; i < chars.Length; i++)
+            for (int j = 0; j < invalid.Length; j++)
+                if (chars[i] == invalid[j]) { chars[i] = '_'; break; }
+        return new string(chars);
+    }
+
+    static string AppendDetail(string current, string value)
+    {
+        if (string.IsNullOrEmpty(current)) return value ?? string.Empty;
+        if (string.IsNullOrEmpty(value)) return current;
+        return current + ";" + value;
+    }
+
+    sealed class DumpResult
+    {
+        public int Ok;
+        public int Skip;
+        public int Error;
+    }
+
+    sealed class RuntimeReadResult
+    {
+        public string OutputPath = string.Empty;
+        public string Sha256 = string.Empty;
+        public string Detail = string.Empty;
+        public int Length;
+        public bool IsMz;
     }
 
     // v2 bin 格式（带魔数与 LocalSig）
@@ -147,7 +384,7 @@ public static class StructuredILDump
     // [u8* ] LocalSig
     // [i32 ] ILSize
     // [u8* ] IL
-    static void WriteMethodBin_V2(BinaryWriter bw, MethodInfo m, MethodBody body, byte[] il, byte[] localSig)
+    static void WriteMethodBin_V2(BinaryWriter bw, MethodBase m, MethodBody body, byte[] il, byte[] localSig)
     {
         bw.Write((uint)0x324C4953); // 'S''I''L''2'
         bw.Write(m.MetadataToken);
@@ -231,13 +468,40 @@ public static class StructuredILDump
         }
         catch { return new List<Type>(); }
     }
-    static MethodInfo[] SafeGetMethods(Type t)
+    static MethodBase[] SafeGetMethods(Type t)
     {
+        var methods = new List<MethodBase>();
+        var seen = new HashSet<int>();
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic |
+                                   BindingFlags.Instance | BindingFlags.Static |
+                                   BindingFlags.DeclaredOnly;
         try
         {
-            return t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+            MethodInfo[] declaredMethods = t.GetMethods(flags);
+            for (int i = 0; i < declaredMethods.Length; i++)
+            {
+                MethodInfo method = declaredMethods[i];
+                if (method != null && seen.Add(method.MetadataToken)) methods.Add(method);
+            }
         }
-        catch { return new MethodInfo[0]; }
+        catch { }
+        try
+        {
+            ConstructorInfo[] constructors = t.GetConstructors(flags);
+            for (int i = 0; i < constructors.Length; i++)
+            {
+                ConstructorInfo constructor = constructors[i];
+                if (constructor != null && seen.Add(constructor.MetadataToken)) methods.Add(constructor);
+            }
+        }
+        catch { }
+        try
+        {
+            ConstructorInfo typeInitializer = t.TypeInitializer;
+            if (typeInitializer != null && seen.Add(typeInitializer.MetadataToken)) methods.Add(typeInitializer);
+        }
+        catch { }
+        return methods.ToArray();
     }
     static void WriteStr(BinaryWriter bw, string s)
     {
@@ -272,6 +536,17 @@ public static class StructuredILDump
             if (string.IsNullOrEmpty(dir)) return;
             SafeMkDir(dir);
             File.WriteAllText(Path.Combine(dir, name), content ?? "", Encoding.UTF8);
+        }
+        catch { }
+    }
+
+    static void SafeAppend(string dir, string name, string content)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(dir)) return;
+            SafeMkDir(dir);
+            File.AppendAllText(Path.Combine(dir, name), content ?? string.Empty, Encoding.UTF8);
         }
         catch { }
     }

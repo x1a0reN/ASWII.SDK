@@ -39,10 +39,13 @@ namespace ASWDEBUG.Cheats.AutoAim
 
         public static void Enable()
         {
-            if (CheatMain.CameraMain != null)
+            if (!Enabled || CheatMain.CameraMain == null)
             {
-                Aim();
+                ResetLockState();
+                return;
             }
+
+            Aim();
         }
 
         public static void Disable()
@@ -50,11 +53,13 @@ namespace ASWDEBUG.Cheats.AutoAim
             Wall = false;
             Shield = false;
             Hidden = false;
+            ResetLockState();
         }
 
         public static void ToggleEnabled()
         {
-            Enabled = !Enabled; 
+            Enabled = !Enabled;
+            if (!Enabled) ResetLockState();
         }
         public static void ToggleWall() { Wall = !Wall; }
         public static void ToggleShield() { Shield = !Shield; }
@@ -212,30 +217,48 @@ namespace ASWDEBUG.Cheats.AutoAim
             return best;
         }
 
-        private static void Aim() 
+        private static void ResetLockState()
         {
+            AimLocking = false;
+            bestTarget = null;
+            currentTarget = null;
+            closestDistance = float.MaxValue;
+        }
 
-            if (Enabled && Input.GetKey(GlobalHotkeys.PlayerKey))
+        private static void Aim()
+        {
+            if (!Enabled || !Input.GetKey(GlobalHotkeys.PlayerKey))
             {
-                // 寻找自瞄目标
-                bestTarget = SelectBestTarget(ESP.ESP.CircleRadius, Wall, Shield, Hidden, out closestDistance);
-                if (bestTarget)
-                {
-                    currentTarget = bestTarget;
-
-                    // 锁定鼠标
-                    AimLocking = true;
-
-                    Transform transform = currentTarget.getBone("web__head").transform;
-                    CameraObj camera = ASSingleton<Level>.Instance.GetPlayer().camera;
-                    Vector3 eulerAngles = Quaternion.LookRotation((transform.position - Camera.main.transform.position).normalized).eulerAngles;
-                    Vector3 eulerAngles2 = camera.transform.eulerAngles;
-                    float num = Mathf.DeltaAngle(eulerAngles2.y, eulerAngles.y);
-                    float num2 = Mathf.DeltaAngle(eulerAngles2.x, eulerAngles.x);
-                    camera.finalx += num * Time.deltaTime * Settings._aimspeed;
-                    camera.finaly -= num2 * Time.deltaTime * Settings._aimspeed;
-                }
+                ResetLockState();
+                return;
             }
+
+            bestTarget = SelectBestTarget(ESP.ESP.CircleRadius, Wall, Shield, Hidden, out closestDistance);
+            if (!bestTarget)
+            {
+                ResetLockState();
+                return;
+            }
+
+            Character player = ASSingleton<Level>.Instance.GetPlayer();
+            Transform head = bestTarget.getBone("web__head");
+            Camera viewCamera = GetCamera();
+            CameraObj camera = player != null ? player.camera : null;
+            if (player == null || head == null || viewCamera == null || camera == null)
+            {
+                ResetLockState();
+                return;
+            }
+
+            currentTarget = bestTarget;
+            AimLocking = true;
+
+            Vector3 eulerAngles = Quaternion.LookRotation((head.position - viewCamera.transform.position).normalized).eulerAngles;
+            Vector3 eulerAngles2 = camera.transform.eulerAngles;
+            float num = Mathf.DeltaAngle(eulerAngles2.y, eulerAngles.y);
+            float num2 = Mathf.DeltaAngle(eulerAngles2.x, eulerAngles.x);
+            camera.finalx += num * Time.deltaTime * Settings._aimspeed;
+            camera.finaly -= num2 * Time.deltaTime * Settings._aimspeed;
         }
     }
 }

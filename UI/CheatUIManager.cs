@@ -27,11 +27,8 @@ namespace ASWDEBUG.UI
     {
         public static bool MenuVisible;
         public static bool SpriteMenuVisible;
-#if AUCTION_BUILD
-        private static readonly bool ShowAuctionUi = true;
-#else
         private static readonly bool ShowAuctionUi = false;
-#endif
+        private static readonly bool ShowLocalBotUi = false;
         private static readonly bool ShowMultiOpenUi = false;
         private static string _autoBattleDropdownId = string.Empty;
         private static Vector2 _autoBattleDropdownScroll;
@@ -103,7 +100,7 @@ namespace ASWDEBUG.UI
             GUI.color = Color.white;
 
             // Player
-            UIHelper.Begin("玩家", 10, 10, 150, 170, 0, 22, 0);
+            UIHelper.Begin("玩家", 10, 10, 150, 220, 0, 22, 0);
             UIHelper.Button("红名透视", HealthBarDisplay.Enabled, HealthBarDisplay.Toggle);
             UIHelper.Button("爆炸免伤", GrenadeNotHurt.Enabled, GrenadeNotHurt.Toggle);
             UIHelper.Button("自动扳机", AutoFire.Enabled, AutoFire.Toggle);
@@ -179,7 +176,7 @@ namespace ASWDEBUG.UI
 
 
             // AutoAim
-            UIHelper.Begin("自瞄设置", 165, 10, 165, 110, 0, 22, 0);
+            UIHelper.Begin("自瞄设置", 165, 10, 165, 154, 0, 22, 0);
             UIHelper.Button("开启", AutoAim.Enabled, AutoAim.ToggleEnabled);
             UIHelper.Button("是否判断墙体", AutoAim.Wall, AutoAim.ToggleWall);
             UIHelper.Button("是否判断盾牌", AutoAim.Shield, AutoAim.ToggleShield);
@@ -236,7 +233,7 @@ namespace ASWDEBUG.UI
             }
 
             // AimTrack
-            UIHelper.Begin("子弹追踪", 165, 145, 165, 80, 0, 20, 0);
+            UIHelper.Begin("子弹追踪", 165, 170, 165, 136, 0, 20, 0);
             UIHelper.Button("开启", AimTrack.Enabled, AimTrack.ToggleEnabled);
             UIHelper.Button("是否判断墙体", AimTrack.Wall, AimTrack.ToggleWall);
             UIHelper.Button("是否判断隐身", AimTrack.Hidden, AimTrack.ToggleHidden);
@@ -244,7 +241,7 @@ namespace ASWDEBUG.UI
             ESP.CircleRadius = UIHelper.SliderRow("范围半径", ESP.CircleRadius, 0f, 800f, 0);
 
             // ESP
-            UIHelper.Begin("ESP", 335, 10, 165, 120, 0, 22, 0);
+            UIHelper.Begin("ESP", 335, 10, 165, 154, 0, 22, 0);
             UIHelper.Button("开启", ESP.Enabled, ESP.ToggleEnabled);
             UIHelper.Button("信息卡片", ESP.InfoEsp, ESP.ToggleInfoEsp);
             UIHelper.Button("骨骼方框", ESP.D3BoxEsp, ESP.ToggleD3BoxEsp);
@@ -265,7 +262,7 @@ namespace ASWDEBUG.UI
             {
                 AutoUseConfigPanel.Visible = !AutoUseConfigPanel.Visible;
             }
-            if (UIHelper.Button("本地Bot控制"))
+            if (ShowLocalBotUi && UIHelper.Button("本地Bot控制"))
             {
                 LocalBotPanel.Visible = !LocalBotPanel.Visible;
             }
@@ -296,7 +293,14 @@ namespace ASWDEBUG.UI
             }
 
             AutoUseConfigPanel.Display();
-            LocalBotPanel.Display();
+            if (ShowLocalBotUi)
+            {
+                LocalBotPanel.Display();
+            }
+            else
+            {
+                LocalBotPanel.Visible = false;
+            }
 
             if (!SpriteMenuVisible) return;
             //SpriteListDrawer.DrawSpriteList(700, 10, 520, 620);

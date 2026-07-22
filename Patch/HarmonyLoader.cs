@@ -59,6 +59,11 @@ namespace ASWDEBUG.Patch
         private static float _aimSyntheticSessionStart;
         private static float _aimSyntheticSessionEnd;
         private static uint _aimSyntheticPrng = 0x6D2B79F5u;
+        private static int _aimSyntheticPrecisionMm = 190;
+        private static int _aimSyntheticVelocityMm;
+        private const int AimPrecisionSuspiciousThresholdMm = 120;
+        private const int AimPrecisionHumanizedMinMm = 120;
+        private const int AimPrecisionHumanizedMaxMm = 300;
         private static int _assistToolCheckSuppressCount;
         private static int _extendedDetectorSuppressCount;
         private static int _clientFileMd5LogSuppressCount;
@@ -396,7 +401,7 @@ namespace ASWDEBUG.Patch
             // plain version 8 means the sample was missing. Keep the native lifecycle so this
             // distinction and the variable sample count reach the packet builder intact.
             FileLogger.Log("ASWDEBUG",
-                "[HarmonyLoader] AimAssistDetector v8 lifecycle left native; captured payload normalization enabled.");
+                "[HarmonyLoader] AimAssistDetector v8 lifecycle left native; active-shot history humanization enabled.");
 
             TryPatchAllOverloads(harmony, asm, "GunBaseController", "AssitToolCheck",
                 "Protection_BlockAssistToolCheckPrefix");
@@ -1511,7 +1516,7 @@ namespace ASWDEBUG.Patch
                     int version = ReadRuntimeFieldInt(hitMessage, "aim_report_version", 0);
                     short[] samples = ReadRuntimeShortArray(hitMessage, "aim_precision_samples");
                     FileLogger.Log("NET-AUDIT",
-                        "[AIM-BYPASS] payload aim-report normalized #" + _aimAssistPayloadSanitizeCount +
+                        "[AIM-BYPASS] payload history humanized #" + _aimAssistPayloadSanitizeCount +
                         " source=" + source +
                         " version=" + version +
                         " captured=" + ((version & 0x80) != 0) +
@@ -1543,21 +1548,16 @@ namespace ASWDEBUG.Patch
                     return 0;
                 }
 
-                TrySetRuntimeField(hitMessage, "aim_report_version", (byte)0x88);
+                // Manual fire is the control group and must stay byte-for-byte native. Only
+                // historical samples are adjusted while one of our aim features is actually
+                // steering/redirecting this shot. The shot-moment code is intentionally kept:
+                // changing it can disagree with the real hit part and alter critical damage.
+                if (!IsAimManipulationActive()) return 0;
 
-                int seed = ReadRuntimeFieldInt(hitMessage, "enc", 0);
-                seed ^= ReadRuntimeFieldInt(hitMessage, "uid", 0) * 397;
-                seed ^= Time.frameCount;
+                int targetUid = ReadRuntimeFieldInt(hitMessage, "aim_target_uid", 0);
+                PrepareAimSyntheticSession(targetUid);
 
                 int adjusted = 0;
-                short shotCode = (short)ReadRuntimeFieldInt(hitMessage, "aim_shot_precision_code", -1);
-                short normalizedShotCode = NormalizePrecisionCode(shotCode, seed, -1);
-                if (normalizedShotCode != shotCode)
-                {
-                    TrySetRuntimeField(hitMessage, "aim_shot_precision_code", normalizedShotCode);
-                    adjusted++;
-                }
-
                 short[] samples = ReadRuntimeShortArray(hitMessage, "aim_precision_samples");
                 if (samples != null && samples.Length > 0)
                 {
@@ -1565,7 +1565,7 @@ namespace ASWDEBUG.Patch
                     bool samplesChanged = false;
                     for (int i = 0; i < normalizedSamples.Length; i++)
                     {
-                        short normalized = NormalizePrecisionCode(normalizedSamples[i], seed, i);
+                        short normalized = HumanizeHistoricalPrecisionCode(normalizedSamples[i]);
                         if (normalized == normalizedSamples[i]) continue;
 
                         normalizedSamples[i] = normalized;
@@ -1581,44 +1581,96 @@ namespace ASWDEBUG.Patch
                     }
                 }
 
+                _aimSyntheticSessionEnd = Time.realtimeSinceStartup;
+
                 return adjusted;
             }
 
-            // Legacy v3 reports use relative_speed == -1 as the missing-sample sentinel.
-            // Normalize only real samples and retain genuine missing reports unchanged.
-            int relativeSpeed = ReadRuntimeFieldInt(hitMessage, "aim_relative_speed_cmps", -1);
-            if (relativeSpeed >= 0)
-            {
-                TrySetRuntimeField(hitMessage, "aim_report_version", (byte)3);
-                TrySetRuntimeField(hitMessage, "aim_lock_session_id", 0);
-                TrySetRuntimeField(hitMessage, "aim_lock_duration_ms", 0);
-                TrySetRuntimeField(hitMessage, "aim_lock_target_uid", (byte)0);
-                TrySetRuntimeField(hitMessage, "aim_target_uid", (byte)0);
-                TrySetRuntimeField(hitMessage, "aim_relative_speed_cmps", (short)0);
-                TrySetRuntimeField(hitMessage, "aim_head_precision_mm", (short)-1);
-                return 1;
-            }
-
+            // The current client is v8. Unknown/legacy layouts are safer left native than
+            // rewritten into a fixed fingerprint.
             return 0;
         }
 
-        private static short NormalizePrecisionCode(short code, int seed, int sampleIndex)
+        private static bool IsAimManipulationActive()
+        {
+            try
+            {
+                bool autoAimActive = global::ASWDEBUG.Cheats.AutoAim.AutoAim.Enabled &&
+                                     global::ASWDEBUG.Cheats.AutoAim.AutoAim.AimLocking &&
+                                     global::ASWDEBUG.Cheats.AutoAim.AutoAim.currentTarget != null;
+                bool aimTrackActive = global::ASWDEBUG.Cheats.AimTrack.AimTrack.Enabled &&
+                                      global::ASWDEBUG.Cheats.AimTrack.AimTrack.currentTarget != null;
+                return autoAimActive || aimTrackActive;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void PrepareAimSyntheticSession(int targetUid)
+        {
+            float now = Time.realtimeSinceStartup;
+            bool expired = _aimSyntheticSessionEnd <= 0f || now - _aimSyntheticSessionEnd > 1.25f;
+            if (!expired && _aimSyntheticTargetUid == targetUid) return;
+
+            _aimSyntheticSessionId++;
+            _aimSyntheticTargetUid = targetUid;
+            _aimSyntheticSessionStart = now;
+            _aimSyntheticSessionEnd = now;
+            _aimSyntheticPrng ^= unchecked((uint)(targetUid * 397));
+            _aimSyntheticPrng ^= unchecked((uint)Environment.TickCount);
+            _aimSyntheticPrng ^= unchecked((uint)Time.frameCount * 0x9E3779B9u);
+            _aimSyntheticPrecisionMm = 165 + (int)(NextAimSyntheticUInt() % 111u);
+            _aimSyntheticVelocityMm = -8 + (int)(NextAimSyntheticUInt() % 17u);
+        }
+
+        private static short HumanizeHistoricalPrecisionCode(short code)
         {
             if (code < 0) return code;
 
             int millimeters = code / 10;
-            if (millimeters >= 120) return code;
+            if (millimeters >= AimPrecisionSuspiciousThresholdMm)
+            {
+                if (millimeters <= 330)
+                {
+                    int observed = Mathf.Clamp(millimeters, AimPrecisionHumanizedMinMm, AimPrecisionHumanizedMaxMm);
+                    _aimSyntheticPrecisionMm = (_aimSyntheticPrecisionMm * 3 + observed) / 4;
+                }
+                return code;
+            }
 
-            uint mixed = unchecked((uint)seed);
-            mixed ^= unchecked((uint)(sampleIndex + 2) * 0x9E3779B9u);
-            mixed ^= mixed >> 16;
-            mixed *= 0x7FEB352Du;
-            mixed ^= mixed >> 15;
-            mixed *= 0x846CA68Bu;
-            mixed ^= mixed >> 16;
+            int acceleration = (int)(NextAimSyntheticUInt() % 7u) - 3;
+            int jitter = (int)(NextAimSyntheticUInt() % 15u) - 7;
+            _aimSyntheticVelocityMm = Mathf.Clamp(_aimSyntheticVelocityMm + acceleration, -18, 18);
+            _aimSyntheticPrecisionMm += _aimSyntheticVelocityMm + jitter;
 
-            int normalizedMillimeters = 120 + (int)(mixed % 141u);
-            return EncodePrecisionMillimeters(normalizedMillimeters);
+            if (_aimSyntheticPrecisionMm < AimPrecisionHumanizedMinMm)
+            {
+                _aimSyntheticPrecisionMm = AimPrecisionHumanizedMinMm +
+                                           (int)(NextAimSyntheticUInt() % 31u);
+                _aimSyntheticVelocityMm = Math.Abs(_aimSyntheticVelocityMm) + 3;
+            }
+            else if (_aimSyntheticPrecisionMm > AimPrecisionHumanizedMaxMm)
+            {
+                _aimSyntheticPrecisionMm = AimPrecisionHumanizedMaxMm -
+                                           (int)(NextAimSyntheticUInt() % 31u);
+                _aimSyntheticVelocityMm = -Math.Abs(_aimSyntheticVelocityMm) - 3;
+            }
+
+            _aimSyntheticVelocityMm = Mathf.Clamp(_aimSyntheticVelocityMm, -18, 18);
+            return EncodePrecisionMillimeters(_aimSyntheticPrecisionMm);
+        }
+
+        private static uint NextAimSyntheticUInt()
+        {
+            uint value = _aimSyntheticPrng;
+            if (value == 0u) value = 0x6D2B79F5u;
+            value ^= value << 13;
+            value ^= value >> 17;
+            value ^= value << 5;
+            _aimSyntheticPrng = value;
+            return value;
         }
 
         private static short EncodePrecisionMillimeters(int millimeters)

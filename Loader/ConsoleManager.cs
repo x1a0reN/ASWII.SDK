@@ -16,12 +16,11 @@ public class ConsoleManager : MonoBehaviour
 {
     private const float RuntimeDumpDelaySeconds = 12f;
     private static readonly bool AutoDumpGameAssembly = false;
+    // One-shot maintenance switch. Keep disabled for normal play: batch reflection/Cecil
+    // work has no place in the game's long-lived 32-bit process.
+    private static readonly bool AutoDumpProtectedAssemblies = false;
     private static readonly bool TelemetryOnlyMode = false;
-#if AUCTION_BUILD || MULTIOPEN_FORK
-    private static readonly bool NetworkAuthEnabled = false;
-#else
     private static readonly bool NetworkAuthEnabled = true;
-#endif
 
     
     // 固定单码文件（注意 @ 避免 \x1a 转义）
@@ -85,7 +84,12 @@ public class ConsoleManager : MonoBehaviour
         HarmonyLoader.Install(TelemetryOnlyMode);
         FileLogger.Log("MARK", "Harmony installed before auth.");
 
-        if (AutoDumpGameAssembly)
+        if (AutoDumpProtectedAssemblies)
+        {
+            StartProtectedAssemblyBatchDump();
+            FileLogger.Log("MARK", "Protected managed assembly batch dump armed.");
+        }
+        else if (AutoDumpGameAssembly)
         {
             StartStructuredDump();
             StartCoroutine(DeobfRepackRoutine());
@@ -207,6 +211,61 @@ public class ConsoleManager : MonoBehaviour
         catch (Exception ex)
         {
             FileLogger.Log("ERROR", "StructuredILDump.Init() failed: " + ex);
+        }
+    }
+
+    private void StartProtectedAssemblyBatchDump()
+    {
+        try
+        {
+            // Static disk inspection identified these game-provided images as encrypted.
+            // The order puts the SurvivalBot dependencies first so they survive a later dump failure.
+            StructuredILDump.TARGET_ASSEMBLY_NAME = "Assembly-CSharp";
+            StructuredILDump.WAIT_SECONDS = 180;
+            StructuredILDump.EXTRA_DELAY_MS = (int)(RuntimeDumpDelaySeconds * 1000f);
+            StructuredILDump.DUMP_PROTECTED_ASSEMBLY_BATCH = true;
+            StructuredILDump.BATCH_TARGET_ASSEMBLY_NAMES = new string[]
+            {
+                "RAIN",
+                "RAINMetaform",
+                "Assembly-CSharp",
+                "Assembly-CSharp-firstpass",
+                "Assembly-UnityScript-firstpass",
+                "Pathfinding.ClipperLib",
+                "Pathfinding.Ionic.Zip.Reduced",
+                "Pathfinding.JsonFx",
+                "Pathfinding.Poly2Tri",
+                "LitJson",
+                "LZ4",
+                "Boo.Lang",
+                "Mono.Posix",
+                "Mono.Security",
+                "System.Configuration",
+                "System.Core",
+                "System",
+                "System.Security",
+                "System.Xml",
+                "UnityEngine",
+                "UnityEngine.UI",
+                "mscorlib"
+            };
+            // Runtime-readable MZ images are sufficient for framework assemblies. Only rebuild
+            // the protected game assemblies whose method bodies are required for analysis.
+            StructuredILDump.REPACK_ASSEMBLY_NAMES = new string[]
+            {
+                "RAIN",
+                "RAINMetaform",
+                "Assembly-CSharp",
+                "Assembly-CSharp-firstpass",
+                "Assembly-UnityScript-firstpass"
+            };
+            StructuredILDump.Init();
+            FileLogger.Log("MARK", "Protected assembly batch configured. targetCount=" +
+                StructuredILDump.BATCH_TARGET_ASSEMBLY_NAMES.Length);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Log("ERROR", "Protected assembly batch init failed: " + ex);
         }
     }
 

@@ -57,6 +57,30 @@ MAC
 让原生构造器重新计算 MAC 并完成加密
 ```
 
+当前实现又进一步缩小了修改面：未启用实际瞄准操控的射击完全保持原样；启用
+`AutoAim`/`AimTrack` 时也不再改写开火瞬间的 `aim_shot_precision_code`，只对同目标的
+历史低偏差样本做等长、带状态变化的归一化。原因是开火瞬间值与命中部位处于同一个
+加密载荷中，改写它既会扩大协议不一致面，也与实测的暴击伤害下降相关。客户端静态
+分析不能证明服务端怎样使用该字段，因此这里采用“伤害语义优先、最小修改”的边界。
+
+### 2.1 2026-07-22 客户端更新差分
+
+更新前后 `Assembly-CSharp` 的类型、成员签名、程序集引用和资源完全一致；规范化 IL
+差分中唯一明确的非构造器业务变化是 `AimAssistDetector.UpdateSample(CameraObj)`：
+
+```text
+旧版：camera/character 无效或 IsSupportedWeapon=false
+      -> ResetDetectionState() -> return
+
+新版：仅 camera/character 无效 -> return
+      不再调用 IsSupportedWeapon，也不再在这里 ResetDetectionState
+```
+
+新版静态构造器同时明确写入 `HeadTraceInterval = 0.1f`。这意味着采样范围从受支持武器
+扩展到了只要存在有效角色相机就持续采样；协议版本、字段布局、MAC 与加密入口没有发生
+API 级变化。补丁因此不能再依赖“切换武器会清空检测状态”，而必须在最终 payload 边界
+按每一枪的真实 captured/missing 状态处理。
+
 ## 3. 逆向方法
 
 分析采用以下步骤：
@@ -129,14 +153,11 @@ if (aimAssistDetector != null)
 
 ## 6. 周期采样
 
-`UpdateSample` 的等价逻辑为：
+当前版本 `UpdateSample` 的等价逻辑为：
 
 ```csharp
-if (camera == null || camera.character == null || !IsSupportedWeapon(camera.character))
-{
-    ResetDetectionState();
+if (camera == null || camera.character == null)
     return;
-}
 
 float now = Time.time;
 if (nextSampleTime <= 0f)
@@ -163,7 +184,7 @@ if (now >= nextSampleTime)
 
 可确认的行为包括：
 
-- 只对指定远程武器类型采样；
+- 不再按武器类型提前退出或在此清空状态；
 - 卡顿超过 0.5 秒时清空积压样本；
 - 单次更新最多补入 100 个样本；
 - 队列最多保留 100 个样本；
@@ -391,17 +412,20 @@ BuildEncryptedPayload(HitMessage, currentSpreadIndex)
 
 此时原生报告已经填充，外层样本数也已经写出。补丁必须保持数组长度不变，只替换必要元素，然后让原生方法继续执行以重新计算 MAC 和加密数据。
 
-### 12.3 只归一化异常集中值
+### 12.3 只归一化历史异常集中值
 
 一种研究方案是：
 
 ```text
-负数 sentinel：保持不变
-高于研究阈值的样本：保持不变
-低于研究阈值的有效样本：映射到一个有变化的中间区间
+未实际启用 AutoAim/AimTrack：整枪保持不变
+开火瞬间 aim_shot_precision_code：保持不变
+历史负数 sentinel：保持不变
+历史高于研究阈值的样本：保持不变
+历史低于研究阈值的有效样本：用有惯性的随机游走映射到中间区间
 ```
 
 映射后必须重新生成校验位。阈值和目标区间只是研究参数，不能描述为服务端事实。
+随机游走状态按目标与时间间隔切换，避免每个样本独立均匀分布形成新的人工指纹。
 
 ### 12.4 保持数组长度
 
@@ -464,6 +488,8 @@ replace with empty array
 - 单参数 overload 不重复处理；
 - captured bit 保留；
 - missing report 不被强制改写；
+- 未实际操控瞄准的射击逐字段保持原生；
+- `aim_report_version`、`aim_target_uid` 和 `aim_shot_precision_code` 不被改写；
 - 数组长度保持不变；
 - 校验位由原算法重新计算；
 - 原生方法继续执行；
@@ -509,6 +535,6 @@ payload length
 
 该检测的关键不在某一个字段，而在“相机采样、开火冻结、同帧填报、外层长度、内部序列化、MAC 和加密”组成的完整一致性链。
 
-研究补丁若只追求删除检测数据，通常会生成更稳定的异常。较低风险的处理方式是保留原生状态机，只在原生加密前对少量有效精度值做长度不变、校验合法、分布有变化的归一化，并让原生构造器完成剩余协议工作。
+研究补丁若只追求删除检测数据，通常会生成更稳定的异常。当前较低破坏性的处理方式是保留原生状态机，只在实际瞄准操控期间、原生加密前，对历史数组中的少量低偏差值做长度不变、校验合法、具有时间连续性的归一化；开火瞬间精度和命中语义保持原生，再由原生构造器完成剩余协议工作。
 
 客户端逆向只能说明报告如何生成，不能证明服务端如何评分。任何“已完全规避”的结论都必须建立在长期、分组、可复现的运行验证上。

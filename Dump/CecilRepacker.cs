@@ -21,6 +21,8 @@ using ASWDEBUG.Logger;
 
 public static class CecilRepacker
 {
+    public static bool VerboseMethodLogging = true;
+
     public static void RepackFromLiveIL(Assembly liveAsm, string templateDllPath, string outputDllPath)
     {
         if (liveAsm == null) throw new ArgumentNullException("liveAsm");
@@ -79,7 +81,8 @@ public static class CecilRepacker
 
                 try
                 {
-                    FileLogger.Log("WORK", "-> " + md.FullName + " tok=0x" + md.MetadataToken.ToInt32().ToString("X8"));
+                    if (VerboseMethodLogging)
+                        FileLogger.Log("WORK", "-> " + md.FullName + " tok=0x" + md.MetadataToken.ToInt32().ToString("X8"));
 
                     ReplaceBodyWithLiveIL(module, md, liveMod, mi, rb, ilBytes);
 
@@ -625,13 +628,40 @@ public static class CecilRepacker
         }
     }
 
-    static MethodInfo[] SafeGetDeclaredMethods(Type t)
+    static MethodBase[] SafeGetDeclaredMethods(Type t)
     {
+        var methods = new List<MethodBase>();
+        var seen = new HashSet<int>();
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic |
+                                   BindingFlags.Instance | BindingFlags.Static |
+                                   BindingFlags.DeclaredOnly;
         try
         {
-            return t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+            MethodInfo[] declaredMethods = t.GetMethods(flags);
+            for (int i = 0; i < declaredMethods.Length; i++)
+            {
+                MethodInfo method = declaredMethods[i];
+                if (method != null && seen.Add(method.MetadataToken)) methods.Add(method);
+            }
         }
-        catch { return new MethodInfo[0]; }
+        catch { }
+        try
+        {
+            ConstructorInfo[] constructors = t.GetConstructors(flags);
+            for (int i = 0; i < constructors.Length; i++)
+            {
+                ConstructorInfo constructor = constructors[i];
+                if (constructor != null && seen.Add(constructor.MetadataToken)) methods.Add(constructor);
+            }
+        }
+        catch { }
+        try
+        {
+            ConstructorInfo typeInitializer = t.TypeInitializer;
+            if (typeInitializer != null && seen.Add(typeInitializer.MetadataToken)) methods.Add(typeInitializer);
+        }
+        catch { }
+        return methods.ToArray();
     }
 
     static Instruction FindByOffset(Dictionary<int, Instruction> map, int ofs)
@@ -1887,12 +1917,13 @@ public static class CecilRepacker
     // —— 写盘前最终 Sanitize：失败就 stub —— //
     static void SanitizeOrStub(MethodDefinition md, ModuleDefinition module)
     {
-        FileLogger.Log("MARK", "Sanitize enter: " + md.FullName);
+        if (VerboseMethodLogging)
+            FileLogger.Log("MARK", "Sanitize enter: " + md.FullName);
         bool ok = true;
         try { ok = SanitizeOperandsForWriter(md, module); }
         catch (Exception ex) { ok = false; FileLogger.Log("WARN", "Sanitize ex: " + md.FullName + " :: " + ex.Message); }
         if (!ok) { FileLogger.Log("WARN", "Sanitize fail -> stub : " + md.FullName); EmitRetStub(md); }
-        else { FileLogger.Log("MARK", "Sanitize ok: " + md.FullName); }
+        else if (VerboseMethodLogging) { FileLogger.Log("MARK", "Sanitize ok: " + md.FullName); }
     }
 
     // 把所有“带元数据 token”的操作数强制归属于当前 module；

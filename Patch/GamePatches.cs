@@ -2262,7 +2262,7 @@ namespace ASWDEBUG
                 // ShootPayloadCrypt.BuildEncryptedPayload(hit_message)。
                 // 旧版手写 106 包缺少 32 字节加密 payload/MAC，服务端会丢弃或判异常；
                 // 所以这里绝不能 return false 接管写包，只能放行原生实现。
-                ApplyAimTrackShotCompat(hit_message);
+                ApplyAimTrackShotCompat(hit_message, position);
                 NormalizeBulletNoRecoilShotCompat(hit_message);
                 ShotDiagnostics.LogShoot(position, direction, hit_message, slot, do_effect, velocity);
                 // Do not touch aim-report fields here. The native Shoot method still needs to
@@ -2275,7 +2275,7 @@ namespace ASWDEBUG
             return true;
         }
 
-        private static void ApplyAimTrackShotCompat(object hitMessage)
+        private static void ApplyAimTrackShotCompat(object hitMessage, Vector3 shotOrigin)
         {
             try
             {
@@ -2285,16 +2285,39 @@ namespace ASWDEBUG
                 if (player == null || player.mWeapon is KnifeBaseController) return;
 
                 int targetUid = (int)AimTrack.currentTarget.uid ^ player.currentSpreadIndex;
-                short distance = (short)((player.mWeapon is SniperGunController) ? 1198 : 4);
 
                 TrySetHitField(hitMessage, "uid", targetUid);
-                TrySetHitField(hitMessage, "distance", distance);
                 TrySetHitField(hitMessage, "part", 4);
+
+                short distance;
+                if (TryResolveAimTrackDistance(AimTrack.currentTarget, shotOrigin, out distance))
+                    TrySetHitField(hitMessage, "distance", distance);
             }
             catch (Exception e)
             {
                 FileLogger.Log("PATCH", "[ChannelConnection.Shoot] aim track compat error: " + e.Message);
             }
+        }
+
+        private static bool TryResolveAimTrackDistance(Character target, Vector3 shotOrigin, out short distance)
+        {
+            distance = 0;
+            if (target == null) return false;
+
+            Transform aimPoint = null;
+            try { aimPoint = target.getBone("web__head"); } catch { }
+            if (aimPoint == null)
+            {
+                try { aimPoint = target.transform; } catch { }
+            }
+            if (aimPoint == null) return false;
+
+            float worldDistance = Vector3.Distance(shotOrigin, aimPoint.position);
+            if (float.IsNaN(worldDistance) || float.IsInfinity(worldDistance) || worldDistance < 0f)
+                return false;
+
+            distance = (short)Mathf.Clamp(Mathf.FloorToInt(worldDistance), 0, short.MaxValue);
+            return true;
         }
 
         private static void NormalizeBulletNoRecoilShotCompat(object hitMessage)

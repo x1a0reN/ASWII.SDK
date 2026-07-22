@@ -1202,7 +1202,57 @@ private static void Protection_ShootPayloadBuildWithSpreadPrefix(
 }
 ```
 
-## 15. 当前归一化逻辑逐句解释
+## 15. 2026-07-22 当前归一化逻辑
+
+当前实现以“手动射击零修改、命中语义零修改”为边界：
+
+```csharp
+if (!captured)
+    return 0;
+
+if (!IsAimManipulationActive())
+    return 0;
+
+// version、target 和开火瞬间精度全部保留。
+short[] samples = ReadShortArray(hitMessage, "aim_precision_samples");
+short[] clone = (short[])samples.Clone();
+
+for (int i = 0; i < clone.Length; i++)
+    clone[i] = HumanizeHistoricalPrecisionCode(clone[i]);
+
+// 只有内容确实变化时才写回；Length 永远不变。
+SetField(hitMessage, "aim_precision_samples", clone);
+```
+
+处理条件与保持项如下：
+
+| 项目 | 当前行为 |
+|---|---|
+| genuine missing (`captured=false`) | 完全原样放行 |
+| 未实际启用 `AutoAim`/`AimTrack` | 完全原样放行 |
+| `aim_report_version` | 保留原生值 |
+| `aim_target_uid` | 保留原生值 |
+| `aim_shot_precision_code` | 保留原生值，不参与归一化 |
+| 历史负数 sentinel | 保留 |
+| 历史 `>=120 mm` 样本 | 保留 |
+| 历史 `<120 mm` 样本 | 映射到有时间连续性的 `120..300 mm` 区间 |
+| `aim_precision_samples.Length` | 严格不变 |
+
+历史低值不再按每枪独立哈希到均匀分布，而是使用按目标和时间间隔重置的随机游走：
+
+```text
+session state = precision + velocity + persistent PRNG
+next = current + velocity + small acceleration + jitter
+boundary = reflect into 120..300 mm
+```
+
+这样做不能证明“完全不可检测”；它只是避免固定常数、独立均匀分布和全局清零等更明显的
+客户端人工指纹。开火瞬间精度处于命中信息的同一加密 payload 中，旧版对该字段的改写与
+暴击伤害下降同时出现，因此当前实现不再触碰它。
+
+## 15A. 旧版归一化逻辑（已停用，仅供差分）
+
+> 以下代码描述 2026-07-22 修复前的实现，不代表当前运行路径。
 
 核心代码整理如下：
 
@@ -1280,21 +1330,21 @@ private static int NormalizeAimReportFields(object hitMessage)
 }
 ```
 
-### 15.1 `hitMessage == null` 或字段不存在
+### 15A.1 `hitMessage == null` 或字段不存在
 
 返回 `-1`，表示当前对象不是可处理的报告。调用者不会继续记录本次归一化。
 
-### 15.2 `captured == false`
+### 15A.2 `captured == false`
 
 直接返回 `0`。不创建目标、不创建样本、不修改 version。
 
 这是“保留原生 missing 状态”的关键。
 
-### 15.3 version 写回 `0x88`
+### 15A.3 version 写回 `0x88`
 
 只在原生 captured 已经存在时执行。它不是把 missing 伪造成 captured，而是把低位规范为 8，并明确保留最高位。
 
-### 15.4 seed 的作用
+### 15A.4 seed 的作用
 
 当前归一化不是把所有值改成一个常数，而是使用：
 
@@ -1309,14 +1359,14 @@ sample index
 
 这不是密码学随机数，只是为了避免所有低精度样本集中到同一个数字。
 
-### 15.5 clone 数组
+### 15A.5 clone 数组
 
 使用 clone 的目的有两个：
 
 1. 不在遍历期间原地破坏原数组；
 2. 明确保证新数组长度与原数组一致。
 
-## 16. 低精度值如何被映射
+## 16. 旧版低精度映射（已停用）
 
 当前算法：
 
@@ -1391,7 +1441,7 @@ decoded mm >= 120        -> 原样保留
 不是从客户端证明出来的服务端处罚线
 ```
 
-## 17. 一枪的完整数值例子
+## 17. 当前实现的一枪数值例子
 
 假设开火前有 4 个周期样本，解码后的毫米值为：
 
@@ -1417,31 +1467,31 @@ samples = [Encode(42), Encode(75), Encode(180), Encode(510)]
 进入最终构造器前：
 
 ```text
-28  -> 映射到 120..260 中的一个值
-42  -> 映射
-75  -> 映射
+28  -> 保留（开火瞬间精度不再改写）
+42  -> 由连续状态映射到 120..300
+75  -> 由同一连续状态继续映射
 180 -> 保留
 510 -> 保留
 ```
 
-例如本次混合结果为：
+例如本次随机游走结果为：
 
 ```text
-shot = 203 mm
-samples = [147, 236, 180, 510] mm
+shot = 28 mm
+samples = [167, 176, 180, 510] mm
 ```
 
 编码后可能变成：
 
 ```text
-203 mm -> 2031
-147 mm -> 1472
-236 mm -> 2361
+28 mm  -> 0286
+167 mm -> 1670
+176 mm -> 1762
 180 mm -> 1809
 510 mm -> 5106
 ```
 
-需要再次强调：具体映射值由 seed 和 sample index 决定，上面数字只是帮助理解的例子。
+需要再次强调：具体历史映射值由会话状态决定，上面数字只是帮助理解的例子。
 
 不变的内容：
 
