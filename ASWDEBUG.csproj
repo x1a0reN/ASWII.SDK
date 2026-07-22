@@ -79,8 +79,11 @@
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavDataset.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavFormat.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainFunnel.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavLoader.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainMetaReader.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainPathfinder.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainQuery.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainSpatialIndex.cs" />
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavDiskCache.cs" />
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavDerivedDiskCache.cs" />

@@ -35,11 +35,20 @@
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainNavDataset.cs">
       <Link>CompactRainNavDataset.cs</Link>
     </Compile>
+    <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainFunnel.cs">
+      <Link>CompactRainFunnel.cs</Link>
+    </Compile>
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainNavLoader.cs">
       <Link>CompactRainNavLoader.cs</Link>
     </Compile>
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainMetaReader.cs">
       <Link>CompactRainMetaReader.cs</Link>
+    </Compile>
+    <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainPathfinder.cs">
+      <Link>CompactRainPathfinder.cs</Link>
+    </Compile>
+    <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainQuery.cs">
+      <Link>CompactRainQuery.cs</Link>
     </Compile>
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainSpatialIndex.cs">
       <Link>CompactRainSpatialIndex.cs</Link>

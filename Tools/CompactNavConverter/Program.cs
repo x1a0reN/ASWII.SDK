@@ -8,6 +8,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         {
             try
             {
+                if (args.Length == 2 && string.Equals(args[0], "--pathtest", StringComparison.OrdinalIgnoreCase))
+                    return RunPathTest(args[1]);
                 if (args.Length == 2 && string.Equals(args[0], "--selftest", StringComparison.OrdinalIgnoreCase))
                 {
                     CompactRainNavLoadResult load;
@@ -83,6 +85,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     Console.Error.WriteLine("   or: CompactNavConverter --verify <level33.aswnav>");
                     Console.Error.WriteLine("   or: CompactNavConverter --load <level33.aswnav>");
                     Console.Error.WriteLine("   or: CompactNavConverter --selftest <level33.aswnav>");
+                    Console.Error.WriteLine("   or: CompactNavConverter --pathtest <level33.aswnav>");
                     return 2;
                 }
 
@@ -109,6 +112,119 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 Console.Error.WriteLine("fatal={0}:{1}", ex.GetType().Name, ex.Message);
                 return 1;
             }
+        }
+
+        private static int RunPathTest(string path)
+        {
+            CompactRainNavLoadResult load;
+            CompactRainNavDataset dataset = CompactRainNavLoader.Load(path, out load);
+            CompactRainPathCapabilities capabilities = new CompactRainPathCapabilities();
+            capabilities.AllowJump = true;
+            capabilities.JumpHeight = 2.4f;
+            capabilities.JumpVelocity = 8.0f;
+            capabilities.RunSpeed = 8.5f;
+            capabilities.MaximumDrop = 8.0f;
+            CompactRainQuery query = new CompactRainQuery(dataset);
+
+            int[] componentSizes = new int[dataset.ComponentCount];
+            for (int i = 0; i < dataset.PolyCount; i++) componentSizes[dataset.GetPoly(i).Component]++;
+            int largestComponent = 0;
+            for (int i = 1; i < componentSizes.Length; i++)
+                if (componentSizes[i] > componentSizes[largestComponent]) largestComponent = i;
+            int startPoly = -1;
+            for (int i = 0; i < dataset.PolyCount; i++)
+                if (dataset.GetPoly(i).Component == largestComponent) { startPoly = i; break; }
+            if (startPoly < 0) throw new InvalidOperationException("pathtest_no_start_poly");
+            CompactRainPoint start = TriangleCentroid(dataset, startPoly);
+            int goalPoly = -1;
+            float bestDistanceScore = float.MaxValue;
+            for (int i = startPoly + 1; i < dataset.PolyCount; i++)
+            {
+                if (dataset.GetPoly(i).Component != largestComponent) continue;
+                CompactRainPoint candidate = TriangleCentroid(dataset, i);
+                float distance = CompactRainPoint.DistanceXZ(start, candidate);
+                if (distance < 80f || distance > 180f) continue;
+                float score = Math.Abs(distance - 120f);
+                if (score >= bestDistanceScore) continue;
+                bestDistanceScore = score;
+                goalPoly = i;
+            }
+            if (goalPoly < 0) throw new InvalidOperationException("pathtest_no_goal_poly");
+            CompactRainPoint goal = TriangleCentroid(dataset, goalPoly);
+            CompactRainPathResult first;
+            string firstDetail;
+            bool firstOk = query.TryFindPath(start, goal, capabilities, 4096, 1000000,
+                out first, out firstDetail);
+            CompactRainPathResult second;
+            string secondDetail;
+            bool secondOk = query.TryFindPath(start, goal, capabilities, 4096, 1000000,
+                out second, out secondDetail);
+            bool deterministic = firstOk && secondOk && PathsEqual(first, second);
+            Console.WriteLine("normal_path ok={0}/{1} deterministic={2} component={3} component_polys={4}",
+                firstOk, secondOk, deterministic, largestComponent, componentSizes[largestComponent]);
+            Console.WriteLine("normal_detail={0} cost={1:0.000} portals={2} waypoints={3} actions={4}",
+                firstDetail, first == null ? -1f : first.Cost,
+                first == null ? 0 : first.PortalPath.Length,
+                first == null ? 0 : first.Waypoints.Length,
+                first == null ? 0 : first.ActionCount);
+
+            bool offMeshOk = false;
+            string offMeshDetail = "no_candidate";
+            CompactRainPathResult offMeshResult = null;
+            for (int i = 0; i < dataset.LinkCount && !offMeshOk; i++)
+            {
+                CompactRainNavLinkRecord link = dataset.GetLink(i);
+                if (link.RequiredJumpHeight > capabilities.JumpHeight + 0.05f ||
+                    link.RequiredRunSpeed > capabilities.RunSpeed + 0.05f) continue;
+                CompactRainNavPortalRecord from = dataset.GetPortal(link.FromPortal);
+                CompactRainNavPortalRecord to = dataset.GetPortal(link.ToPortal);
+                if (from.PolyCount <= 0 || to.PolyCount <= 0) continue;
+                int fromPoly = dataset.GetPortalPolyIndex(from.PolyStart);
+                int toPoly = dataset.GetPortalPolyIndex(to.PolyStart);
+                CompactRainPathResult candidateResult;
+                string candidateDetail;
+                bool candidateOk = query.TryFindPath(TriangleCentroid(dataset, fromPoly),
+                    TriangleCentroid(dataset, toPoly), capabilities, 4096, 1000000,
+                    out candidateResult, out candidateDetail);
+                if (!candidateOk || candidateResult == null || candidateResult.ActionCount <= 0) continue;
+                offMeshOk = true;
+                offMeshDetail = "link=" + i + " " + candidateDetail;
+                offMeshResult = candidateResult;
+            }
+            Console.WriteLine("offmesh_path ok={0} detail={1} portals={2} waypoints={3} actions={4}",
+                offMeshOk, offMeshDetail, offMeshResult == null ? 0 : offMeshResult.PortalPath.Length,
+                offMeshResult == null ? 0 : offMeshResult.Waypoints.Length,
+                offMeshResult == null ? 0 : offMeshResult.ActionCount);
+            Console.WriteLine("path_workspace_bytes={0}", query.WorkspaceBytes);
+            return deterministic && offMeshOk ? 0 : 4;
+        }
+
+        private static CompactRainPoint TriangleCentroid(CompactRainNavDataset dataset, int polyIndex)
+        {
+            CompactRainNavPolyRecord poly = dataset.GetPoly(polyIndex);
+            CompactRainPoint a = dataset.GetVertex(dataset.GetTriangleIndex(poly.TriangleStart));
+            CompactRainPoint b = dataset.GetVertex(dataset.GetTriangleIndex(poly.TriangleStart + 1));
+            CompactRainPoint c = dataset.GetVertex(dataset.GetTriangleIndex(poly.TriangleStart + 2));
+            return new CompactRainPoint((a.X + b.X + c.X) / 3f,
+                (a.Y + b.Y + c.Y) / 3f, (a.Z + b.Z + c.Z) / 3f);
+        }
+
+        private static bool PathsEqual(CompactRainPathResult left, CompactRainPathResult right)
+        {
+            if (left == null || right == null || left.Cost != right.Cost ||
+                left.Waypoints.Length != right.Waypoints.Length ||
+                left.Actions.Length != right.Actions.Length ||
+                left.PortalPath.Length != right.PortalPath.Length ||
+                left.IncomingLinks.Length != right.IncomingLinks.Length) return false;
+            for (int i = 0; i < left.Waypoints.Length; i++)
+                if (left.Waypoints[i].X != right.Waypoints[i].X ||
+                    left.Waypoints[i].Y != right.Waypoints[i].Y ||
+                    left.Waypoints[i].Z != right.Waypoints[i].Z ||
+                    left.Actions[i] != right.Actions[i]) return false;
+            for (int i = 0; i < left.PortalPath.Length; i++)
+                if (left.PortalPath[i] != right.PortalPath[i] ||
+                    left.IncomingLinks[i] != right.IncomingLinks[i]) return false;
+            return true;
         }
     }
 }
