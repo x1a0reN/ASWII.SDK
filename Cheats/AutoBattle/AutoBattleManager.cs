@@ -316,7 +316,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             direction.Normalize();
 
             bool jump = _pathIndex < JumpFlags.Count && JumpFlags[_pathIndex];
-            if (jump && AutoBattleRoutePlanner.CanTraverseWalkableSurface(
+            if (jump && AutoBattleRoutePlanner.CanDemoteJumpToWalk(
                 playerPosition, next, player.transform.root))
             {
                 JumpFlags[_pathIndex] = false;

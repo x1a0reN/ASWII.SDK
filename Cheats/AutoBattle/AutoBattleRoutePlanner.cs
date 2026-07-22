@@ -466,6 +466,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             int shortcuts = 0;
             int denseRejects = 0;
             int aswnavRejects = 0;
+            int compactFallbacks = 0;
             int detourCount = 0;
             int detourExpanded = 0;
             int inferredJumps = 0;
@@ -490,7 +491,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         out blockedSegment, out segmentCount))
                     {
                         denseRejects++;
-                        continue;
+                        if (!CanUseCompactCorridorFallback(clean[candidate], ignoreRoot))
+                            continue;
+                        compactFallbacks++;
                     }
                     selected = candidate;
                     break;
@@ -573,6 +576,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                       " shortcuts=" + shortcuts +
                       " aswnavRejects=" + aswnavRejects +
                       " denseRejects=" + denseRejects +
+                      " compactFallbacks=" + compactFallbacks +
                       " detours=" + detourCount +
                       " detourExpanded=" + detourExpanded +
                       " inferredJumps=" + inferredJumps +
@@ -656,8 +660,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         public static bool IsDegenerateVerticalTransition(Vector3 from, Vector3 to)
         {
-            return XZDistance(from, to) < SamePositionTolerance &&
-                   Mathf.Abs(to.y - from.y) > SamePositionVerticalTolerance;
+            if (XZDistance(from, to) >= SamePositionTolerance ||
+                Mathf.Abs(to.y - from.y) <= SamePositionVerticalTolerance)
+                return false;
+            string compactDetail;
+            return !_compactNavigationRequested ||
+                   !IsCompactWalkSegmentSafe(from, to, out compactDetail);
         }
 
         private static bool IsPlausibleWalkTransition(Vector3 from, Vector3 to)
@@ -896,6 +904,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             flat.y = 0f;
             float distance = flat.magnitude;
             if (distance < 0.08f) return false;
+            string compactDetail;
+            if (_compactNavigationRequested &&
+                IsCompactWalkSegmentSafe(from, waypoint, out compactDetail) &&
+                CanUseCompactCorridorFallback(waypoint, ignoreRoot))
+                return false;
 
             Vector3 probeEnd = from + flat / distance * Mathf.Min(1.05f, distance);
             probeEnd.y = Mathf.Lerp(from.y, waypoint.y, Mathf.Min(1f, 1.05f / distance));
@@ -914,8 +927,19 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             int blockedSegment;
             int segmentCount;
-            return CanFollowSegmentDense(from, to, ignoreRoot,
-                out blockedSegment, out segmentCount);
+            if (CanFollowSegmentDense(from, to, ignoreRoot,
+                out blockedSegment, out segmentCount)) return true;
+            string compactDetail;
+            return _compactNavigationRequested &&
+                   IsCompactWalkSegmentSafe(from, to, out compactDetail) &&
+                   CanUseCompactCorridorFallback(to, ignoreRoot);
+        }
+
+        public static bool CanDemoteJumpToWalk(Vector3 from, Vector3 to, Transform ignoreRoot)
+        {
+            string compactDetail;
+            return IsCompactWalkSegmentSafe(from, to, out compactDetail) &&
+                   CanTraverseWalkableSurface(from, to, ignoreRoot);
         }
 
         public static string DescribeRouteSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
@@ -939,10 +963,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
             string compactDetail;
             if (!jump && !IsCompactWalkSegmentSafe(from, waypoint, out compactDetail))
                 return false;
-            return jump
-                ? CanExecuteJump(from, waypoint,
-                    capabilities ?? new AutoBattleRouteCapabilities(), ignoreRoot)
-                : CanFollowRouteSegment(from, waypoint, ignoreRoot);
+            if (jump)
+                return CanExecuteJump(from, waypoint,
+                    capabilities ?? new AutoBattleRouteCapabilities(), ignoreRoot);
+            return CanFollowRouteSegment(from, waypoint, ignoreRoot);
         }
 
         public static int CopyPathForFollower(List<Vector3> points, List<bool> jumpFlags,
@@ -1061,7 +1085,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         public static bool CanExecuteJump(Vector3 from, Vector3 to, AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
         {
-            return TryJumpSegment(from, to, capabilities ?? new AutoBattleRouteCapabilities(), ignoreRoot);
+            AutoBattleRouteCapabilities effective = capabilities ?? new AutoBattleRouteCapabilities();
+            return TryJumpSegment(from, to, effective, ignoreRoot) ||
+                   CanUseCompactHardLink(from, to, effective, ignoreRoot);
         }
 
         public static bool HasSupportedStandingPoint(Vector3 point, Transform ignoreRoot)
@@ -1932,6 +1958,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             Vector3 previous = from;
             int jumps = 0;
+            int compactFallbacks = 0;
+            int trustedCompactLinks = 0;
             for (int i = 0; i < points.Count; i++)
             {
                 Vector3 target = points[i];
@@ -1946,9 +1974,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     float vertical = Mathf.Abs(target.y - previous.y);
                     if (vertical > SamePositionVerticalTolerance)
                     {
-                        detail = "vertical_transition waypoint=" + i +
-                                 " dy=" + vertical.ToString("0.00");
-                        return false;
+                        string compactStepDetail = "inactive";
+                        if (!_compactNavigationRequested ||
+                            !IsCompactWalkSegmentSafe(previous, target, out compactStepDetail) ||
+                            !CanUseCompactCorridorFallback(target, ignoreRoot))
+                        {
+                            detail = "vertical_transition waypoint=" + i +
+                                     " dy=" + vertical.ToString("0.00") +
+                                     " compact=" + compactStepDetail;
+                            return false;
+                        }
+                        compactFallbacks++;
                     }
                     previous = target;
                     continue;
@@ -1967,8 +2003,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         previous = target;
                         continue;
                     }
-                    bool validLink = capabilities != null && capabilities.AllowJump &&
-                                     TryJumpSegment(previous, target, capabilities, ignoreRoot);
+                    bool physicsLink = capabilities != null && capabilities.AllowJump &&
+                                       TryJumpSegment(previous, target, capabilities, ignoreRoot);
+                    bool compactLink = !physicsLink && capabilities != null &&
+                                       CanUseCompactHardLink(previous, target, capabilities,
+                                           ignoreRoot);
+                    bool validLink = physicsLink || compactLink;
                     if (!validLink)
                     {
                         detail = "offmesh_invalid waypoint=" + i;
@@ -1976,6 +2016,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     }
                     jumpFlags[i] = true;
                     jumps++;
+                    if (compactLink) trustedCompactLinks++;
                     previous = target;
                     continue;
                 }
@@ -1990,6 +2031,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 int segments;
                 if (!CanFollowSegmentDense(previous, target, ignoreRoot, out blockedSegment, out segments))
                 {
+                    if (CanUseCompactCorridorFallback(target, ignoreRoot))
+                    {
+                        compactFallbacks++;
+                        previous = target;
+                        continue;
+                    }
                     Vector3 jumpDirection = target - previous;
                     jumpDirection.y = 0f;
                     float rise = target.y - previous.y;
@@ -2008,7 +2055,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
                 previous = target;
             }
-            detail = "ok jumps=" + jumps;
+            detail = "ok jumps=" + jumps + " compactFallbacks=" + compactFallbacks +
+                     " trustedCompactLinks=" + trustedCompactLinks;
             return true;
         }
 
@@ -2044,6 +2092,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             int detourExpanded = 0;
             int inferredJumps = 0;
             int walkLinks = 0;
+            int compactFallbacks = 0;
+            int aswnavRejects = 0;
+            int trustedHardLinks = 0;
             while (index < points.Count)
             {
                 int jumpIndex = -1;
@@ -2064,8 +2115,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     int segmentCount = 0;
                     for (int candidate = normalEnd; candidate >= cursor; candidate--)
                     {
+                        string compactSegmentDetail;
+                        if (!IsCompactWalkSegmentSafe(anchor, points[candidate],
+                            out compactSegmentDetail))
+                        {
+                            aswnavRejects++;
+                            continue;
+                        }
                         if (!CanFollowSegmentDense(anchor, points[candidate], ignoreRoot,
-                            out blockedSegment, out segmentCount)) continue;
+                            out blockedSegment, out segmentCount))
+                        {
+                            if (!CanUseCompactCorridorFallback(points[candidate], ignoreRoot))
+                                continue;
+                            compactFallbacks++;
+                        }
                         chosen = candidate;
                         break;
                     }
@@ -2127,11 +2190,19 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (jumpIndex < 0) break;
                 int walkBlockedSegment;
                 int walkSegmentCount;
-                if (CanFollowSegmentDense(anchor, points[jumpIndex], ignoreRoot,
+                string compactWalkDetail;
+                bool compactWalk = IsCompactWalkSegmentSafe(anchor, points[jumpIndex],
+                    out compactWalkDetail);
+                if (compactWalk && CanFollowSegmentDense(anchor, points[jumpIndex], ignoreRoot,
                     out walkBlockedSegment, out walkSegmentCount))
                 {
                     AddOptimizedPoint(optimized, optimizedFlags, points[jumpIndex], false);
                     walkLinks++;
+                }
+                else if (_compactNavigationRequested)
+                {
+                    AddOptimizedPoint(optimized, optimizedFlags, points[jumpIndex], true);
+                    trustedHardLinks++;
                 }
                 else
                 {
@@ -2160,7 +2231,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             detail = "opt=offmesh_hard_anchors in=" + points.Count + " out=" + optimized.Count +
                 " removed=" + removed + " detours=" + detourCount +
                 " detourExpanded=" + detourExpanded + " inferredJumps=" + inferredJumps +
-                " walkLinks=" + walkLinks;
+                " walkLinks=" + walkLinks + " compactFallbacks=" + compactFallbacks +
+                " aswnavRejects=" + aswnavRejects + " trustedHardLinks=" + trustedHardLinks;
             return optimized;
         }
 
@@ -2515,6 +2587,37 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 segmentStart = segmentEnd;
             }
             return true;
+        }
+
+        private static bool CanUseCompactCorridorFallback(Vector3 target, Transform ignoreRoot)
+        {
+            // The compact corridor is sampled at 0.10m; legacy linear-Y probes falsely reject
+            // stepped stairs, so retain live endpoint/clearance guards without overriding it.
+            if (!_compactNavigationRequested || !IsFinite(target)) return false;
+            if (!HasSupportedStandingPoint(target, ignoreRoot) ||
+                !HasStandingSpace(target, ignoreRoot)) return false;
+            return MeasureWallClearance(target, ignoreRoot) >= NavigationBodyRadius + 0.06f;
+        }
+
+        private static bool CanUseCompactHardLink(Vector3 from, Vector3 to,
+            AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
+        {
+            if (!_compactNavigationRequested || capabilities == null ||
+                !capabilities.AllowJump || !IsFinite(from) || !IsFinite(to)) return false;
+            float horizontal = XZDistance(from, to);
+            float rise = to.y - from.y;
+            float jumpHeight = Mathf.Max(1.2f, capabilities.JumpHeight);
+            float jumpVelocity = capabilities.JumpVelocity > 0.1f
+                ? capabilities.JumpVelocity
+                : Mathf.Sqrt(jumpHeight * 39.2f);
+            float runSpeed = capabilities.RunSpeed > 0.1f ? capabilities.RunSpeed : 6f;
+            float maximumHorizontal = Mathf.Clamp(
+                runSpeed * (2f * jumpVelocity / 19.6f) * 0.65f, 2.2f, 4.2f);
+            if (horizontal < 0.35f || horizontal > maximumHorizontal + 0.05f ||
+                rise > jumpHeight * 0.92f ||
+                rise < -Mathf.Max(8f, jumpHeight + 2f)) return false;
+            return HasSupportedStandingPoint(from, ignoreRoot) &&
+                   CanUseCompactCorridorFallback(to, ignoreRoot);
         }
 
         private static void AddOptimizedPoint(List<Vector3> points, List<bool> flags, Vector3 point, bool jump)

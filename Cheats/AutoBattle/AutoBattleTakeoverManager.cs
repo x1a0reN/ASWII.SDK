@@ -3300,7 +3300,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return Vector3.zero;
             }
             dir.Normalize();
-            if (jumpEdge && AutoBattleRoutePlanner.CanTraverseWalkableSurface(
+            if (jumpEdge && AutoBattleRoutePlanner.CanDemoteJumpToWalk(
                 player.transform.position, next, routeRoot))
             {
                 PathJumpFlags[_pathIndex] = false;
