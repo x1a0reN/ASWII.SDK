@@ -319,7 +319,8 @@ namespace ASWDEBUG.UI
                 GUI.DrawTexture(new Rect(progressTrack.x, progressTrack.y, progressTrack.width,
                     progressTrack.height), _accentTexture);
             string memory = "缓存  " + FormatBytes(snapshot.FileBytes) + "  |  常驻 " +
-                FormatBytes(snapshot.ResidentBytes) + "  |  查询 " + FormatBytes(snapshot.WorkspaceBytes);
+                FormatBytes(snapshot.ResidentBytes) + "  |  查询 " + FormatBytes(snapshot.WorkspaceBytes) +
+                "  |  加载 " + snapshot.DatasetLoadCount + "  活跃 " + snapshot.ActiveQueryCount;
             if (compact)
             {
                 GUI.Label(new Rect(textX, panel.y + 28f, textWidth, 20f),

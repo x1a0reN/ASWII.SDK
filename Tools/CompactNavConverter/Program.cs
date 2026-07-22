@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 {
@@ -8,6 +9,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         {
             try
             {
+                if (args.Length == 2 && string.Equals(args[0], "--stress", StringComparison.OrdinalIgnoreCase))
+                    return RunStress(args[1], 1000);
                 if (args.Length == 2 && string.Equals(args[0], "--pathtest", StringComparison.OrdinalIgnoreCase))
                     return RunPathTest(args[1]);
                 if (args.Length == 2 && string.Equals(args[0], "--selftest", StringComparison.OrdinalIgnoreCase))
@@ -86,6 +89,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     Console.Error.WriteLine("   or: CompactNavConverter --load <level33.aswnav>");
                     Console.Error.WriteLine("   or: CompactNavConverter --selftest <level33.aswnav>");
                     Console.Error.WriteLine("   or: CompactNavConverter --pathtest <level33.aswnav>");
+                    Console.Error.WriteLine("   or: CompactNavConverter --stress <level33.aswnav>");
                     return 2;
                 }
 
@@ -225,6 +229,135 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 if (left.PortalPath[i] != right.PortalPath[i] ||
                     left.IncomingLinks[i] != right.IncomingLinks[i]) return false;
             return true;
+        }
+
+        private static int RunStress(string path, int cycles)
+        {
+            CompactRainNavDataset dataset;
+            CompactRainNavLoadResult load;
+            if (!CompactRainNavLoader.TryLoadProcessSingleton(path, out dataset, out load) || dataset == null)
+                throw new InvalidOperationException(load == null ? "stress_load_failed" : load.Status);
+            if (CompactRainNavLoader.ProcessLoadCount != 1)
+                throw new InvalidOperationException("stress_initial_load_count=" +
+                    CompactRainNavLoader.ProcessLoadCount);
+            CompactRainQuery query = new CompactRainQuery(dataset);
+            CompactRainPathCapabilities capabilities = new CompactRainPathCapabilities(true,
+                2.4f, 8.0f, 8.5f, 8.0f);
+            int[] componentSizes = new int[dataset.ComponentCount];
+            for (int i = 0; i < dataset.PolyCount; i++) componentSizes[dataset.GetPoly(i).Component]++;
+            int component = 0;
+            for (int i = 1; i < componentSizes.Length; i++)
+                if (componentSizes[i] > componentSizes[component]) component = i;
+            int startPoly = -1;
+            int goalPoly = -1;
+            CompactRainPoint start = new CompactRainPoint();
+            float bestScore = float.MaxValue;
+            for (int i = 0; i < dataset.PolyCount; i++)
+            {
+                if (dataset.GetPoly(i).Component != component) continue;
+                if (startPoly < 0)
+                {
+                    startPoly = i;
+                    start = TriangleCentroid(dataset, i);
+                    continue;
+                }
+                CompactRainPoint candidate = TriangleCentroid(dataset, i);
+                float distance = CompactRainPoint.DistanceXZ(start, candidate);
+                if (distance < 80f || distance > 180f) continue;
+                float score = Math.Abs(distance - 120f);
+                if (score >= bestScore) continue;
+                bestScore = score;
+                goalPoly = i;
+            }
+            if (startPoly < 0 || goalPoly < 0) throw new InvalidOperationException("stress_corpus_failed");
+            CompactRainPoint goal = TriangleCentroid(dataset, goalPoly);
+            CompactRainPathResult baseline;
+            string detail;
+            if (!query.TryFindPath(start, goal, capabilities, 4096, 1000000, out baseline, out detail))
+                throw new InvalidOperationException("stress_baseline_failed:" + detail);
+            for (int i = 0; i < 32; i++)
+            {
+                CompactRainPathResult warm;
+                if (!query.TryFindPath(start, goal, capabilities, 4096, 1000000, out warm, out detail) ||
+                    !PathsEqual(baseline, warm)) throw new InvalidOperationException("stress_warmup=" + i);
+            }
+            ForceCollection();
+            long managedBaseline = GC.GetTotalMemory(false);
+            long privateBaseline = GetPrivateBytes();
+            long maximumManaged = managedBaseline;
+            long maximumPrivate = privateBaseline;
+            int mismatches = 0;
+            int cancelled = 0;
+            Stopwatch elapsed = Stopwatch.StartNew();
+            for (int cycle = 0; cycle < cycles; cycle++)
+            {
+                CompactRainNavDataset sameDataset;
+                CompactRainNavLoadResult sameLoad;
+                if (!CompactRainNavLoader.TryLoadProcessSingleton(path, out sameDataset, out sameLoad) ||
+                    !object.ReferenceEquals(dataset, sameDataset))
+                    throw new InvalidOperationException("stress_dataset_reloaded=" + cycle);
+                if (CompactRainNavLoader.ProcessLoadCount != 1)
+                    throw new InvalidOperationException("stress_load_count=" + cycle + "/" +
+                        CompactRainNavLoader.ProcessLoadCount);
+                if ((cycle % 50) == 0)
+                {
+                    int epoch = query.Begin(start, goal, capabilities, 1.25f, 2.25f);
+                    query.Tick(epoch, 1, 0.0);
+                    query.Cancel(epoch);
+                    if (query.Status != CompactRainSearchStatus.Cancelled)
+                        throw new InvalidOperationException("stress_cancel_failed=" + cycle);
+                    cancelled++;
+                }
+                CompactRainPathResult result;
+                if (!query.TryFindPath(start, goal, capabilities, 4096, 1000000, out result, out detail) ||
+                    !PathsEqual(baseline, result)) mismatches++;
+                result = null;
+                if (((cycle + 1) % 100) != 0) continue;
+                ForceCollection();
+                long managed = GC.GetTotalMemory(false);
+                long privateBytes = GetPrivateBytes();
+                if (managed > maximumManaged) maximumManaged = managed;
+                if (privateBytes > maximumPrivate) maximumPrivate = privateBytes;
+                Console.WriteLine("stress_checkpoint cycle={0} managed={1} managed_delta={2} private={3} private_delta={4}",
+                    cycle + 1, managed, managed - managedBaseline,
+                    privateBytes, privateBytes - privateBaseline);
+            }
+            elapsed.Stop();
+            ForceCollection();
+            long managedFinal = GC.GetTotalMemory(false);
+            long privateFinal = GetPrivateBytes();
+            long managedGrowth = managedFinal - managedBaseline;
+            long privateGrowth = privateFinal - privateBaseline;
+            Console.WriteLine("stress_result cycles={0} mismatches={1} cancelled={2} elapsed_ms={3}",
+                cycles, mismatches, cancelled, elapsed.ElapsedMilliseconds);
+            Console.WriteLine("stress_lifecycle dataset_loads={0} singleton_reuses={1}",
+                CompactRainNavLoader.ProcessLoadCount, cycles);
+            Console.WriteLine("stress_memory managed_base={0} managed_final={1} managed_growth={2} managed_peak_delta={3}",
+                managedBaseline, managedFinal, managedGrowth, maximumManaged - managedBaseline);
+            Console.WriteLine("stress_memory private_base={0} private_final={1} private_growth={2} private_peak_delta={3}",
+                privateBaseline, privateFinal, privateGrowth, maximumPrivate - privateBaseline);
+            bool memoryStable = managedGrowth <= 2L * 1024L * 1024L &&
+                privateGrowth <= 16L * 1024L * 1024L;
+            return mismatches == 0 && cancelled == 20 &&
+                CompactRainNavLoader.ProcessLoadCount == 1 && memoryStable ? 0 : 5;
+        }
+
+        private static void ForceCollection()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+
+        private static long GetPrivateBytes()
+        {
+            Process process = null;
+            try
+            {
+                process = Process.GetCurrentProcess();
+                return process.PrivateMemorySize64;
+            }
+            finally { if (process != null) process.Dispose(); }
         }
     }
 }

@@ -4,6 +4,20 @@
 适用分支：`codex/survival-ai`  
 实施基线：`bf0bd37 checkpoint: preserve current SurvivalBot RAIN state`
 
+## 实施状态（2026-07-22）
+
+| 阶段 | 状态 | 提交/结果 |
+|---|---|---|
+| 0：保存当前状态 | 已完成并推送 | `bf0bd37` |
+| 1：计划与证据固化 | 已完成并推送 | `946f1ea` |
+| 2：转换器与格式 | 已完成并推送 | `8ef80e0` |
+| 3：数据集与空间索引 | 已完成并推送 | `4c66fe2` |
+| 4：Portal A* / Funnel / Off-Mesh | 已完成并推送 | `4d50231` |
+| 5：SurvivalBot 生命周期接入 | 已完成并推送 | `9bcdbe9` |
+| 6：遥测与自动压力验收 | 已完成实现和离线验收，随阶段 6 提交推送 | 详见 `RAIN_COMPACT_NAV_VALIDATION.md` |
+
+阶段 6 的“游戏内连续进出 20 次、连续 50 局、24/72 小时长期运行”属于部署后的实机运行验收，不能由离线工具替代；在取得真实运行日志前不得标记为通过。
+
 ## 1. 目标与最终决策
 
 最终架构采用：
@@ -458,4 +472,3 @@ test: validate compact navigation lifecycle
 3. 转换器、加载器、投影、Portal A*、Funnel、Off-Mesh Link 均有可复现验证。
 4. 完成连续进出和长期内存验收。
 5. 所有阶段均已提交并推送到 `origin/codex/survival-ai`。
-

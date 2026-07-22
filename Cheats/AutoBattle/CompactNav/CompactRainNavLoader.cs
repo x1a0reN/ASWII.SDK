@@ -12,6 +12,12 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private static CompactRainNavLoadResult _processResult;
         private static string _processPath = string.Empty;
         private static bool _processLoadAttempted;
+        private static int _processLoadCount;
+
+        internal static int ProcessLoadCount
+        {
+            get { lock (Sync) return _processLoadCount; }
+        }
 
         internal static bool TryLoadProcessSingleton(string path, out CompactRainNavDataset dataset,
             out CompactRainNavLoadResult result)
@@ -36,6 +42,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 try
                 {
                     _processDataset = Load(fullPath, out _processResult);
+                    if (_processDataset != null) _processLoadCount++;
                 }
                 catch (Exception ex)
                 {
@@ -349,8 +356,14 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         private static long GetPrivateBytes()
         {
-            try { return Process.GetCurrentProcess().PrivateMemorySize64; }
+            Process process = null;
+            try
+            {
+                process = Process.GetCurrentProcess();
+                return process.PrivateMemorySize64;
+            }
             catch { return 0L; }
+            finally { if (process != null) process.Dispose(); }
         }
 
         private static string SafeOneLine(string value, int maximum)

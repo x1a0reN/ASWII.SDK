@@ -22,6 +22,12 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private static bool _requested;
         private static bool _failed;
         private static int _sceneEpoch;
+        private static int _sceneBeginCount;
+        private static int _sceneEndCount;
+        private static int _queryBeginCount;
+        private static int _queryCancelCount;
+        private static long _lastManagedBytes;
+        private static long _lastPrivateBytes;
 
         internal static bool Requested { get { return _requested; } }
         internal static bool IsReady { get { return _requested && !_failed && _dataset != null && _query != null; } }
@@ -41,6 +47,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             CancelJob();
             _sceneEpoch++;
             if (_sceneEpoch == int.MaxValue) _sceneEpoch = 1;
+            _sceneBeginCount++;
             _mapName = normalized;
             _requested = true;
             _failed = false;
@@ -49,7 +56,9 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 _detail = "ready source=process_resident scene=" + _sceneEpoch;
                 FileLogger.Log("AUTO-BATTLE][ASWNAV", "scene_begin map=" + normalized +
                     " scene=" + _sceneEpoch + " source=process_resident resident=" + _dataset.ResidentBytes +
-                    " workspace=" + _query.WorkspaceBytes);
+                    " workspace=" + _query.WorkspaceBytes + " loadCount=" +
+                    CompactRainNavLoader.ProcessLoadCount + " activeQueries=0 sceneBegins=" +
+                    _sceneBeginCount + MemoryTelemetry());
                 return true;
             }
 
@@ -84,7 +93,9 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 " workspace=" + _query.WorkspaceBytes + " bvh=" + result.BvhNodeCount +
                 " loadMs=" + result.ElapsedMilliseconds + " managedDelta=" +
                 (result.ManagedBytesAfter - result.ManagedBytesBefore) + " privateDelta=" +
-                (result.PrivateBytesAfter - result.PrivateBytesBefore));
+                (result.PrivateBytesAfter - result.PrivateBytesBefore) + " loadCount=" +
+                CompactRainNavLoader.ProcessLoadCount + " activeQueries=0 sceneBegins=" +
+                _sceneBeginCount + MemoryTelemetry());
             return true;
         }
 
@@ -96,8 +107,15 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _failed = false;
             _detail = "scene_inactive reason=" + Safe(reason);
             if (wasRequested)
+            {
+                _sceneEndCount++;
                 FileLogger.Log("AUTO-BATTLE][ASWNAV", "scene_end map=" + Safe(_mapName) +
-                    " scene=" + _sceneEpoch + " dataset=retained unityRefs=0 reason=" + Safe(reason));
+                    " scene=" + _sceneEpoch + " dataset=retained unityRefs=0 loadCount=" +
+                    CompactRainNavLoader.ProcessLoadCount + " activeQueries=0 sceneBegins=" +
+                    _sceneBeginCount + " sceneEnds=" + _sceneEndCount + " queryBegins=" +
+                    _queryBeginCount + " queryCancels=" + _queryCancelCount +
+                    " reason=" + Safe(reason) + MemoryTelemetry());
+            }
         }
 
         internal static void Shutdown(string reason)
@@ -183,6 +201,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 int queryEpoch = _query.Begin(ToPoint(from), ToPoint(to), compactCapabilities, 1.25f, 2.25f);
                 job = new CompactRouteJob(_sceneEpoch, queryEpoch, from, to, capabilities);
                 _job = job;
+                _queryBeginCount++;
             }
 
             Stopwatch slice = Stopwatch.StartNew();
@@ -250,6 +269,14 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             snapshot.MapName = _mapName;
             snapshot.Detail = _detail;
             snapshot.SceneEpoch = _sceneEpoch;
+            snapshot.SceneBeginCount = _sceneBeginCount;
+            snapshot.SceneEndCount = _sceneEndCount;
+            snapshot.DatasetLoadCount = CompactRainNavLoader.ProcessLoadCount;
+            snapshot.ActiveQueryCount = _job == null ? 0 : 1;
+            snapshot.QueryBeginCount = _queryBeginCount;
+            snapshot.QueryCancelCount = _queryCancelCount;
+            snapshot.ManagedBytes = _lastManagedBytes;
+            snapshot.PrivateBytes = _lastPrivateBytes;
             if (_dataset != null)
             {
                 snapshot.VertexCount = _dataset.VertexCount;
@@ -282,8 +309,31 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         private static void CancelJob()
         {
-            if (_job != null && _query != null) _query.Cancel(_job.QueryEpoch);
+            if (_job != null && _query != null)
+            {
+                _query.Cancel(_job.QueryEpoch);
+                _queryCancelCount++;
+            }
             _job = null;
+        }
+
+        private static string MemoryTelemetry()
+        {
+            _lastManagedBytes = GC.GetTotalMemory(false);
+            _lastPrivateBytes = GetPrivateBytes();
+            return " managed=" + _lastManagedBytes + " private=" + _lastPrivateBytes;
+        }
+
+        private static long GetPrivateBytes()
+        {
+            Process process = null;
+            try
+            {
+                process = Process.GetCurrentProcess();
+                return process.PrivateMemorySize64;
+            }
+            catch { return 0L; }
+            finally { if (process != null) process.Dispose(); }
         }
 
         private static CompactRainPoint ToPoint(Vector3 value)
@@ -362,7 +412,15 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         public long ResidentBytes;
         public long WorkspaceBytes;
         public long LoadMilliseconds;
+        public long ManagedBytes;
+        public long PrivateBytes;
         public int SceneEpoch;
+        public int SceneBeginCount;
+        public int SceneEndCount;
+        public int DatasetLoadCount;
+        public int ActiveQueryCount;
+        public int QueryBeginCount;
+        public int QueryCancelCount;
         public int VertexCount;
         public int PolyCount;
         public int PortalCount;

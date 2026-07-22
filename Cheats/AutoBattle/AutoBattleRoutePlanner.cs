@@ -2561,7 +2561,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         " scene=" + compact.SceneEpoch + " probe=" + (projected ? "1" : "0") +
                         " fileBytes=" + compact.FileBytes + " resident=" + compact.ResidentBytes +
                         " workspace=" + compact.WorkspaceBytes + " polys=" + compact.PolyCount +
-                        " portals=" + compact.PortalCount);
+                        " portals=" + compact.PortalCount + " loads=" + compact.DatasetLoadCount +
+                        " activeQueries=" + compact.ActiveQueryCount);
                     return;
                 }
                 SetNavigationState(AutoBattleNavResourceState.Loading,
