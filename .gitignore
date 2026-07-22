@@ -3,3 +3,4 @@ Config/proxy.*.local.ini
 *.proxy-credentials
 .env.local
 artifacts/
+**/obj/Variant*/
