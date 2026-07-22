@@ -4,6 +4,8 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <SurvivalEdition Condition=" '$(SurvivalEdition)' == '' ">Private</SurvivalEdition>
+    <DeployToGame Condition=" '$(DeployToGame)' == '' ">true</DeployToGame>
     <ProjectGuid>{762C7A21-4560-4A19-951B-A0B3590F2454}</ProjectGuid>
     <OutputType>Library</OutputType>
     <RootNamespace>ASWDEBUG</RootNamespace>
@@ -38,6 +40,12 @@
     <DefineConstants>TRACE;AUCTION_BUILD</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(SurvivalEdition)' == 'Private' ">
+    <DefineConstants>$(DefineConstants);SURVIVAL_INTERNAL_TOOLS</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(SurvivalEdition)' == 'ReleaseA' ">
+    <DefineConstants>$(DefineConstants);SURVIVAL_RELEASE_A</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
@@ -74,7 +82,7 @@
   <ItemGroup>
     <Compile Include="Cheats\AutoBattle\AutoBattleInput.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleManager.cs" />
-    <Compile Include="Cheats\AutoBattle\AutoBattleTakeoverManager.cs" />
+    <Compile Include="Cheats\AutoBattle\AutoBattleTakeoverManager.cs" Condition=" '$(SurvivalEdition)' == 'Private' " />
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavAutoConverter.cs" />
@@ -93,10 +101,11 @@
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavDerivedData.cs" />
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavMesh.cs" />
     <Compile Include="Cheats\Player\AutoFire.cs" />
-    <Compile Include="Cheats\SurvivalBot\MapBakeSceneLoader.cs" />
-    <Compile Include="Cheats\SurvivalBot\LocalNavigationCombatTest.cs" />
+    <Compile Include="Cheats\SurvivalBot\MapBakeSceneLoader.cs" Condition=" '$(SurvivalEdition)' == 'Private' " />
+    <Compile Include="Cheats\SurvivalBot\LocalNavigationCombatTest.cs" Condition=" '$(SurvivalEdition)' == 'Private' " />
     <Compile Include="Cheats\SurvivalBot\SurvivalBotManager.cs" />
     <Compile Include="Cheats\SurvivalBot\SurvivalBotSettings.cs" />
+    <Compile Include="Build\SurvivalBuildProfile.cs" />
     <Compile Include="Loader\ConsoleManager.cs" />
     <Compile Include="Loader\DoorstopEntrypoint.cs" />
     <Compile Include="Logger\FileLogger.cs" />
@@ -110,14 +119,20 @@
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <PropertyGroup Condition=" '$(Configuration)' != 'Auction' ">
-    <PostBuildEvent>copy /Y "$(ProjectDir)bin\$(Configuration)\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>
+  <Target Name="ValidateSurvivalEdition" BeforeTargets="BeforeBuild">
+    <Error Condition=" '$(SurvivalEdition)' != 'Private' and '$(SurvivalEdition)' != 'ReleaseA' "
+      Text="Unsupported SurvivalEdition '$(SurvivalEdition)'. Expected Private or ReleaseA." />
+  </Target>
+  <PropertyGroup Condition=" '$(Configuration)' != 'Auction' and '$(DeployToGame)' == 'true' ">
+    <PostBuildEvent>copy /Y "$(TargetPath)" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>
   </PropertyGroup>
-  <Target Name="BuildCompactNavConverter" BeforeTargets="PostBuildEvent" Condition=" '$(Configuration)' != 'Auction' ">
+  <Target Name="BuildCompactNavConverter" BeforeTargets="PostBuildEvent"
+    Condition=" '$(Configuration)' != 'Auction' and '$(SurvivalEdition)' == 'Private' and '$(DeployToGame)' == 'true' ">
     <MSBuild Projects="$(ProjectDir)Tools\CompactNavConverter\CompactNavConverter.csproj"
       Targets="Build" Properties="Configuration=Release" />
   </Target>
-  <Target Name="DeployCompactNavConverter" AfterTargets="PostBuildEvent" Condition=" '$(Configuration)' != 'Auction' ">
+  <Target Name="DeployCompactNavConverter" AfterTargets="PostBuildEvent"
+    Condition=" '$(Configuration)' != 'Auction' and '$(SurvivalEdition)' == 'Private' and '$(DeployToGame)' == 'true' ">
     <PropertyGroup>
       <CompactNavToolDeployDir>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWDEBUG.Tools</CompactNavToolDeployDir>
     </PropertyGroup>

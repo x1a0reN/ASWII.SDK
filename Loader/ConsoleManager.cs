@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using ASWDEBUG.Build;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Main;
 using ASWDEBUG.Patch;
@@ -27,7 +28,7 @@ public sealed class SurvivalBotBootstrap : MonoBehaviour
         int pid = -1;
         try { pid = System.Diagnostics.Process.GetCurrentProcess().Id; } catch { }
         FileLogger.Init(Path.Combine(logDir, "ASW_SurvivalBot.pid" + pid + ".log"), true);
-        FileLogger.Log("BOOT", "SurvivalBot bootstrap started.");
+        FileLogger.Log("BOOT", "SurvivalBot bootstrap started. edition=" + SurvivalBuildProfile.Edition);
 
         Application.RegisterLogCallback(HandleLog);
         try { _hooksReady = HarmonyLoader.Install(); }

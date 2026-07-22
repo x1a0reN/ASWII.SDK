@@ -49,12 +49,16 @@ namespace ASWDEBUG.Main
                 bool lifecycleBlocked = SurvivalBotManager.TickRainLifecycleGate();
                 if (!lifecycleBlocked)
                 {
+#if SURVIVAL_INTERNAL_TOOLS
                     if (SurvivalBotManager.MapBakeEnabled)
                         AutoBattleRoutePlanner.EnsureMapBake(level);
-                    AutoBattleRoutePlanner.TickNavigation(level, player,
-                        SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled ||
+                    bool navigationActive = SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled ||
                         SurvivalBotManager.RoomTestEnabled || SurvivalBotManager.MapBakeEnabled ||
-                        SurvivalBotManager.Level33TestEnabled);
+                        SurvivalBotManager.Level33TestEnabled;
+#else
+                    bool navigationActive = SurvivalBotManager.Enabled;
+#endif
+                    AutoBattleRoutePlanner.TickNavigation(level, player, navigationActive);
                     SurvivalBotManager.Tick(level, player, CameraMain);
                 }
                 NavigationPathVisualizer.Tick(level, player);

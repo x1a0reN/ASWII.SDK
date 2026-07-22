@@ -11,28 +11,25 @@ namespace ASWDEBUG.UI
         private enum DropdownId
         {
             None,
-            Tactics,
-            Role,
             EnemyEsp,
-            Defense,
             MatchTimeout,
             ParticipantCapture,
             Separation,
             EmergencyDistance,
             SafePointRefresh,
             SuicideFallback,
-            GmStopRounds,
+            GmStopRounds
+#if SURVIVAL_INTERNAL_TOOLS
+            ,
             MapBakeTarget
+#endif
         }
 
         private const float WindowWidth = 388f;
         private const float WindowHeight = 552f;
         private const float RowHeight = 26f;
 
-        private static readonly string[] TacticsNames = { "稳健", "标准", "激进" };
-        private static readonly string[] RoleNames = { "自动", "通用" };
         private static readonly string[] EnabledNames = { "开启", "关闭" };
-        private static readonly string[] DefenseNames = { "自动", "隐身优先", "护盾优先", "关闭" };
         private static readonly string[] MatchTimeoutNames = { "5 分钟", "10 分钟", "15 分钟" };
         private static readonly string[] ParticipantCaptureNames = { "3 秒", "5 秒", "8 秒" };
         private static readonly string[] SeparationNames = { "9 米", "11 米", "13 米", "15 米", "18 米" };
@@ -58,7 +55,9 @@ namespace ASWDEBUG.UI
         private static string[] _dropdownOptions;
         private static int _dropdownSelected;
         private static int _dropdownFirstVisible;
+#if SURVIVAL_INTERNAL_TOOLS
         private static int _dropdownMapOptionsVersion;
+#endif
         private static float _rowStride = RowHeight + 1f;
 
         private static GUIStyle _titleStyle;
@@ -107,22 +106,23 @@ namespace ASWDEBUG.UI
             Rect summary = new Rect(x, y, width, 24f);
             DrawPanel(summary, _panelInnerTexture, _borderTexture);
             string phase = PhaseName(SurvivalBotManager.Phase);
-            string players = SurvivalBotManager.Level33TestEnabled
-                ? LocalNavigationCombatTest.AliveBotCount + " / " + LocalNavigationCombatTest.BotCount
-                : SurvivalBotManager.InitialPlayers + " / " + SurvivalBotManager.RemainingPlayers;
-            string currentRole = SurvivalBotManager.MapBakeEnabled ? "不接管" :
-                SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled ||
-                SurvivalBotManager.Level33TestEnabled
-                    ? AutoBattleManager.CurrentRole
-                    : SurvivalCombatAdapter.CurrentRole;
+            string players = SurvivalBotManager.InitialPlayers + " / " + SurvivalBotManager.RemainingPlayers;
+#if SURVIVAL_INTERNAL_TOOLS
+            if (SurvivalBotManager.Level33TestEnabled)
+                players = LocalNavigationCombatTest.AliveBotCount + " / " + LocalNavigationCombatTest.BotCount;
+#endif
             GUI.Label(new Rect(summary.x + 7f, summary.y, summary.width * 0.62f, summary.height),
-                "阶段  " + phase + "  |  职业  " + currentRole, _secondaryLabelStyle);
+                "阶段  " + phase, _secondaryLabelStyle);
             GUI.Label(new Rect(summary.x + summary.width * 0.62f, summary.y, summary.width * 0.38f - 7f, summary.height),
                 "初始/存活  " + players, _secondaryLabelStyle);
             y += 29f;
 
+#if SURVIVAL_INTERNAL_TOOLS
             const float buttonGap = 4f;
             float modeButtonWidth = (width - buttonGap * 3f) / 4f;
+#else
+            float modeButtonWidth = width;
+#endif
             Rect runButton = new Rect(x, y, modeButtonWidth, 27f);
             string runText = SurvivalBotManager.Enabled ? "生存循环：开" : "生存循环：关";
             if (GUI.Button(runButton, runText, _buttonCenterStyle))
@@ -132,6 +132,7 @@ namespace ASWDEBUG.UI
             if (SurvivalBotManager.Enabled)
                 GUI.DrawTexture(new Rect(runButton.xMax - 5f, runButton.y + 3f, 3f, runButton.height - 6f), _accentTexture);
 
+#if SURVIVAL_INTERNAL_TOOLS
             Rect combatTestButton = new Rect(runButton.xMax + buttonGap, y, modeButtonWidth, 27f);
             string combatTestText = SurvivalBotManager.CombatTestEnabled ? "战斗测试：开" : "战斗测试：关";
             if (GUI.Button(combatTestButton, combatTestText, _buttonCenterStyle))
@@ -177,18 +178,18 @@ namespace ASWDEBUG.UI
             y += 32f;
 
             DrawMapBakeLaunchRow(ref y, x, width);
+#else
+            y += 33f;
+#endif
 
             float statusTop = _window.yMax - 53f;
             bool compactNavigation = _window.height < 470f;
             float navigationHeight = compactNavigation ? 52f : 112f;
             float navigationTop = statusTop - navigationHeight - 5f;
-            _rowStride = Mathf.Clamp((navigationTop - y - 2f) / 11f,
+            _rowStride = Mathf.Clamp((navigationTop - y - 2f) / 8f,
                 compactNavigation ? 13f : 17f, RowHeight + 1f);
 
-            DrawDropdownRow(ref y, "战术", DropdownId.Tactics, TacticsNames, SurvivalBotSettings.TacticsMode);
-            DrawDropdownRow(ref y, "职业策略", DropdownId.Role, RoleNames, SurvivalBotSettings.RoleStrategyEnabled ? 0 : 1);
             DrawDropdownRow(ref y, "敌人 ESP", DropdownId.EnemyEsp, EnabledNames, SurvivalBotSettings.EnemyEspEnabled ? 0 : 1);
-            DrawDropdownRow(ref y, "保命技能", DropdownId.Defense, DefenseNames, SurvivalBotSettings.DefenseMode);
             DrawDropdownRow(ref y, "匹配超时", DropdownId.MatchTimeout, MatchTimeoutNames, FindNearest(MatchTimeoutValues, SurvivalBotSettings.MatchTimeoutSeconds));
             DrawDropdownRow(ref y, "人数锁定", DropdownId.ParticipantCapture, ParticipantCaptureNames, FindNearest(ParticipantCaptureValues, SurvivalBotSettings.ParticipantCaptureSeconds));
             DrawDropdownRow(ref y, "躲避距离", DropdownId.Separation, SeparationNames, FindNearest(SeparationValues, SurvivalBotSettings.DesiredSeparation));
@@ -215,8 +216,12 @@ namespace ASWDEBUG.UI
         private static void DrawNavigationPanel(Rect panel, bool compact)
         {
             CompactRainRuntimeSnapshot compactSnapshot = CompactRainNavRuntime.GetSnapshot();
-            if (compactSnapshot.Requested || (SurvivalBotManager.Level33TestEnabled &&
-                string.Equals(compactSnapshot.MapName, "level33", System.StringComparison.OrdinalIgnoreCase)))
+            bool showCompact = compactSnapshot.Requested;
+#if SURVIVAL_INTERNAL_TOOLS
+            showCompact = showCompact || (SurvivalBotManager.Level33TestEnabled &&
+                string.Equals(compactSnapshot.MapName, "level33", System.StringComparison.OrdinalIgnoreCase));
+#endif
+            if (showCompact)
             {
                 DrawCompactNavigationPanel(panel, compact, compactSnapshot);
                 return;
@@ -233,7 +238,7 @@ namespace ASWDEBUG.UI
             string header = "导航  RAIN 专用 · " + NavigationStageName(snapshot) + "  " +
                 (activeProgress * 100f).ToString("0.0") + "%  |  " +
                 (string.IsNullOrEmpty(snapshot.MapName) ? "-" :
-                    MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName)) + "  #" + snapshot.Generation;
+                    DisplayMapName(snapshot.MapName)) + "  #" + snapshot.Generation;
             GUI.Label(new Rect(textX, panel.y + 1f, textWidth, 18f),
                 ClipToWidth(header, _secondaryLabelStyle, textWidth), _secondaryLabelStyle);
 
@@ -245,7 +250,7 @@ namespace ASWDEBUG.UI
 
             string cacheLine = "缓存  基础 " + CacheStateName(snapshot) + " " + FormatBytes(snapshot.CacheBytes) +
                 "  |  派生 " + DerivedCacheStateName(derived) + " " + FormatBytes(derived.CacheBytes) + "  |  " +
-                MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName) +
+                DisplayMapName(snapshot.MapName) +
                 "  |  内存 " + snapshot.CacheCount;
             if (compact)
             {
@@ -264,18 +269,21 @@ namespace ASWDEBUG.UI
             string boundsLine = "参数  范围 " + FormatBounds(snapshot.BoundsSize) + "  |  网格 " +
                 snapshot.CellSize.ToString("0.00") + " 米  |  Worker " + snapshot.WorkerCount +
                 "  |  " + (snapshot.Profile == "max_detail" ? "极限精度" : "运行精度");
+            string provider = SurvivalCombatAdapter.LastPathProvider;
+            string intent = SurvivalCombatAdapter.LastPathIntent;
+            string path = SurvivalCombatAdapter.LastPath;
+            bool showDerivedDetails = derivedActive;
+#if SURVIVAL_INTERNAL_TOOLS
             bool directCombatTest = SurvivalBotManager.CombatTestEnabled || SurvivalBotManager.RoomTestEnabled ||
                 SurvivalBotManager.Level33TestEnabled;
-            string provider = directCombatTest
-                ? AutoBattleManager.LastPathProvider
-                : SurvivalCombatAdapter.LastPathProvider;
-            string intent = directCombatTest
-                ? AutoBattleManager.State.ToString()
-                : SurvivalCombatAdapter.LastPathIntent;
-            string path = directCombatTest
-                ? AutoBattleManager.LastPath
-                : SurvivalCombatAdapter.LastPath;
-            bool showDerivedDetails = SurvivalBotManager.MapBakeEnabled || derivedActive;
+            if (directCombatTest)
+            {
+                provider = AutoBattleManager.LastPathProvider;
+                intent = AutoBattleManager.State.ToString();
+                path = AutoBattleManager.LastPath;
+            }
+            showDerivedDetails = SurvivalBotManager.MapBakeEnabled || derivedActive;
+#endif
             string pathLine = showDerivedDetails
                 ? "数据  表面 " + derived.SurfaceCount + "  |  分区 " + derived.ComponentCount +
                   "  |  边界/悬崖 " + derived.BoundaryCount
@@ -286,15 +294,18 @@ namespace ASWDEBUG.UI
                 "  |  分区 " + derived.ComponentCount + " 边界 " + derived.BoundaryCount +
                 " Jump " + derived.JumpLinkCount + " Drop " + derived.DropLinkCount +
                 " 安全点 " + derived.SafeSpawnCount;
+            string inactiveDetail = "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
+#if SURVIVAL_INTERNAL_TOOLS
+            if (SurvivalBotManager.Level33TestEnabled)
+                inactiveDetail = "测试  Bot " + LocalNavigationCombatTest.AliveBotCount + "/" +
+                    LocalNavigationCombatTest.BotCount + "  |  " + LocalNavigationCombatTest.StatusText;
+#endif
             string detailLine = showDerivedDetails
                 ? "链接  Jump " + derived.JumpLinkCount + "  |  Drop " + derived.DropLinkCount +
                   "  |  安全出生点 " + derived.SafeSpawnCount + "  |  " + derived.Detail
                 : derived.Stage == RuntimeRainDerivedStage.Ready
                 ? derivedLine
-                : SurvivalBotManager.Level33TestEnabled
-                    ? "测试  Bot " + LocalNavigationCombatTest.AliveBotCount + "/" +
-                      LocalNavigationCombatTest.BotCount + "  |  " + LocalNavigationCombatTest.StatusText
-                    : "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
+                : inactiveDetail;
 
             DrawClippedLine(panel.y + 27f, buildLine, textX, textWidth);
             DrawClippedLine(panel.y + 44f, boundsLine, textX, textWidth);
@@ -332,9 +343,20 @@ namespace ASWDEBUG.UI
             string metadata = "数据  分区 " + snapshot.ComponentCount + "  |  Link " +
                 snapshot.LinkCount + "  |  边界 " + snapshot.BoundaryCount +
                 "  |  安全点 " + snapshot.SafeSpawnCount;
-            string route = "路径  ASWNAV / " + AutoBattleManager.LastPathProvider +
+            string routeProvider = SurvivalCombatAdapter.LastPathProvider;
+            string routeIntent = SurvivalCombatAdapter.LastPathIntent;
+            string routeState = SurvivalCombatAdapter.LastPath;
+#if SURVIVAL_INTERNAL_TOOLS
+            if (SurvivalBotManager.Level33TestEnabled)
+            {
+                routeProvider = AutoBattleManager.LastPathProvider;
+                routeIntent = AutoBattleManager.State.ToString();
+                routeState = AutoBattleManager.LastPath;
+            }
+#endif
+            string route = "路径  ASWNAV / " + routeProvider +
                 "  |  导航点 " + NavigationPathVisualizer.VisiblePointCount +
-                "  |  " + AutoBattleManager.State + "  |  " + AutoBattleManager.LastPath;
+                "  |  " + routeIntent + "  |  " + routeState;
             string detail = "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
             DrawClippedLine(panel.y + 27f, geometry, textX, textWidth);
             DrawClippedLine(panel.y + 44f, memory, textX, textWidth);
@@ -375,6 +397,7 @@ namespace ASWDEBUG.UI
             y += _rowStride;
         }
 
+#if SURVIVAL_INTERNAL_TOOLS
         private static void DrawMapBakeLaunchRow(ref float y, float x, float width)
         {
             string[] maps = MapBakeSceneLoader.AvailableMapDisplayNames;
@@ -406,16 +429,19 @@ namespace ASWDEBUG.UI
                 SurvivalBotManager.RequestDirectMapBake("ui");
             y += 31f;
         }
+#endif
 
         private static void DrawDropdownOverlay()
         {
             if (_openDropdown == DropdownId.None || _dropdownOptions == null || _dropdownOptions.Length == 0) return;
+#if SURVIVAL_INTERNAL_TOOLS
             if (_openDropdown == DropdownId.MapBakeTarget &&
                 _dropdownMapOptionsVersion != MapBakeSceneLoader.MapOptionsVersion)
             {
                 _openDropdown = DropdownId.None;
                 return;
             }
+#endif
 
             float rowHeight = 24f;
             int maxVisible = Mathf.Max(1, Mathf.FloorToInt((Screen.height - 24f) / rowHeight));
@@ -473,10 +499,7 @@ namespace ASWDEBUG.UI
 
         private static void ApplyDropdownSelection(DropdownId id, int selected)
         {
-            if (id == DropdownId.Tactics) SurvivalBotSettings.SetTacticsMode(selected);
-            else if (id == DropdownId.Role) SurvivalBotSettings.SetRoleStrategyEnabled(selected == 0);
-            else if (id == DropdownId.EnemyEsp) SurvivalBotSettings.SetEnemyEspEnabled(selected == 0);
-            else if (id == DropdownId.Defense) SurvivalBotSettings.SetDefenseMode(selected);
+            if (id == DropdownId.EnemyEsp) SurvivalBotSettings.SetEnemyEspEnabled(selected == 0);
             else if (id == DropdownId.MatchTimeout) SurvivalBotSettings.SetMatchTimeoutSeconds(MatchTimeoutValues[Clamp(selected, 0, MatchTimeoutValues.Length - 1)]);
             else if (id == DropdownId.ParticipantCapture) SurvivalBotSettings.SetParticipantCaptureSeconds(ParticipantCaptureValues[Clamp(selected, 0, ParticipantCaptureValues.Length - 1)]);
             else if (id == DropdownId.Separation) SurvivalBotSettings.SetDesiredSeparation(SeparationValues[Clamp(selected, 0, SeparationValues.Length - 1)]);
@@ -484,7 +507,9 @@ namespace ASWDEBUG.UI
             else if (id == DropdownId.SafePointRefresh) SurvivalBotSettings.SetSafePointRefreshSeconds(SafePointRefreshValues[Clamp(selected, 0, SafePointRefreshValues.Length - 1)]);
             else if (id == DropdownId.SuicideFallback) SurvivalBotSettings.SetSuicideFallbackSeconds(SuicideFallbackValues[Clamp(selected, 0, SuicideFallbackValues.Length - 1)]);
             else if (id == DropdownId.GmStopRounds) SurvivalBotSettings.SetGmStopRounds(Clamp(selected, 0, 2) + 1);
+#if SURVIVAL_INTERNAL_TOOLS
             else if (id == DropdownId.MapBakeTarget) MapBakeSceneLoader.SelectMap(selected);
+#endif
         }
 
         private static void HandleVisibilityHotkey()
@@ -662,6 +687,15 @@ namespace ASWDEBUG.UI
             return "未启用";
         }
 
+        private static string DisplayMapName(string mapName)
+        {
+#if SURVIVAL_INTERNAL_TOOLS
+            return MapBakeSceneLoader.DisplayNameForRuntimeMap(mapName);
+#else
+            return string.IsNullOrEmpty(mapName) ? "-" : mapName;
+#endif
+        }
+
         private static string DerivedStageName(RuntimeRainDerivedStage stage)
         {
             if (stage == RuntimeRainDerivedStage.ScanGraph) return "扫描图";
@@ -732,10 +766,12 @@ namespace ASWDEBUG.UI
             if (phase == SurvivalBotPhase.Suicide) return "结束对局";
             if (phase == SurvivalBotPhase.Balance) return "结算";
             if (phase == SurvivalBotPhase.GmExit) return "GM 退出";
+#if SURVIVAL_INTERNAL_TOOLS
             if (phase == SurvivalBotPhase.CombatTest) return "战斗测试";
             if (phase == SurvivalBotPhase.RoomTest) return "开房测试";
             if (phase == SurvivalBotPhase.Level33Test) return "level33 寻路";
             if (phase == SurvivalBotPhase.MapBake) return "地图建图";
+#endif
             return "已停止";
         }
     }

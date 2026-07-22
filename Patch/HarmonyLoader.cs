@@ -89,8 +89,10 @@ namespace ASWDEBUG.Patch
             PatchByName(harmony, typeof(Level), "OnExit", 0, "LevelExitPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseCharacterInfo", 1, "CharacterInfoPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "ParseGameEnd", 1, "GameEndPrefix", null);
+#if SURVIVAL_INTERNAL_TOOLS
             PatchByName(harmony, typeof(ChannelConnection), "SyncPlayerData", 1, "PlayerSyncPrefix", null);
             PatchByName(harmony, typeof(ChannelConnection), "Shoot", 6, "LocalTestShotPrefix", null);
+#endif
             PatchByName(harmony, typeof(LobbyConnection), "RequestMatching", 2, "MatchingRequestedPrefix", null);
             PatchByName(harmony, typeof(LobbyConnection), "ResponseMatching", 0, null, "MatchingResponsePostfix");
             PatchByName(harmony, typeof(LobbyConnection), "ResponseCancelMatching", 0, null, "MatchingCancelResponsePostfix");
@@ -261,8 +263,14 @@ namespace ASWDEBUG.Patch
         private static void LevelLoadMapPostfix(string name, bool __result, bool __state)
         {
             if (!__state) return;
-            if (__result) MapBakeSceneLoader.NotifyResolvedScene(name);
-            else AutoBattleRoutePlanner.DeactivateNavigation("load_map_rejected");
+            if (!__result)
+            {
+                AutoBattleRoutePlanner.DeactivateNavigation("load_map_rejected");
+                return;
+            }
+#if SURVIVAL_INTERNAL_TOOLS
+            MapBakeSceneLoader.NotifyResolvedScene(name);
+#endif
         }
 
         private static void LevelExitPrefix()
@@ -279,6 +287,7 @@ namespace ASWDEBUG.Patch
             {
                 FileLogger.Log("PATCH", "level_exit_survival_reset_ex=" + ex.GetType().Name + ":" + ex.Message);
             }
+#if SURVIVAL_INTERNAL_TOOLS
             try { LocalNavigationCombatTest.NotifyLevelExit(); }
             catch (Exception ex)
             {
@@ -289,8 +298,10 @@ namespace ASWDEBUG.Patch
             {
                 FileLogger.Log("PATCH", "level_exit_map_loader_ex=" + ex.GetType().Name + ":" + ex.Message);
             }
+#endif
         }
 
+#if SURVIVAL_INTERNAL_TOOLS
         private static bool PlayerSyncPrefix()
         {
             return !MapBakeSceneLoader.DirectSceneActive;
@@ -307,6 +318,7 @@ namespace ASWDEBUG.Patch
             // The direct test is network-isolated: misses stay misses, but no shot is forwarded.
             return false;
         }
+#endif
 
         private static void CharacterInfoPrefix(NetworkStream reader)
         {

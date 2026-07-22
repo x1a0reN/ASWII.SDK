@@ -196,8 +196,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             string normalized = (mapName ?? string.Empty).Trim().ToLowerInvariant();
             bool original = loadNavmesh;
             bool declared = ManifestDeclaresNavMesh(normalized);
-            bool bakeMode = SurvivalBotManager.MapBakeEnabled;
+            bool bakeMode = false;
+#if SURVIVAL_INTERNAL_TOOLS
+            bakeMode = SurvivalBotManager.MapBakeEnabled;
             bool level33Test = SurvivalBotManager.Level33TestEnabled;
+#endif
             bool residentLevel33 = string.Equals(normalized, "level33", StringComparison.OrdinalIgnoreCase);
             bool compactLevel33 = residentLevel33 && !bakeMode;
 
@@ -206,8 +209,14 @@ namespace ASWDEBUG.Cheats.AutoBattle
             else if (declared && !loadNavmesh)
                 loadNavmesh = true;
 
+#if SURVIVAL_RELEASE_A
+            // ReleaseA consumes prebuilt compact/native navigation only; it must never start MapBake.
+            bool runtimeRainRequired = false;
+            bool highDetailRain = false;
+#else
             bool runtimeRainRequired = !compactLevel33 && (bakeMode || level33Test || !declared);
             bool highDetailRain = runtimeRainRequired;
+#endif
             bool compactReady = false;
             _compactNavigationRequested = compactLevel33;
             if (compactLevel33)
@@ -240,6 +249,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 (compactLevel33 ? " detail=" + CompactRainNavRuntime.Detail : string.Empty));
         }
 
+#if SURVIVAL_INTERNAL_TOOLS
         internal static void EnsureMapBake(Level level)
         {
             if (level == null || string.IsNullOrEmpty(level.map_name)) return;
@@ -300,6 +310,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 "map=" + SafeMap(normalized) + " provider=runtime profile=" +
                 (highDetail ? "max_detail" : "long_run_0.20") + " source=map_bake");
         }
+#endif
 
         private static bool ManifestDeclaresNavMesh(string mapName)
         {

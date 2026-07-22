@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using ASWDEBUG.Cheats.Player;
-using ASWDEBUG.Cheats.SurvivalBot;
 using ASWDEBUG.Logger;
 using UnityEngine;
 
@@ -21,9 +20,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _nextJumpAt;
         private static float _obstacleJumpForwardUntil;
         private static float _nextFireAt;
-        private static float _nextSkillAt;
         private static float _nextWeaponSwitchAt;
-        private static float _nextRoleSpecialAt;
         private static float _nextScopeAt;
         private static float _nextCombatTraceAt;
         private static Vector3 _lastPathProgressPosition;
@@ -74,7 +71,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public static string LastPathProvider = "-";
         public static string LastPathIntent = "-";
         public static string LastAction = "-";
-        public static string CurrentRole = "通用";
         public static float LastActualPathProgressAt
         {
             get { return _lastActualPathProgressAt; }
@@ -107,9 +103,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _nextJumpAt = 0f;
             _obstacleJumpForwardUntil = 0f;
             _nextFireAt = 0f;
-            _nextSkillAt = 0f;
             _nextWeaponSwitchAt = 0f;
-            _nextRoleSpecialAt = 0f;
             _nextScopeAt = 0f;
             _nextCombatTraceAt = 0f;
             _lastPathProgressPosition = Vector3.zero;
@@ -164,8 +158,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public static void MarkSurvivalActivity(Character player)
         {
             AutoBattleInput.MarkActivity(0.35f);
-            CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
-            TryUseRoleMaintenance(player);
             try { if (player != null) player.ResetIdleMenu(); } catch { }
         }
 
@@ -592,39 +584,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _pendingSideUntil = Time.time + 0.65f;
         }
 
-        public static bool TryUseSurvivalDefense(Character player, int defenseMode)
-        {
-            if (player == null || Time.time < _nextSkillAt) return false;
-            CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
-            if (defenseMode == 3) return false;
-
-            if (defenseMode == 2)
-            {
-                if (TryUseSkill(player, 1, "shield")) return true;
-                if (TryUseHidden(player)) return true;
-            }
-            else
-            {
-                if (TryUseHidden(player)) return true;
-                if (TryUseSkill(player, 1, "shield")) return true;
-            }
-
-            if (CurrentRole == "医疗/守护")
-            {
-                float hp = HealthPercent(player);
-                if (hp <= 58f && TryUseSkill(player, 0, "medic_heal_self")) return true;
-                if (hp <= 72f && TryUseSkill(player, 14, "medic_capsule_self")) return true;
-            }
-            else if (CurrentRole == "重装")
-            {
-                if (TryUseSkill(player, 4, "heavy_gallop_contact")) return true;
-                if (HealthPercent(player) <= 70f && TryUseSkill(player, 7, "heavy_tenacity_lowhp")) return true;
-            }
-
-            if (TryUseSkill(player, 4, "displace")) return true;
-            return TryUseSkill(player, 11, "displace");
-        }
-
         public static bool SurvivalHasStrictFireLine(Character player, Character target, Camera camera)
         {
             Vector3 aimPoint;
@@ -655,8 +614,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 return actualShot;
             }
 
-            CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
-            EnsureRoleWeapon(player, distance);
+            EnsureCombatWeapon(player, distance);
             if (Time.time < _nextWeaponSwitchAt)
             {
                 LastAction = "role_weapon_switch_wait";
@@ -711,8 +669,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 LastAction = "emergency_hidden_out_of_range";
                 return actualShot;
             }
-            CurrentRole = SurvivalBotSettings.RoleStrategyEnabled ? DetectRole(player) : "通用";
-
             Vector3 aimPoint;
             strictLine = TryGetEmergencyAimPoint(player, target, camera, out aimPoint);
             if (!strictLine)
@@ -778,7 +734,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             catch { }
 
             string targetId = target == null ? "-" : target.uid.ToString();
-            FileLogger.Log("AUTO-BATTLE][COMBAT", "role=" + CurrentRole + " target=" + targetId +
+            FileLogger.Log("AUTO-BATTLE][COMBAT", "target=" + targetId +
                 " dist=" + distance.ToString("0.0") + " los=" + strictLine + " fired=" + fired +
                 " weapon=" + weapon + " scope=" + scope + " ready=" + readiness +
                 " action=" + LastAction + " path=" + LastPath);
@@ -1004,59 +960,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return capabilities;
         }
 
-        private static bool TryUseSkill(Character player, int subType, string reason)
-        {
-            try
-            {
-                if (player.character_info == null || player.character_info.slots_info == null) return false;
-                ObjectBaseInfo[] slots = player.character_info.slots_info.object_info;
-                if (slots == null) return false;
-                for (int i = 0; i < slots.Length; i++)
-                {
-                    SkillInfo skill = slots[i] as SkillInfo;
-                    if (skill == null || skill.sub_type != (byte)subType || !skill.cool_down_ready) continue;
-                    if (!skill.CanAction() || !skill.Action()) continue;
-                    skill.cool_down_ready = false;
-                    _nextSkillAt = Time.time + 0.6f;
-                    LastAction = reason;
-                    FileLogger.Log("SURVIVAL", "defense skill=" + reason + " slot=" + skill.slot);
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                FileLogger.Log("SURVIVAL", "skill failed: " + ex.Message);
-            }
-            return false;
-        }
-
-        private static bool TryUseHidden(Character player)
-        {
-            try
-            {
-                return player != null && !player.GetHidden() && TryUseSkill(player, 2, "hidden");
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static void TryUseRoleMaintenance(Character player)
-        {
-            if (player == null || Time.time < _nextSkillAt || !SurvivalBotSettings.RoleStrategyEnabled) return;
-            float hp = HealthPercent(player);
-            if (CurrentRole == "医疗/守护")
-            {
-                if (hp <= 58f && TryUseSkill(player, 0, "medic_heal_self")) return;
-                if (hp <= 72f) TryUseSkill(player, 14, "medic_capsule_self");
-            }
-            else if (CurrentRole == "重装" && hp <= 70f)
-            {
-                TryUseSkill(player, 7, "heavy_tenacity_lowhp");
-            }
-        }
-
         private static bool TryGetStrictAimPoint(Character player, Character target, Camera camera, out Vector3 aimPoint)
         {
             return TryGetAimPoint(player, target, camera, false, out aimPoint);
@@ -1245,8 +1148,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _fireRequestStartedAt = 0f;
                 _fireRequestFirstAt = 0f;
                 WeaponType firedType = GetWeaponType(weapon);
-                if (firedType == WeaponType.kWeaponTypeRPG || firedType == WeaponType.kWeaponTypeBow)
-                    _nextRoleSpecialAt = Time.time + 2.4f;
                 if (_temporarilyBlockedWeapon == weapon)
                 {
                     _temporarilyBlockedWeapon = null;
@@ -1369,17 +1270,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                          type == WeaponType.kWeaponTypeDualWeapon) score += 135f;
                 else if (type == WeaponType.kWeaponTypePistol) score += 75f;
                 else if (type == WeaponType.kWeaponTypeSniperGun) score += 320f;
-                else if (type == WeaponType.kWeaponTypeRPG) score += CurrentRole == "重装" ? 175f : 95f;
+                else if (type == WeaponType.kWeaponTypeRPG) score += 95f;
                 else if (type == WeaponType.kWeaponTypeBow) score += distance >= 10f ? 35f : -100f;
-
-                if (CurrentRole == "重装" && type == WeaponType.kWeaponTypeMachineGun) score += 35f;
-                else if (CurrentRole == "医疗/守护" &&
-                         (type == WeaponType.kWeaponTypeDualWeapon || type == WeaponType.kWeaponTypePistol)) score += 25f;
-                else if (CurrentRole == "突击/狙击")
-                {
-                    if (type == WeaponType.kWeaponTypeSniperGun) score += 80f;
-                    if (type == WeaponType.kWeaponTypeShotGun || type == WeaponType.kWeaponTypeSubMachineGun) score += 25f;
-                }
 
                 if (score <= bestScore) continue;
                 bestScore = score;
@@ -1396,29 +1288,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static void EnsureRoleWeapon(Character player, float distance)
+        private static void EnsureCombatWeapon(Character player, float distance)
         {
             if (player == null || player.weaponlist == null) return;
             if (Time.time < _nextWeaponSwitchAt) return;
-
-            WeaponType preferred = WeaponType.kWeaponTypeNone;
-            if (CurrentRole == "重装" && distance >= 6.5f && Time.time >= _nextRoleSpecialAt)
-                preferred = WeaponType.kWeaponTypeRPG;
-            else if (CurrentRole == "医疗/守护" && distance >= 4f && Time.time >= _nextRoleSpecialAt)
-                preferred = WeaponType.kWeaponTypeBow;
-            else if (CurrentRole == "突击/狙击")
-                preferred = WeaponType.kWeaponTypeSniperGun;
-
-            if (preferred != WeaponType.kWeaponTypeNone)
-            {
-                WeaponBase preferredWeapon = FindOperationalWeapon(player, preferred);
-                if (preferredWeapon != null)
-                {
-                    if (preferredWeapon != player.mWeapon) SwitchWeapon(player, preferredWeapon, "role_preferred_switch");
-                    return;
-                }
-            }
-            if (IsWeaponSuitable(player.mWeapon, WeaponType.kWeaponTypeNone, distance)) return;
+            if (IsWeaponSuitable(player.mWeapon, distance)) return;
 
             WeaponBase best = null;
             float bestScore = float.MinValue;
@@ -1428,9 +1302,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) continue;
                 WeaponType type = GetWeaponType(weapon);
                 float score = Mathf.Min(30f, weapon.clip);
-                if (preferred != WeaponType.kWeaponTypeNone && type == preferred) score += 140f;
-                if ((type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) &&
-                    Time.time < _nextRoleSpecialAt) score -= 120f;
                 if (type == WeaponType.kWeaponTypeSniperGun) score += distance >= 12f ? 60f : 10f;
                 else if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
                          type == WeaponType.kWeaponTypeDualWeapon) score += 45f;
@@ -1446,7 +1317,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (best != null && best != player.mWeapon)
             {
-                SwitchWeapon(player, best, "role_weapon_switch");
+                SwitchWeapon(player, best, "combat_weapon_switch");
             }
             else if (player.mWeapon != null && player.mWeapon.clip <= 0 && !player.mWeapon.reloading)
             {
@@ -1567,15 +1438,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
         }
 
-        private static bool IsWeaponSuitable(WeaponBase weapon, WeaponType preferred, float distance)
+        private static bool IsWeaponSuitable(WeaponBase weapon, float distance)
         {
             if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) return false;
             WeaponType type = GetWeaponType(weapon);
-            if (preferred != WeaponType.kWeaponTypeNone) return type == preferred;
             if (type == WeaponType.kWeaponTypeShotGun && distance > 12f) return false;
             if (type == WeaponType.kWeaponTypeSniperGun && distance < 5f) return false;
-            if ((type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) &&
-                Time.time < _nextRoleSpecialAt) return false;
+            if (type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) return false;
             return true;
         }
 
@@ -1587,66 +1456,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 try { return weapon == null || weapon.info == null ? WeaponType.kWeaponTypeNone : (WeaponType)weapon.info.sub_type; }
                 catch { return WeaponType.kWeaponTypeNone; }
             }
-        }
-
-        private static string DetectRole(Character player)
-        {
-            try
-            {
-                if (player != null && player.character_info != null)
-                {
-                    if (player.character_info.career == CareerType.kCareerGunner) return "重装";
-                    if (player.character_info.career == CareerType.kCareerCommando) return "突击/狙击";
-                    if (player.character_info.career == CareerType.kCareerSolider) return "医疗/守护";
-                }
-            }
-            catch { }
-            if (HasWeapon(player, WeaponType.kWeaponTypeRPG)) return "重装";
-            if (HasWeapon(player, WeaponType.kWeaponTypeBow) || HasSkill(player, 0) || HasSkill(player, 9) || HasSkill(player, 14))
-                return "医疗/守护";
-            if (HasWeapon(player, WeaponType.kWeaponTypeSniperGun)) return "突击/狙击";
-            return "通用";
-        }
-
-        private static bool HasWeapon(Character player, WeaponType type)
-        {
-            try
-            {
-                if (player == null || player.weaponlist == null) return false;
-                for (int i = 0; i < player.weaponlist.Count; i++)
-                    if (GetWeaponType(player.weaponlist[i]) == type) return true;
-            }
-            catch { }
-            return false;
-        }
-
-        private static bool HasSkill(Character player, int subType)
-        {
-            try
-            {
-                if (player == null || player.character_info == null || player.character_info.slots_info == null) return false;
-                ObjectBaseInfo[] slots = player.character_info.slots_info.object_info;
-                if (slots == null) return false;
-                for (int i = 0; i < slots.Length; i++)
-                {
-                    SkillInfo skill = slots[i] as SkillInfo;
-                    if (skill != null && skill.sub_type == (byte)subType) return true;
-                }
-            }
-            catch { }
-            return false;
-        }
-
-        private static float HealthPercent(Character player)
-        {
-            try
-            {
-                int max = player == null ? 0 : player.max_health;
-                if (player != null && player.character_info != null && player.character_info.max_health > max)
-                    max = player.character_info.max_health;
-                return max <= 0 ? 100f : Mathf.Clamp((float)player.hp * 100f / max, 0f, 100f);
-            }
-            catch { return 100f; }
         }
 
         private static float XzDistance(Vector3 a, Vector3 b)

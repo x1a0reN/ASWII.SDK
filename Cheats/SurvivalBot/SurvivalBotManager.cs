@@ -20,10 +20,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         Suicide,
         Balance,
         GmExit,
+#if SURVIVAL_INTERNAL_TOOLS
         CombatTest,
         RoomTest,
         Level33Test,
         MapBake,
+#endif
         Stopped
     }
 
@@ -129,6 +131,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static string _lastLobbyTrace = string.Empty;
 
         public static bool Enabled { get; private set; }
+#if SURVIVAL_INTERNAL_TOOLS
         public static bool CombatTestEnabled { get; private set; }
         public static bool RoomTestEnabled { get; private set; }
         public static bool MapBakeEnabled { get; private set; }
@@ -136,6 +139,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             get { return LocalNavigationCombatTest.Enabled; }
         }
+#endif
         public static SurvivalBotPhase Phase = SurvivalBotPhase.Lobby;
         public static string StatusText = "等待初始化";
         public static int InitialPlayers { get; private set; }
@@ -150,9 +154,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             SurvivalBotSettings.EnsureLoaded();
             Enabled = false;
+#if SURVIVAL_INTERNAL_TOOLS
             CombatTestEnabled = false;
             RoomTestEnabled = false;
             MapBakeEnabled = false;
+#endif
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "等待手动启动";
         }
@@ -163,6 +169,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (TickRainLifecycleGate()) return;
 
+#if SURVIVAL_INTERNAL_TOOLS
             // The direct level33 test is fully local and intentionally bypasses proxy/channel state checks.
             if (Level33TestEnabled)
             {
@@ -181,18 +188,22 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 TickMapBake(level, player);
                 return;
             }
+#endif
 
             if (NetworkRouteManager.ProxyRequired && NetworkRouteManager.HasError)
             {
                 if (Enabled) Stop("network_proxy_failed");
+#if SURVIVAL_INTERNAL_TOOLS
                 if (CombatTestEnabled) SetCombatTestEnabled(false, "network_proxy_failed");
                 if (RoomTestEnabled) SetRoomTestEnabled(false, "network_proxy_failed");
+#endif
                 return;
             }
 
             if (Input.GetKeyDown(KeyCode.F8))
                 SetEnabled(!Enabled, "hotkey");
 
+#if SURVIVAL_INTERNAL_TOOLS
             if (CombatTestEnabled)
             {
                 TickCombatTest(GameApp.Instance, level, player, camera);
@@ -203,6 +214,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 TickRoomTest(GameApp.Instance, level, player, camera);
                 return;
             }
+#endif
             if (!Enabled)
             {
                 AutoBattleInput.ClearAll();
@@ -244,7 +256,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             AutoBattleInput.ClearAll();
             SurvivalCombatAdapter.ResetSurvivalRuntime("level_exit");
+#if SURVIVAL_INTERNAL_TOOLS
             AutoBattleManager.NotifyLevelExit();
+#endif
             Enemies.Clear();
             EnemyTracks.Clear();
             CliffBoundaryCandidates.Clear();
@@ -275,7 +289,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
                 if (manager.CurStateType == GameStateType.Lobby)
                 {
-                    bool stableLobby = !MapBakeSceneLoader.DirectSceneActive && UILobby.instance != null;
+                    bool stableLobby = UILobby.instance != null;
+#if SURVIVAL_INTERNAL_TOOLS
+                    stableLobby = stableLobby && !MapBakeSceneLoader.DirectSceneActive;
+#endif
                     if (!stableLobby) return false;
                     Level level = ASSingleton<Level>.Instance;
                     return level == null || level.state == Level.State.kNone;
@@ -284,8 +301,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 // A failed or superseded graph may be collected inside the current scene once
                 // navigation is detached, the state is loaded and the level is fully ready.
                 Level activeLevel = ASSingleton<Level>.Instance;
+#if SURVIVAL_INTERNAL_TOOLS
                 return !MapBakeSceneLoader.IsTransitioning && activeLevel != null &&
                     activeLevel.state == Level.State.kReady;
+#else
+                return activeLevel != null && activeLevel.state == Level.State.kReady;
+#endif
             }
             catch
             {
@@ -302,10 +323,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             if (Enabled) return;
+#if SURVIVAL_INTERNAL_TOOLS
             if (CombatTestEnabled) DisableCombatTest("survival_loop_enabled");
             if (RoomTestEnabled) DisableRoomTest("survival_loop_enabled");
             if (MapBakeEnabled) DisableMapBake("survival_loop_enabled");
             if (Level33TestEnabled) LocalNavigationCombatTest.Stop("survival_loop_enabled", true);
+#endif
             Enabled = true;
             _consecutiveGmRounds = 0;
             _pendingGmUid = 0;
@@ -323,6 +346,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("SURVIVAL", "enabled reason=" + reason);
         }
 
+#if SURVIVAL_INTERNAL_TOOLS
         public static void SetCombatTestEnabled(bool enabled, string reason)
         {
             if (!enabled)
@@ -444,21 +468,30 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             StatusText = detail;
             FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "enabled reason=" + reason);
         }
+#endif
 
         public static void Stop(string reason)
         {
+#if SURVIVAL_INTERNAL_TOOLS
             if (!Enabled && !CombatTestEnabled && !RoomTestEnabled && !MapBakeEnabled && !Level33TestEnabled &&
                 Phase == SurvivalBotPhase.Stopped) return;
+#else
+            if (!Enabled && Phase == SurvivalBotPhase.Stopped) return;
+#endif
             Enabled = false;
+#if SURVIVAL_INTERNAL_TOOLS
             CombatTestEnabled = false;
             RoomTestEnabled = false;
             MapBakeEnabled = false;
             if (Level33TestEnabled) LocalNavigationCombatTest.Stop("manager_stop:" + reason, true);
             MapBakeSceneLoader.CancelPending("stop:" + reason);
+#endif
             Phase = SurvivalBotPhase.Stopped;
             StatusText = "已停止: " + reason;
             AutoBattleInput.ClearAll();
+#if SURVIVAL_INTERNAL_TOOLS
             AutoBattleManager.SetEnabled(false, reason);
+#endif
             SurvivalCombatAdapter.ResetSurvivalRuntime(reason);
             CancelActiveSession();
             _roundActive = false;
@@ -469,6 +502,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             FileLogger.Log("SURVIVAL", StatusText);
         }
 
+#if SURVIVAL_INTERNAL_TOOLS
         private static void DisableCombatTest(string reason)
         {
             if (!CombatTestEnabled) return;
@@ -542,6 +576,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 FileLogger.Log("MATCH", "combat test matching cancel failed: " + ex.Message);
             }
         }
+#endif
 
         public static void NotifyRemoteGmCandidate(byte uid, byte team)
         {
@@ -726,6 +761,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _nextMatchAt = Time.time + (_awaitingReward ? 12f : 3f);
         }
 
+#if SURVIVAL_INTERNAL_TOOLS
         private static void TickCombatTest(GameApp app, Level level, Character player, Camera camera)
         {
             Phase = SurvivalBotPhase.CombatTest;
@@ -895,6 +931,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (stage == RuntimeRainDerivedStage.Loading) return "加载缓存";
             return stage.ToString();
         }
+#endif
 
         private static void TickRound(GameApp app, Level level, Character player, Camera camera)
         {
@@ -1057,7 +1094,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 SurvivalCombatAdapter.CancelSurvivalAttack();
                 if (distance > 6f) SurvivalCombatAdapter.CloseSurvivalScope(player);
-                SurvivalCombatAdapter.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
                 MoveEmergency(player, _emergencyTarget, distance);
                 StatusText = "近敌反击 | 目标短暂遮挡 | 距离 " + distance.ToString("0.0");
                 return true;
@@ -1068,7 +1104,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 SurvivalCombatAdapter.CancelSurvivalAttack();
                 SurvivalCombatAdapter.CloseSurvivalScope(player);
-                SurvivalCombatAdapter.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
                 MoveEmergency(player, _emergencyTarget, distance);
                 StatusText = invincible
                     ? "近敌威胁 | 目标无敌，优先脱离"
@@ -1147,11 +1182,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (camera != null && move.sqrMagnitude > 0.01f)
                 SurvivalCombatAdapter.LookSurvival(player, camera, player.transform.position + move * 8f + Vector3.up);
-
-            if (exposure > 0)
-            {
-                SurvivalCombatAdapter.TryUseSurvivalDefense(player, SurvivalBotSettings.DefenseMode);
-            }
 
             StatusText = "躲避模式 | 初始 " + Math.Max(InitialPlayers, ParticipantIds.Count) +
                 " | 存活 " + RemainingPlayers + " | 暴露 " + exposure +
