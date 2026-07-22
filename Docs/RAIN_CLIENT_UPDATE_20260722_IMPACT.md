@@ -39,6 +39,13 @@ C:\Users\x1a0reN\AppData\LocalLow\____________II\Managed_Dump\BATCH_20260722_153
   STRUCTURED_RAIN__02fb7e0d-e39e-4135-ac79-ad06bab671f9\RAIN.deobf.dll
 ```
 
+最终完整离线还原镜像（二次验收基线）：
+
+```text
+C:\Users\x1a0reN\AppData\LocalLow\____________II\Managed_Dump\
+  OFFLINE_FULL_20260722_173157\FULL_MANAGED\RAIN.dll
+```
+
 | 项目 | 旧版 | 新版运行时镜像 |
 |---|---|---|
 | Assembly | `RAIN, Version=2.0.0.0` | 相同 |
@@ -63,10 +70,24 @@ B5A3A43934646EBD977E891B506B36C2DE85F1F82DFE20F1B676A50DDCBB886B
 
 新版 RAIN.deobf.dll
 DB2549C2C7678FDE15C0C7FA41CB33DA871D3E99F2B8787234E62066E47D3239
+
+最终 FULL_MANAGED RAIN.dll
+5A4D071B4A30B569041C24B682F5388277FF806173212A84C54F3DCE4694308F
 ```
 
 相同 MVID 与完全相同的 API 集合说明没有证据表明 RAIN 业务版本被替换；文件哈希和大小
 变化来自外层加密、保护标记及重建输出格式，不能单独解释为寻路算法变化。
+
+对最终 `FULL_MANAGED` 文件再次使用 Mono.Cecil 逐条规范化比较后，程序集版本、MVID、
+210 个类型、2308 个方法、984 个字段、589 个属性及全部 4091 条签名仍与旧版完全相同，
+新增 / 删除均为 `0 / 0`。两侧规范化 API 集合 SHA-256 均为：
+
+```text
+BB76BC322E1FFA5E30DC2FA1A14228A723D5BCB2388BFC9D445F9901A9F6DF0F
+```
+
+最终还原文件中的 `ImplAttributes & 0x8000` 已恢复为 0；运行时镜像中的 1172 个保护标记
+属于保护器载荷，不是 RAIN API 或业务版本变化。
 
 ## 3. 对 SurvivalBot 各路径的影响
 
@@ -102,11 +123,21 @@ DB2549C2C7678FDE15C0C7FA41CB33DA871D3E99F2B8787234E62066E47D3239
 的 `ResetDetectionState()`，采样范围扩大。这影响主分支瞄准检测处理，不影响 Compact
 RAIN 数据格式或寻路算法。
 
-## 5. 后续验收
+## 5. 验收状态
 
-1. 使用主分支最终安全构建正常启动游戏，确认一次性批量 dump 开关保持关闭。
-2. 在 SurvivalBot 分支执行不部署构建，确认更新后的 `Assembly-CSharp.deobf.dll` 编译兼容。
-3. 实机进入 `level33`，日志确认 `provider=aswnav_0_10`、`loadCount=1`、`activeQueries=0`
+已完成：
+
+1. 主分支检测链适配已构建、部署并推送，提交为 `2c4f27e`；一次性批量 dump 开关保持关闭。
+2. SurvivalBot `Auction` 构建通过，确认最新 `Assembly-CSharp.deobf.dll` 编译兼容。
+3. 对现有 `level33.aswnav` 执行 `--verify`、`--load`、`--selftest`、`--pathtest` 和
+   `--stress`：文件 SHA-256 保持
+   `99FCF27A8640E13BD3270A8D2C46ABCD3CF48F9A4136ADBF2217C1F1EF2D7E4E`，1000 次生命周期
+   压测为 `mismatches=0`、`cancelled=20`、`dataset_loads=1`、`singleton_reuses=1000`，
+   没有持续托管堆或 Private Bytes 增长。
+
+仍需实机完成：
+
+1. 进入 `level33`，日志确认 `provider=aswnav_0_10`、`loadCount=1`、`activeQueries=0`
    能在退场后成立。
-4. 完成 20 次进退场、50 局与 24/72 小时内存曲线验收。
-5. 若使用 MapBake/诊断路径，单独执行一次 smoke test；正式长期运行继续保持关闭。
+2. 完成 20 次进退场、50 局与 24/72 小时内存曲线验收。
+3. 若使用 MapBake/诊断路径，单独执行一次 smoke test；正式长期运行继续保持关闭。
