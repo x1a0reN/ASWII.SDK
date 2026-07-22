@@ -15,6 +15,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static readonly List<bool> JumpFlags = new List<bool>(48);
         private static int _pathIndex;
         private static Vector3 _destination;
+        private static Vector3 _pathStartPosition;
         private static bool _hasDestination;
         private static float _nextRepath;
         private static float _nextJumpAt;
@@ -41,6 +42,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static int _recoverySideSign = 1;
         private static float _recoverySideUntil;
         private static Vector3 _wallRecoveryDirection;
+        private static float _wallRecoveryUntil;
         private static int _pendingSideSign = 1;
         private static float _pendingSideUntil;
         private static float _pendingLocalStartedAt;
@@ -84,8 +86,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
             output.Clear();
             int start = Mathf.Clamp(_pathIndex, 0, Path.Count);
             for (int i = start; i < Path.Count; i++) output.Add(Path[i]);
-            if (_hasDestination &&
-                (output.Count == 0 || XzDistance(output[output.Count - 1], _destination) > 0.20f))
+            // A destination by itself is not a route. Drawing it as one produces a
+            // misleading straight line through walls while RAIN has no accepted path.
+            if (_hasDestination && output.Count > 0 &&
+                XzDistance(output[output.Count - 1], _destination) > 0.20f)
                 output.Add(_destination);
             return output.Count > 0;
         }
@@ -97,6 +101,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             JumpFlags.Clear();
             _pathIndex = 0;
             _destination = Vector3.zero;
+            _pathStartPosition = Vector3.zero;
             _hasDestination = false;
             _nextRepath = 0f;
             _nextJumpAt = 0f;
@@ -123,6 +128,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _recoverySideSign = 1;
             _recoverySideUntil = 0f;
             _wallRecoveryDirection = Vector3.zero;
+            _wallRecoveryUntil = 0f;
             _pendingSideSign = 1;
             _pendingSideUntil = 0f;
             _pendingLocalStartedAt = 0f;
@@ -216,9 +222,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if ((_pathSearchPending || needRepath) && Time.time >= _nextRepath)
             {
                 _nextRepath = _pathSearchPending
-                    ? Time.time
+                    ? Time.time + 0.18f
                     : Time.time + (attackChase ? 0.70f : (tacticalMove ? 0.24f : 0.36f));
-                BuildPath(player, playerPosition, _destination);
+                if (Path.Count == 0 && !SafeIsOnGround(player))
+                {
+                    _nextRepath = Time.time + 0.10f;
+                    LastPath = "path_wait_grounded";
+                }
+                else
+                {
+                    BuildPath(player, playerPosition, _destination);
+                }
             }
 
             if (Path.Count == 0 || _pathIndex >= Path.Count)
@@ -244,10 +258,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             _pendingLocalStartedAt = 0f;
             Vector3 next = Path[_pathIndex];
-            while (_pathIndex < Path.Count - 1 && XzDistance(playerPosition, next) <= CornerReachDistance)
+            AutoBattleRouteCapabilities routeCapabilities = null;
+            while (_pathIndex < Path.Count - 1 &&
+                   CanAdvanceCurrentWaypoint(playerPosition, XzDistance(playerPosition, next)))
             {
-                _pathIndex++;
-                next = Path[_pathIndex];
+                int candidateIndex = _pathIndex + 1;
+                Vector3 candidate = Path[candidateIndex];
+                bool candidateJump = candidateIndex < JumpFlags.Count && JumpFlags[candidateIndex];
+                if (candidateJump && routeCapabilities == null)
+                    routeCapabilities = CreateCapabilities(player);
+                if (!AutoBattleRoutePlanner.CanAdvanceToWaypoint(playerPosition, candidate,
+                    candidateJump, routeCapabilities, player.transform.root))
+                    break;
+                _pathIndex = candidateIndex;
+                next = candidate;
             }
 
             float distance = XzDistance(playerPosition, next);
@@ -256,7 +280,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (_currentPathPartial || _currentPathResidual > CornerReachDistance)
                 {
                     _pathSearchPending = true;
-                    _nextRepath = 0f;
+                    _nextRepath = Time.time + 0.18f;
                     LastPath = "path_partial_continue";
                 }
                 else
@@ -268,27 +292,81 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             Vector3 direction = next - playerPosition;
             direction.y = 0f;
-            if (direction.sqrMagnitude < 0.01f) return Vector3.zero;
+            if (direction.sqrMagnitude < 0.01f)
+            {
+                if (AutoBattleRoutePlanner.IsDegenerateVerticalTransition(playerPosition, next))
+                {
+                    AutoBattleRoutePlanner.DumpFollowerPathFailure(playerPosition, Path,
+                        JumpFlags, _pathIndex, player.transform.root, "vertical_dead_end");
+                    ClearPath();
+                    _nextRepath = Time.time + 0.18f;
+                    LastPath = "vertical_repath";
+                }
+                else if (_pathIndex < Path.Count - 1)
+                {
+                    AutoBattleRoutePlanner.DumpFollowerPathFailure(playerPosition, Path,
+                        JumpFlags, _pathIndex, player.transform.root,
+                        "reached_waypoint_next_blocked");
+                    ClearPath();
+                    _nextRepath = Time.time + 0.18f;
+                    LastPath = "next_segment_repath";
+                }
+                return Vector3.zero;
+            }
             direction.Normalize();
 
             bool jump = _pathIndex < JumpFlags.Count && JumpFlags[_pathIndex];
-            if (jump && distance <= 4.3f && Time.time >= _nextJumpAt)
+            if (jump && AutoBattleRoutePlanner.CanTraverseWalkableSurface(
+                playerPosition, next, player.transform.root))
+            {
+                JumpFlags[_pathIndex] = false;
+                jump = false;
+                _lastPathProgressAt = Time.time;
+                FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=survival_follow jump_demoted=walkable corner=" +
+                    (_pathIndex + 1) + "/" + Path.Count + " dist=" + distance.ToString("0.0"));
+            }
+            if (!jump && Time.time < _wallRecoveryUntil &&
+                _wallRecoveryDirection.sqrMagnitude > 0.01f)
+            {
+                LastPath = "wall_clearance#" + _wallRecoveryCount;
+                return _wallRecoveryDirection;
+            }
+            if (jump && distance <= 4.3f &&
+                Time.time - _lastPathProgressAt >= 0.90f &&
+                Time.time >= _nextJumpAt && SafeIsOnGround(player))
             {
                 if (!AutoBattleRoutePlanner.CanExecuteJump(playerPosition, next, CreateCapabilities(player), player.transform.root))
                 {
                     ClearPath();
-                    _nextRepath = 0f;
+                    _nextRepath = Time.time + 0.35f;
                     LastPath = "jump_lane_blocked";
                     return Vector3.zero;
                 }
                 AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
                 AutoBattleInput.HoldAction(ActionType.kActionJump, 0.26f);
                 _nextJumpAt = Time.time + 0.5f;
+                _lastPathProgressAt = Time.time;
+                _nextStuckRecoveryAt = Time.time + 0.65f;
             }
 
-            if (!jump && AutoBattleRoutePlanner.HasForwardBlock(playerPosition, direction, player.transform.root))
+            if (!jump && AutoBattleRoutePlanner.HasForwardBlockToWaypoint(
+                playerPosition, next, player.transform.root))
             {
+                if (AutoBattleRoutePlanner.CanFollowRouteSegment(
+                    playerPosition, next, player.transform.root))
+                {
+                    _wallRecoveryCount = 0;
+                    _wallRecoveryDirection = Vector3.zero;
+                    _wallRecoveryUntil = 0f;
+                    LastPath = "path " + (_pathIndex + 1) + "/" + Path.Count + " probe_bypass";
+                    return direction;
+                }
                 if (Time.time < _obstacleJumpForwardUntil) return direction;
+                if (Time.time - _lastPathProgressAt < 0.90f)
+                {
+                    LastPath = "wall_walk_grace " + (_pathIndex + 1) + "/" + Path.Count;
+                    return direction;
+                }
                 if (Time.time >= _nextJumpAt && AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
                     playerPosition, direction, player.transform.root))
                 {
@@ -299,19 +377,40 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     LastPath = "wall_jump_obstacle";
                     return direction;
                 }
-                if (Time.time >= _nextWallRecoveryAt || _wallRecoveryDirection.sqrMagnitude < 0.01f)
+                if (Time.time < _nextWallRecoveryAt) return Vector3.zero;
+
+                _wallRecoveryCount++;
+                Vector3 recoveryDirection;
+                string recoveryDetail;
+                if (AutoBattleRoutePlanner.TryFindRainClearanceDirection(playerPosition,
+                    direction, player.transform.root, out recoveryDirection, out recoveryDetail))
                 {
-                    _nextWallRecoveryAt = Time.time + 0.35f;
-                    _wallRecoveryCount++;
-                    ClearPath();
-                    _nextRepath = 0f;
-                    _wallRecoveryDirection = Vector3.zero;
+                    _wallRecoveryDirection = recoveryDirection;
+                    _wallRecoveryUntil = Time.time + 0.55f;
+                    _nextWallRecoveryAt = _wallRecoveryUntil;
+                    LastPath = "wall_clearance#" + _wallRecoveryCount;
+                    FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=survival_follow recovery=rain_clearance corner=" +
+                        (_pathIndex + 1) + "/" + Path.Count + " " + recoveryDetail);
+                    return recoveryDirection;
                 }
+
+                string wallDetail = AutoBattleRoutePlanner.DescribeRouteSegment(
+                    playerPosition, next, player.transform.root);
+                AutoBattleRoutePlanner.DumpFollowerPathFailure(playerPosition,
+                    Path, JumpFlags, _pathIndex, player.transform.root, "wall_ahead " + wallDetail);
+                _nextWallRecoveryAt = Time.time + 0.70f;
+                _wallRecoveryDirection = Vector3.zero;
+                _wallRecoveryUntil = 0f;
+                ClearPath();
+                _nextRepath = Time.time + 0.70f;
                 LastPath = "wall_repath";
+                FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=survival_follow result=partial reason=wall_ahead " +
+                    wallDetail + " retry=0.70s");
                 return Vector3.zero;
             }
             _wallRecoveryCount = 0;
             _wallRecoveryDirection = Vector3.zero;
+            _wallRecoveryUntil = 0f;
 
             bool waypointProgress = _lastProgressPathIndex != _pathIndex ||
                 distance + 0.25f < _lastWaypointDistance;
@@ -324,12 +423,22 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _lastWaypointDistance = distance;
                 _stuckRecoveryCount = 0;
             }
-            else if (Time.time - _lastPathProgressAt >= 0.65f && Time.time >= _nextStuckRecoveryAt)
+            else if (Time.time - _lastPathProgressAt >= 0.95f && Time.time >= _nextStuckRecoveryAt)
             {
                 _stuckRecoveryCount++;
-                _nextStuckRecoveryAt = Time.time + 0.45f;
+                _nextStuckRecoveryAt = Time.time + 0.65f;
                 _lastPathProgressPosition = playerPosition;
-                _lastPathProgressAt = Time.time;
+                if (_stuckRecoveryCount >= 3)
+                {
+                    AutoBattleRoutePlanner.DumpFollowerPathFailure(playerPosition,
+                        Path, JumpFlags, _pathIndex, player.transform.root,
+                        "stuck_recovery_exhausted");
+                    ClearPath();
+                    _nextRepath = Time.time + 0.18f;
+                    _stuckRecoveryCount = 0;
+                    LastPath = "stuck_repath";
+                    return Vector3.zero;
+                }
                 Vector3 forward = player.transform.forward;
                 forward.y = 0f;
                 if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
@@ -339,25 +448,35 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     _recoverySideSign = -_recoverySideSign;
                     _recoverySideUntil = Time.time + 0.7f;
                 }
-                if (_stuckRecoveryCount >= 3)
-                {
-                    ClearPath();
-                    _nextRepath = 0f;
-                    _stuckRecoveryCount = 0;
-                    LastPath = "stuck_repath";
-                }
-                else
-                {
-                    LastPath = "stuck_local_recovery#" + _stuckRecoveryCount;
-                }
                 if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
                     playerPosition, forward, player.transform.root))
                 {
                     AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
                     AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
+                    _obstacleJumpForwardUntil = Time.time + 0.34f;
+                    LastPath = "stuck_jump_obstacle#" + _stuckRecoveryCount;
+                    return forward;
                 }
+
+                Vector3 recoveryDirection;
+                string recoveryDetail;
+                if (AutoBattleRoutePlanner.TryFindRainClearanceDirection(playerPosition,
+                    direction, player.transform.root, out recoveryDirection, out recoveryDetail))
+                {
+                    _wallRecoveryDirection = recoveryDirection;
+                    _wallRecoveryUntil = Time.time + 0.55f;
+                    _nextWallRecoveryAt = _wallRecoveryUntil;
+                    LastPath = "stuck_clearance#" + _stuckRecoveryCount;
+                    return recoveryDirection;
+                }
+
+                AutoBattleRoutePlanner.DumpFollowerPathFailure(playerPosition,
+                    Path, JumpFlags, _pathIndex, player.transform.root,
+                    "stuck_no_clearance " + recoveryDetail);
                 ClearPath();
-                _nextRepath = 0f;
+                _nextRepath = Time.time + 0.70f;
+                _stuckRecoveryCount = 0;
+                LastPath = "stuck_repath";
                 return Vector3.zero;
             }
 
@@ -745,7 +864,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (route.Provider != null && route.Provider.EndsWith("_pending", StringComparison.Ordinal))
                 {
                     _pathSearchPending = true;
-                    _nextRepath = Time.time;
+                    _nextRepath = Time.time + 0.18f;
                     LastPath = hadUsablePath ? "path_pending_follow" : "path_pending_hold";
                 }
                 else
@@ -762,14 +881,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 : XzDistance(route.Corners[route.Corners.Count - 1], to);
             List<Vector3> candidatePath = new List<Vector3>(48);
             List<bool> candidateJumps = new List<bool>(48);
-            AddPathPoints(route.Corners, route.JumpFlags, from, player.transform.root, candidatePath, candidateJumps);
+            AutoBattleRoutePlanner.CopyPathForFollower(route.Corners, route.JumpFlags,
+                from, capabilities, player.transform.root, candidatePath, candidateJumps);
             if (candidatePath.Count == 0)
             {
                 float remaining = XzDistance(from, to);
                 if (route.Partial)
                 {
                     _pathSearchPending = true;
-                    _nextRepath = Time.time;
+                    _nextRepath = Time.time + 0.18f;
                     LastPath = hadUsablePath ? "path_pending_follow" : "path_pending_hold";
                     return;
                 }
@@ -783,14 +903,14 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool firstJump = candidateJumps.Count > 0 && candidateJumps[0];
             bool firstSegmentUsable = firstJump
                 ? AutoBattleRoutePlanner.CanExecuteJump(from, candidatePath[0], capabilities, player.transform.root)
-                : AutoBattleRoutePlanner.CanFollowSegment(from, candidatePath[0], player.transform.root);
+                : AutoBattleRoutePlanner.CanFollowRouteSegment(from, candidatePath[0], player.transform.root);
             bool newDestinationRevision = _pathDestinationRevision != _destinationRevision;
             bool frontierImproved = newDestinationRevision || !route.Partial || !hadUsablePath || previousResidual <= 0f ||
                 candidateResidual + 0.35f < previousResidual;
             if (!firstSegmentUsable || !frontierImproved)
             {
                 _pathSearchPending = route.Partial;
-                _nextRepath = route.Partial ? Time.time : Time.time + 0.2f;
+                _nextRepath = route.Partial ? Time.time + 0.18f : Time.time + 0.2f;
                 LastPath = hadUsablePath ? "path_candidate_keep_old" : "path_candidate_rejected";
                 return;
             }
@@ -799,6 +919,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             JumpFlags.Clear();
             Path.AddRange(candidatePath);
             JumpFlags.AddRange(candidateJumps);
+            _pathStartPosition = from;
             _pathIndex = 0;
             _currentPathPartial = route.Partial;
             _currentPathResidual = candidateResidual;
@@ -806,77 +927,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _pathDestinationRevision = _destinationRevision;
             _lastProgressPathIndex = 0;
             _lastWaypointDistance = XzDistance(from, Path[0]);
-            if (!hadUsablePath || newDestinationRevision)
-            {
-                _lastPathProgressPosition = from;
-                _lastPathProgressAt = Time.time;
-                _lastActualPathProgressAt = Time.time;
-            }
+            _lastPathProgressPosition = from;
+            _lastPathProgressAt = Time.time;
+            _lastActualPathProgressAt = Time.time;
             _pendingLocalStartedAt = 0f;
             LastPath = route.Provider + (route.Partial ? " partial " : " ") + Path.Count + " pts";
-        }
-
-        private static void AddPathPoints(List<Vector3> points, List<bool> jumpFlags, Vector3 from,
-            Transform ignoreRoot, List<Vector3> outputPath, List<bool> outputJumps)
-        {
-            if (points == null || points.Count == 0 || outputPath == null || outputJumps == null) return;
-            if (points.Count == 1)
-            {
-                if (XzDistance(points[0], from) >= 0.5f)
-                {
-                    outputPath.Add(points[0]);
-                    outputJumps.Add(jumpFlags != null && jumpFlags.Count > 0 && jumpFlags[0]);
-                }
-                return;
-            }
-            int startIndex = 0;
-            float bestDistance = float.MaxValue;
-            for (int i = 0; i + 1 < points.Count; i++)
-            {
-                Vector3 segment = points[i + 1] - points[i];
-                Vector3 offset = from - points[i];
-                segment.y = 0f;
-                offset.y = 0f;
-                if (segment.sqrMagnitude < 0.01f) continue;
-                float t = Mathf.Clamp01(Vector3.Dot(offset, segment) / segment.sqrMagnitude);
-                Vector3 projected = Vector3.Lerp(points[i], points[i + 1], t);
-                float distance = XzDistance(projected, from);
-                if (distance > 3.5f || distance > bestDistance + 0.05f) continue;
-                if (!AutoBattleRoutePlanner.CanFollowSegment(from, projected, ignoreRoot)) continue;
-                bestDistance = distance;
-                startIndex = i + (t >= 0.30f ? 1 : 0);
-            }
-
-            if (bestDistance == float.MaxValue)
-            {
-                for (int i = 0; i < points.Count; i++)
-                {
-                    float distance = XzDistance(points[i], from);
-                    if (distance >= bestDistance) continue;
-                    bestDistance = distance;
-                    startIndex = i;
-                }
-            }
-
-            if (bestDistance > 4f) return;
-            if (startIndex + 1 < points.Count)
-            {
-                Vector3 segment = points[startIndex + 1] - points[startIndex];
-                Vector3 progressed = from - points[startIndex];
-                segment.y = 0f;
-                progressed.y = 0f;
-                if (segment.sqrMagnitude > 0.01f &&
-                    Vector3.Dot(progressed, segment) / segment.sqrMagnitude > 0.35f)
-                    startIndex++;
-            }
-
-            for (int i = startIndex; i < points.Count && outputPath.Count < 48; i++)
-            {
-                Vector3 point = points[i];
-                if (outputPath.Count == 0 && XzDistance(point, from) < 0.5f) continue;
-                outputPath.Add(point);
-                outputJumps.Add(jumpFlags != null && i < jumpFlags.Count && jumpFlags[i]);
-            }
         }
 
         private static void ClearPath()
@@ -884,10 +939,50 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Path.Clear();
             JumpFlags.Clear();
             _pathIndex = 0;
+            _pathStartPosition = Vector3.zero;
             _pathSearchPending = false;
             _currentPathPartial = false;
             _currentPathResidual = 0f;
             _pendingLocalStartedAt = 0f;
+            _lastProgressPathIndex = -1;
+            _lastWaypointDistance = float.MaxValue;
+        }
+
+        private static bool SafeIsOnGround(Character player)
+        {
+            try { return player != null && player.IsOnGround(); }
+            catch { return false; }
+        }
+
+        private static bool CanAdvanceCurrentWaypoint(Vector3 position, float horizontalDistance)
+        {
+            if (_pathIndex < 0 || _pathIndex >= Path.Count) return false;
+            bool jumpEdge = _pathIndex < JumpFlags.Count && JumpFlags[_pathIndex];
+            float heightError = Mathf.Abs(position.y - Path[_pathIndex].y);
+            if (horizontalDistance <= CornerReachDistance && heightError <= (jumpEdge ? 0.35f : 1.25f))
+                return true;
+            return !jumpEdge && HasPassedCurrentWaypoint(position);
+        }
+
+        private static bool HasPassedCurrentWaypoint(Vector3 position)
+        {
+            if (_pathIndex < 0 || _pathIndex >= Path.Count) return false;
+            Vector3 previous = _pathIndex == 0 ? _pathStartPosition : Path[_pathIndex - 1];
+            Vector3 current = Path[_pathIndex];
+            Vector3 segment = current - previous;
+            Vector3 offset = position - previous;
+            segment.y = 0f;
+            offset.y = 0f;
+            float lengthSq = segment.sqrMagnitude;
+            if (lengthSq < 0.04f) return false;
+            float projection = Vector3.Dot(offset, segment) / lengthSq;
+            if (projection < 0.92f) return false;
+            if (XzDistance(position, current) > 1.5f) return false;
+            float expectedY = Mathf.Lerp(previous.y, current.y, Mathf.Clamp01(projection));
+            if (Mathf.Abs(position.y - expectedY) > 1.25f && Mathf.Abs(position.y - current.y) > 1.25f)
+                return false;
+            Vector3 nearest = previous + segment * Mathf.Clamp01(projection);
+            return XzDistance(position, nearest) <= 1.5f;
         }
 
         private static AutoBattleRouteCapabilities CreateCapabilities(Character player)

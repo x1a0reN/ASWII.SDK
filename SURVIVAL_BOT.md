@@ -18,25 +18,44 @@ navigation prefab, including `level33`, build an owned RAIN graph from active te
 colliders after the scene reaches `Level.State.kReady`. RAIN paths are sanitized,
 surface-smoothed, moved away from tight wall corners, and physically vetoed before
 they reach the follower; physics checks never generate an alternate route.
-Runtime graphs are cached both in memory and on disk.
-Map exit only unregisters the in-memory graph; returning to the same map registers
-it immediately. A later game process loads the validated graph from
+`level33` uses a process-resident long-run graph with a `0.20` cell size, `0.16`
+maximum vertex error, and `3` metre maximum segments. The legacy `0.10` maximum-
+detail files remain untouched, but gameplay never loads them because their 625,403-
+node expanded graph leaves insufficient address space for a second Unity scene load
+in the 32-bit client. The first successful long-run load deserializes,
+initializes, and registers the graph, then releases the redundant serialized payload.
+Leaving a round unregisters the graph before the next `GameLoading`, clears every
+scene-owned player/target reference, detaches its mount transform, and destroys the
+old hidden host. The already materialized managed graph remains process-resident.
+Re-entering physical scene `level33` waits for `Level.State.kReady`, creates a fresh
+scene-local mount, and re-registers that same graph without disk I/O, deserialization,
+graph initialization, or rebuilding. Keeping the graph registered or retaining its
+Unity mount across a second `GameLoading` is forbidden because live testing proved it
+causes a native `0xc0000005` before the resume hook runs. Any request for another
+physical map fails closed instead of loading a second runtime graph. A later game
+process loads the validated graph from
 `Application.persistentDataPath/ASWDEBUG/NavMeshCache`. The wrapper verifies the
 map resource fingerprint, RAIN module identity, generator settings, graph format,
 size limits, and SHA-256 before deserialization; any mismatch falls back to a fresh
-build. Plugin shutdown releases memory graphs without deleting the disk cache. The
-first build uses RAIN's automatic half-CPU worker count and a `0.25` cell size so
-the pre-round wait is used for maximum generation throughput and path detail.
+build. Process shutdown releases the resident graph without deleting the disk cache.
+The long-run base and derived artifacts are stored separately as
+`level33.runtime.rainnav` and `level33.runtime.rainmeta`. A first cache miss is allowed
+to build for up to 15 minutes in the private level33 test scene. Before every later
+scene load, the client requires at least 1.4 GiB total free address space and a
+1.25 GiB largest free region. This admits the measured `0.20` resident graph while
+still rejecting the old `0.10` graph's second-load footprint. The address-space
+probe is sampled rather than executed every rendered frame; otherwise it remains
+in the lobby instead of risking a native Unity allocation crash.
 
 `Map Bake` is a separate scene-only cache generation mode. It can be enabled before
 or after entering a manually opened map and never starts matching, movement, target
-selection, aiming, firing, rank handling, suicide, cards, or rematching. If the map
-does not already have a compatible maximum-detail cache, it builds the complete
+selection, aiming, firing, rank handling, suicide, cards, or rematching. For maps
+other than `level33`, if there is no compatible maximum-detail cache it builds the complete
 RAIN graph with a `0.10` cell size, `0.10` maximum vertex error, `2` metre maximum
 segments, and all available CPU workers. Collider discovery and graph generation
 have no fixed timeout in this mode. The finished graph is serialized to the normal
-disk-cache directory; later normal bot modes prefer this maximum-detail cache and
-fall back to the runtime profile only when it is absent. Enabling the mode on a map
+disk-cache directory. `level33` is always forced to its isolated long-run profile;
+there is no fallback to the legacy maximum-detail file. Enabling the mode on a map
 that already has a compatible cache validates and registers that cache instead of
 rebuilding it.
 After the base graph is ready, a versioned companion cache (`.rainmeta`) is built
@@ -58,7 +77,7 @@ The UI also exposes a map-resource selector and `Direct Load and Bake` action. M
 names are discovered from the installed `FileInfo.xml`. The action uses the native
 `GameLoadingState -> Level.Initialize -> Level.LoadMap -> Fight` transition without
 creating or joining a server match. Native navigation loading stays disabled so the
-maximum-detail runtime graph is built. AFK auto-leave is disabled for this private
+selected ASWDEBUG graph profile is built. AFK auto-leave is disabled for this private
 scene, and local `SyncPlayerData` packets are suppressed until the scene exits, so
 the scene can remain open until disk serialization completes. The selector enumerates
 every game mode and map from the game's channel `level_list`, displaying

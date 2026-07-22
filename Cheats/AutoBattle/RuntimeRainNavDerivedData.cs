@@ -80,10 +80,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
     internal static class RuntimeRainNavDerivedData
     {
         private const string DerivationSignature =
-            "v1|boundary=poly1|clearance=segment6|cover=8|body=0.48|head=1.55|jump=4.2|rise=2.2|drop=8|arc=7";
+            "v2|boundary=poly1|edgeNormal=1|component=cross-only|approach=dense|clearance=segment6|cover=8|body=0.48|head=1.55|jump=4.2|rise=2.2|drop=8|arc=12x9";
         private const float BoundaryBucketSize = 4.5f;
+        private const float SurfaceBucketSize = 3.0f;
         private const float SurfaceSearchRadius = 6f;
-        private const int MaxLinksPerBoundary = 8;
+        private const int MaxLinksPerBoundary = 2;
 
         private static RuntimeRainDerivedStage _stage;
         private static string _mapName = string.Empty;
@@ -106,22 +107,23 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _nextSaveAttemptAt;
         private static int _saveAttempts;
 
-        private static readonly List<PolyWork> Polys = new List<PolyWork>();
-        private static readonly Dictionary<NavMeshPoly, int> PolyLookup = new Dictionary<NavMeshPoly, int>();
-        private static readonly List<RuntimeRainBoundarySample> Boundaries = new List<RuntimeRainBoundarySample>();
-        private static readonly List<RuntimeRainBoundarySample> LinkBoundaries = new List<RuntimeRainBoundarySample>();
-        private static readonly List<RuntimeRainSurfaceSample> Surfaces = new List<RuntimeRainSurfaceSample>();
-        private static readonly List<RuntimeRainOffMeshLink> Links = new List<RuntimeRainOffMeshLink>();
-        private static readonly Dictionary<long, List<int>> BoundaryBuckets = new Dictionary<long, List<int>>();
-        private static readonly Dictionary<long, List<int>> LinkBuckets = new Dictionary<long, List<int>>();
-        private static readonly HashSet<long> LinkSampleKeys = new HashSet<long>();
-        private static readonly Dictionary<long, RuntimeRainOffMeshLink> LinkLookup =
+        private static List<PolyWork> Polys = new List<PolyWork>();
+        private static Dictionary<NavMeshPoly, int> PolyLookup = new Dictionary<NavMeshPoly, int>();
+        private static List<RuntimeRainBoundarySample> Boundaries = new List<RuntimeRainBoundarySample>();
+        private static List<RuntimeRainBoundarySample> LinkBoundaries = new List<RuntimeRainBoundarySample>();
+        private static List<RuntimeRainSurfaceSample> Surfaces = new List<RuntimeRainSurfaceSample>();
+        private static List<RuntimeRainOffMeshLink> Links = new List<RuntimeRainOffMeshLink>();
+        private static Dictionary<long, List<int>> BoundaryBuckets = new Dictionary<long, List<int>>();
+        private static Dictionary<long, List<int>> LinkBuckets = new Dictionary<long, List<int>>();
+        private static Dictionary<long, List<int>> SurfaceBuckets = new Dictionary<long, List<int>>();
+        private static HashSet<long> LinkSampleKeys = new HashSet<long>();
+        private static Dictionary<long, RuntimeRainOffMeshLink> LinkLookup =
             new Dictionary<long, RuntimeRainOffMeshLink>();
-        private static readonly Dictionary<long, RuntimeRainOffMeshLink> ActiveLinkLookup =
+        private static Dictionary<long, RuntimeRainOffMeshLink> ActiveLinkLookup =
             new Dictionary<long, RuntimeRainOffMeshLink>();
-        private static readonly Dictionary<NavigationGraphNode, int> LinkNodeLookup =
+        private static Dictionary<NavigationGraphNode, int> LinkNodeLookup =
             new Dictionary<NavigationGraphNode, int>();
-        private static readonly List<InjectedLink> InjectedLinks = new List<InjectedLink>();
+        private static List<InjectedLink> InjectedLinks = new List<InjectedLink>();
         private static int[] _parents = new int[0];
         private static byte[] _ranks = new byte[0];
         private static string _injectedCapabilityKey = string.Empty;
@@ -179,7 +181,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _rainIdentity = rainIdentity ?? string.Empty;
             _graphSignature = (graphSignature ?? string.Empty) + "|" + DerivationSignature;
             _startedAt = Time.realtimeSinceStartup;
-            _cacheFileName = System.IO.Path.GetFileName(RuntimeRainNavDerivedDiskCache.GetCachePath(_mapName));
+            _cacheFileName = System.IO.Path.GetFileName(
+                RuntimeRainNavDerivedDiskCache.GetCachePath(_mapName, _highDetail));
             if (string.IsNullOrEmpty(graphSignature) || graphSignature.IndexOf("|base=unknown",
                 StringComparison.Ordinal) >= 0)
             {
@@ -245,8 +248,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         internal static void Deactivate(RAINNavigationGraph graph)
         {
-            RemoveInjectedLinks();
-            if (_graph == graph) Reset(false);
+            bool mismatched = _graph != null && graph != null && _graph != graph;
+            // RuntimeRainNavMesh has a single active graph. Always drop every node-indexed
+            // container here so a stale identity mismatch cannot keep the previous graph alive.
+            Reset(false);
+            ReleaseContainerCapacity();
+            if (mismatched)
+                FileLogger.Log("AUTO-BATTLE][NAVMETA", "deactivate_graph_identity_mismatch cleared=1");
         }
 
         internal static bool PrepareLinksForRoute(RAINNavigationGraph graph, AutoBattleRouteCapabilities capabilities)
@@ -311,14 +319,186 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     continue;
                 }
                 if (i < path.PathNodes.Count - 1)
-                    AddLinkedPoint(result, jumpFlags, transform.MultiplyPoint(path.PathPoints[i]), false);
+                {
+                    Vector3 world = transform.MultiplyPoint(path.PathPoints[i]);
+                    if (!IsFinitePoint(world))
+                    {
+                        NavMeshPoly poly = path.PathNodes[i] as NavMeshPoly;
+                        if (poly != null) world = poly.Position;
+                    }
+                    AddLinkedPoint(result, jumpFlags, world, false);
+                }
             }
             AddLinkedPoint(result, jumpFlags, to, false);
             return used;
         }
 
+        internal static bool TryFindSameLayerAnchor(RAINNavigationGraph graph, Vector3 from,
+            Vector3 toward, Transform ignoreRoot, NavigationGraphNode excludedNode,
+            out Vector3 anchor, out NavigationGraphNode node, out string detail)
+        {
+            anchor = from;
+            node = null;
+            detail = "metaAnchor=unavailable";
+            if (!IsReady || graph == null || graph != _graph || SurfaceBuckets.Count == 0) return false;
+
+            Vector3 forward = toward - from;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+            forward.Normalize();
+            int bx = Mathf.FloorToInt(from.x / SurfaceBucketSize);
+            int bz = Mathf.FloorToInt(from.z / SurfaceBucketSize);
+            int checkedCount = 0;
+            int sameLayerCount = 0;
+            int physicalCount = 0;
+            float bestScore = float.MaxValue;
+            RuntimeRainSurfaceSample best = null;
+            NavigationGraphNode bestNode = null;
+            for (int dz = -2; dz <= 2; dz++)
+            {
+                for (int dx = -2; dx <= 2; dx++)
+                {
+                    List<int> candidates;
+                    if (!SurfaceBuckets.TryGetValue(SpatialKey(bx + dx, bz + dz), out candidates)) continue;
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        RuntimeRainSurfaceSample surface = Surfaces[candidates[i]];
+                        checkedCount++;
+                        float distance = XzDistance(from, surface.Position);
+                        float dyValue = Mathf.Abs(surface.Position.y - from.y);
+                        if (distance < 0.35f || distance > 6.25f || dyValue > 1.65f) continue;
+                        if ((surface.Flags & (RuntimeRainSurfaceSample.DeadSpace |
+                            RuntimeRainSurfaceSample.TightHeadroom)) != 0 || surface.Clearance < 0.58f) continue;
+                        sameLayerCount++;
+                        NavigationGraphNode candidateNode;
+                        try { candidateNode = graph.GetNode(surface.NodeIndex); }
+                        catch { continue; }
+                        if (candidateNode == null || candidateNode == excludedNode) continue;
+                        if (!AutoBattleRoutePlanner.HasSupportedStandingPoint(surface.Position, ignoreRoot) ||
+                            !AutoBattleRoutePlanner.CanFollowRouteSegment(from, surface.Position, ignoreRoot)) continue;
+                        physicalCount++;
+                        Vector3 direction = surface.Position - from;
+                        direction.y = 0f;
+                        direction.Normalize();
+                        float awayPenalty = Mathf.Max(0f, -Vector3.Dot(direction, forward)) * 0.45f;
+                        float score = distance + dyValue * 1.6f + awayPenalty -
+                            Mathf.Min(1.5f, surface.Clearance) * 0.22f;
+                        if (score >= bestScore) continue;
+                        bestScore = score;
+                        best = surface;
+                        bestNode = candidateNode;
+                    }
+                }
+            }
+
+            if (best == null || bestNode == null)
+            {
+                detail = "metaAnchor=failed checked=" + checkedCount +
+                    " sameLayer=" + sameLayerCount + " physical=" + physicalCount;
+                return false;
+            }
+            anchor = best.Position;
+            node = bestNode;
+            detail = "metaAnchor=ok node=" + best.NodeIndex +
+                " dist=" + XzDistance(from, best.Position).ToString("0.00") +
+                " dy=" + Mathf.Abs(best.Position.y - from.y).ToString("0.00") +
+                " clearance=" + best.Clearance.ToString("0.00") +
+                " checked=" + checkedCount + " physical=" + physicalCount;
+            return true;
+        }
+
+        internal static int CollectNearbyBoundaries(Vector3 from, float maxDistance, int maxCount,
+            List<RuntimeRainBoundarySample> output)
+        {
+            if (output == null) return 0;
+            output.Clear();
+            if (!IsReady || BoundaryBuckets.Count == 0 || maxDistance <= 0f || maxCount <= 0)
+                return 0;
+
+            int bx = Mathf.FloorToInt(from.x / BoundaryBucketSize);
+            int bz = Mathf.FloorToInt(from.z / BoundaryBucketSize);
+            int radius = Mathf.Clamp(Mathf.CeilToInt(maxDistance / BoundaryBucketSize), 1, 18);
+            for (int dz = -radius; dz <= radius; dz++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    List<int> candidates;
+                    if (!BoundaryBuckets.TryGetValue(SpatialKey(bx + dx, bz + dz), out candidates))
+                        continue;
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        RuntimeRainBoundarySample sample = Boundaries[candidates[i]];
+                        float distance = XzDistance(from, sample.Position);
+                        if (distance > maxDistance || sample.Width < 0.35f) continue;
+                        float score = distance + Mathf.Abs(sample.Position.y - from.y) * 1.8f;
+                        int insertAt = 0;
+                        while (insertAt < output.Count &&
+                               CliffBoundaryScore(from, output[insertAt]) <= score)
+                            insertAt++;
+                        if (insertAt >= maxCount) continue;
+                        output.Insert(insertAt, sample);
+                        if (output.Count > maxCount) output.RemoveAt(maxCount);
+                    }
+                }
+            }
+            return output.Count;
+        }
+
+        private static float CliffBoundaryScore(Vector3 from, RuntimeRainBoundarySample sample)
+        {
+            return XzDistance(from, sample.Position) +
+                   Mathf.Abs(sample.Position.y - from.y) * 1.8f;
+        }
+
+        private static void AppendSmoothedWalkPartition(RAINPath sourcePath, int startIndex, int endIndex,
+            Vector3 startWorld, Vector3 endWorld, List<Vector3> result, List<bool> jumpFlags)
+        {
+            AddLinkedPoint(result, jumpFlags, startWorld, false);
+            if (sourcePath == null || sourcePath.Graph == null || startIndex < 0 ||
+                endIndex < startIndex || endIndex >= sourcePath.PathNodes.Count)
+            {
+                AddLinkedPoint(result, jumpFlags, endWorld, false);
+                return;
+            }
+
+            int count = endIndex - startIndex + 1;
+            if (count < 2)
+            {
+                AddLinkedPoint(result, jumpFlags, endWorld, false);
+                return;
+            }
+
+            List<NavigationGraphNode> nodes = new List<NavigationGraphNode>(count);
+            List<Vector3> points = new List<Vector3>(count);
+            for (int i = startIndex; i <= endIndex; i++)
+            {
+                nodes.Add(sourcePath.PathNodes[i]);
+                points.Add(sourcePath.PathPoints[i]);
+            }
+
+            Matrix4x4 inverse = sourcePath.Graph.MountInverseTransform;
+            points[0] = inverse.MultiplyPoint(startWorld);
+            points[points.Count - 1] = inverse.MultiplyPoint(endWorld);
+            try
+            {
+                RAIN.Navigation.Pathfinding.NavMeshPath partition =
+                    new RAIN.Navigation.Pathfinding.NavMeshPath(sourcePath.Graph, nodes, points);
+                if (partition.IsValid)
+                {
+                    for (int i = 1; i < partition.WaypointCount; i++)
+                        AddLinkedPoint(result, jumpFlags, partition.GetWaypointPosition(i), false);
+                }
+            }
+            catch
+            {
+                // The exact endpoints are still validated by the route planner fail-closed.
+            }
+            AddLinkedPoint(result, jumpFlags, endWorld, false);
+        }
+
         private static void AddLinkedPoint(List<Vector3> points, List<bool> flags, Vector3 point, bool jump)
         {
+            if (!IsFinitePoint(point)) return;
             if (points.Count > 0 && XzDistance(points[points.Count - 1], point) <= 0.08f &&
                 Mathf.Abs(points[points.Count - 1].y - point.y) <= 0.10f)
             {
@@ -327,6 +507,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             points.Add(point);
             flags.Add(jump);
+        }
+
+        private static bool IsFinitePoint(Vector3 point)
+        {
+            return !float.IsNaN(point.x) && !float.IsInfinity(point.x) &&
+                   !float.IsNaN(point.y) && !float.IsInfinity(point.y) &&
+                   !float.IsNaN(point.z) && !float.IsInfinity(point.z);
         }
 
         private static void TickScanGraph()
@@ -351,10 +538,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 int polyIndex;
                 if (!PolyLookup.TryGetValue(owner, out polyIndex)) polyIndex = -1;
                 Vector3 position = edge.Position;
-                Vector3 outward = position - owner.Position;
-                outward.y = 0f;
-                if (outward.sqrMagnitude < 0.001f) continue;
-                outward.Normalize();
+                Vector3 tangent = edge.PointTwo - edge.PointOne;
+                tangent.y = 0f;
+                if (tangent.sqrMagnitude < 0.001f) continue;
+                tangent.Normalize();
+                Vector3 outward = Vector3.Cross(Vector3.up, tangent).normalized;
+                Vector3 radial = position - owner.Position;
+                radial.y = 0f;
+                if (radial.sqrMagnitude < 0.001f) continue;
+                if (Vector3.Dot(outward, radial) < 0f) outward = -outward;
                 RuntimeRainBoundarySample sample = new RuntimeRainBoundarySample
                 {
                     NodeIndex = _cursor,
@@ -467,7 +659,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     flags |= RuntimeRainSurfaceSample.SafeSpawn;
                     _safeSpawnCount++;
                 }
-                Surfaces.Add(new RuntimeRainSurfaceSample
+                RuntimeRainSurfaceSample sample = new RuntimeRainSurfaceSample
                 {
                     NodeIndex = poly.NodeIndex,
                     Position = position,
@@ -475,7 +667,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     Clearance = clearance,
                     CoverMask = coverMask,
                     Flags = flags
-                });
+                };
+                int surfaceIndex = Surfaces.Count;
+                Surfaces.Add(sample);
+                AddBucket(SurfaceBuckets, SpatialKey(position, SurfaceBucketSize), surfaceIndex);
             }
             _detail = "surfaces=" + _cursor + "/" + _total + " safe=" + _safeSpawnCount;
             if (_cursor < Polys.Count) return;
@@ -523,6 +718,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         int targetIndex = candidates[c];
                         if (targetIndex == sourceIndex) continue;
                         RuntimeRainBoundarySample target = LinkBoundaries[targetIndex];
+                        if (source.Component < 0 || target.Component < 0 ||
+                            source.Component == target.Component) continue;
                         Vector3 delta = target.Position - source.Position;
                         float horizontal = new Vector2(delta.x, delta.z).magnitude;
                         float rise = delta.y;
@@ -536,6 +733,14 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
                         Vector3 start = source.Position - source.Outward * 0.52f;
                         Vector3 finish = target.Position - target.Outward * 0.52f;
+                        Vector3 sourceCenter = source.PolyIndex >= 0 && source.PolyIndex < Polys.Count
+                            ? Polys[source.PolyIndex].Poly.Position : start;
+                        Vector3 targetCenter = target.PolyIndex >= 0 && target.PolyIndex < Polys.Count
+                            ? Polys[target.PolyIndex].Poly.Position : finish;
+                        if (!AutoBattleRoutePlanner.CanFollowRouteSegment(sourceCenter, start, null) ||
+                            !AutoBattleRoutePlanner.CanFollowRouteSegment(finish, targetCenter, null) ||
+                            !AutoBattleRoutePlanner.HasSupportedStandingPoint(start, null) ||
+                            !AutoBattleRoutePlanner.HasSupportedStandingPoint(finish, null)) continue;
                         if (!AutoBattleRoutePlanner.CanExecuteJump(start, finish, maximum, null)) continue;
                         float requiredHeight = Mathf.Max(1.2f, Mathf.Max(0f, rise) / 0.92f + 0.08f);
                         float requiredSpeed = Mathf.Clamp(horizontal /
@@ -656,6 +861,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Links.AddRange(record.Links);
             Boundaries.AddRange(record.Boundaries);
             Surfaces.AddRange(record.Surfaces);
+            BuildBoundaryBuckets();
+            BuildSurfaceBuckets();
             _componentCount = record.ComponentCount;
             _safeSpawnCount = record.SafeSpawnCount;
             for (int i = 0; i < Links.Count; i++)
@@ -681,6 +888,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
                 catch { }
             }
+        }
+
+        private static void BuildSurfaceBuckets()
+        {
+            SurfaceBuckets.Clear();
+            for (int i = 0; i < Surfaces.Count; i++)
+                AddBucket(SurfaceBuckets, SpatialKey(Surfaces[i].Position, SurfaceBucketSize), i);
+        }
+
+        private static void BuildBoundaryBuckets()
+        {
+            BoundaryBuckets.Clear();
+            for (int i = 0; i < Boundaries.Count; i++)
+                AddBucket(BoundaryBuckets, SpatialKey(Boundaries[i].Position, BoundaryBucketSize), i);
         }
 
         private static void RemoveInjectedLinks()
@@ -726,6 +947,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Links.Clear();
             BoundaryBuckets.Clear();
             LinkBuckets.Clear();
+            SurfaceBuckets.Clear();
             LinkSampleKeys.Clear();
             LinkLookup.Clear();
             ActiveLinkLookup.Clear();
@@ -749,6 +971,24 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _rainIdentity = string.Empty;
                 _graphSignature = string.Empty;
             }
+        }
+
+        private static void ReleaseContainerCapacity()
+        {
+            Polys = new List<PolyWork>();
+            PolyLookup = new Dictionary<NavMeshPoly, int>();
+            Boundaries = new List<RuntimeRainBoundarySample>();
+            LinkBoundaries = new List<RuntimeRainBoundarySample>();
+            Surfaces = new List<RuntimeRainSurfaceSample>();
+            Links = new List<RuntimeRainOffMeshLink>();
+            BoundaryBuckets = new Dictionary<long, List<int>>();
+            LinkBuckets = new Dictionary<long, List<int>>();
+            SurfaceBuckets = new Dictionary<long, List<int>>();
+            LinkSampleKeys = new HashSet<long>();
+            LinkLookup = new Dictionary<long, RuntimeRainOffMeshLink>();
+            ActiveLinkLookup = new Dictionary<long, RuntimeRainOffMeshLink>();
+            LinkNodeLookup = new Dictionary<NavigationGraphNode, int>();
+            InjectedLinks = new List<InjectedLink>();
         }
 
         private static int Find(int value)

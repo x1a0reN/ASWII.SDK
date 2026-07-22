@@ -70,6 +70,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _opportunityCooldownUntil;
         private static float _emergencyTargetVisibleAt;
         private static float _emergencyTargetLockedAt;
+        private static float _emergencyReleasedUntil;
         private static float _nextEnemyTrackAt;
         private static float _recentDamageAt;
         private static int _lastPlayerHp;
@@ -83,15 +84,25 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _lastCliffDistance;
         private static float _nextCliffTraceAt;
         private static float _nextSuicideRequestAt;
+        private static float _cliffJumpStartedAt;
+        private static float _nextCliffJumpTraceAt;
         private static Vector3 _safePoint;
         private static Vector3 _attackPoint;
         private static Vector3 _attackPointTargetPosition;
         private static Vector3 _attackSearchLookDirection;
         private static Vector3 _cliffEdge;
         private static Vector3 _cliffOutward;
+        private static Vector3 _cliffJumpStart;
         private static readonly Vector3[] FailedCandidates = new Vector3[5];
         private static readonly float[] FailedCandidateUntil = new float[5];
+        private static readonly Vector3[] FailedCliffCandidates = new Vector3[12];
+        private static readonly float[] FailedCliffCandidateUntil = new float[12];
+        private static readonly float[] CliffProbeDistances = { 0.9f, 1.7f, 2.5f, 3.3f };
+        private static readonly float[] CliffProbeSideOffsets = { -0.38f, 0f, 0.38f };
+        private static readonly List<RuntimeRainBoundarySample> CliffBoundaryCandidates =
+            new List<RuntimeRainBoundarySample>(96);
         private static int _failedCandidateCursor;
+        private static int _failedCliffCandidateCursor;
         private static int _combatStrafeSign = 1;
         private static bool _hasSafePoint;
         private static bool _hasAttackPoint;
@@ -103,6 +114,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static Character _searchTarget;
         private static float _searchTargetLockedAt;
         private static Character _emergencyTarget;
+        private static Character _emergencyReleasedTarget;
         private static UITakeCardManager _cardManager;
         private static UIJiesuan _balanceView;
         private static int _cardCount;
@@ -147,6 +159,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static void Tick(Level level, Character player, Camera camera)
         {
             AutoBattleInput.BeginFrame();
+
+            if (TickRainLifecycleGate()) return;
 
             // The direct level33 test is fully local and intentionally bypasses proxy/channel state checks.
             if (Level33TestEnabled)
@@ -212,6 +226,69 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (_roundActive) FinishRound();
             TickLobby(app);
+        }
+
+        internal static bool TickRainLifecycleGate()
+        {
+            if (!RuntimeRainNavMesh.HasDeferredSceneCleanup) return false;
+            GameStateManager manager = ASSingleton<GameStateManager>.Instance;
+            RuntimeRainNavMesh.TickDeferredSceneCleanup(IsSafeRainCollectionPoint(manager));
+            AutoBattleInput.ClearAll();
+            StatusText = "RAIN 内存门禁 | " + RuntimeRainNavMesh.Detail;
+            return true;
+        }
+
+        internal static void NotifyLevelExit()
+        {
+            AutoBattleInput.ClearAll();
+            SurvivalCombatAdapter.ResetSurvivalRuntime("level_exit");
+            AutoBattleManager.NotifyLevelExit();
+            Enemies.Clear();
+            EnemyTracks.Clear();
+            CliffBoundaryCandidates.Clear();
+            _attackTarget = null;
+            _searchTarget = null;
+            _emergencyTarget = null;
+            _emergencyReleasedTarget = null;
+            _cardManager = null;
+            _balanceView = null;
+            _hasSafePoint = false;
+            _hasAttackPoint = false;
+            _hasCliff = false;
+            ResetAttackSearchRuntime();
+            ClearFailedCandidates();
+            ClearFailedCliffCandidates();
+            FileLogger.Log("SURVIVAL", "scene references cleared; round state preserved");
+        }
+
+        private static bool IsSafeRainCollectionPoint(GameStateManager manager)
+        {
+            if (!RuntimeRainNavMesh.IsRetiredGraphQuiescent) return false;
+            try
+            {
+                if (ResourceManager2.instance == null || !ResourceManager2.instance.ClearFinsh)
+                    return false;
+                if (manager == null || manager.CurState == null || !manager.CurState.IsLoaded())
+                    return false;
+
+                if (manager.CurStateType == GameStateType.Lobby)
+                {
+                    bool stableLobby = !MapBakeSceneLoader.DirectSceneActive && UILobby.instance != null;
+                    if (!stableLobby) return false;
+                    Level level = ASSingleton<Level>.Instance;
+                    return level == null || level.state == Level.State.kNone;
+                }
+
+                // A failed or superseded graph may be collected inside the current scene once
+                // navigation is detached, the state is loaded and the level is fully ready.
+                Level activeLevel = ASSingleton<Level>.Instance;
+                return !MapBakeSceneLoader.IsTransitioning && activeLevel != null &&
+                    activeLevel.state == Level.State.kReady;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static void SetEnabled(bool enabled, string reason)
@@ -600,6 +677,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _emergencyTarget = null;
             _emergencyTargetVisibleAt = 0f;
             _emergencyTargetLockedAt = 0f;
+            _emergencyReleasedTarget = null;
+            _emergencyReleasedUntil = 0f;
             _nextEnemyTrackAt = 0f;
             _recentDamageAt = 0f;
             _lastPlayerHp = player == null ? 0 : player.hp;
@@ -612,8 +691,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             ResetAttackSearchRuntime();
             _nextCliffTraceAt = 0f;
             _cliffJumpLogged = false;
+            _cliffJumpStartedAt = 0f;
+            _nextCliffJumpTraceAt = 0f;
+            _cliffJumpStart = Vector3.zero;
             _nextSuicideRequestAt = 0f;
             _serverSuicideRequested = false;
+            ClearFailedCliffCandidates();
             SurvivalCombatAdapter.ResetSurvivalRuntime("round_start");
             CaptureParticipants(GameApp.Instance, level, player);
             Phase = SurvivalBotPhase.CaptureParticipants;
@@ -923,6 +1006,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
             if (_emergencyTarget == null)
             {
+                if (contender != null && contender == _emergencyReleasedTarget &&
+                    Time.time < _emergencyReleasedUntil)
+                    return false;
                 _emergencyTarget = contender;
                 if (_emergencyTarget == null) return false;
                 _emergencyTargetLockedAt = Time.time;
@@ -989,8 +1075,15 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static void ClearEmergencyTarget(string reason)
         {
             if (_emergencyTarget != null)
+            {
                 FileLogger.Log("SURVIVAL", "emergency counterattack stop uid=" + _emergencyTarget.uid +
                     " reason=" + reason);
+                if (string.Equals(reason, "threat_released", StringComparison.Ordinal))
+                {
+                    _emergencyReleasedTarget = _emergencyTarget;
+                    _emergencyReleasedUntil = Time.time + 0.75f;
+                }
+            }
             _emergencyTarget = null;
             _emergencyTargetVisibleAt = 0f;
             _emergencyTargetLockedAt = 0f;
@@ -1199,8 +1292,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _lastCliffProgressAt = Time.time;
                 _nextCliffTraceAt = 0f;
                 _cliffJumpLogged = false;
+                _cliffJumpStartedAt = 0f;
+                _nextCliffJumpTraceAt = 0f;
+                _cliffJumpStart = Vector3.zero;
                 _nextSuicideRequestAt = 0f;
                 _serverSuicideRequested = false;
+                ClearFailedCliffCandidates();
                 AutoBattleInput.ClearAll();
                 FileLogger.Log("SURVIVAL", "suicide phase started; cliff preferred fallback=" +
                     SurvivalBotSettings.SuicideFallbackSeconds.ToString("0") + "s");
@@ -1216,19 +1313,23 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (!_hasCliff && Time.time >= _nextCliffScanAt)
             {
                 _nextCliffScanAt = Time.time + 2f;
-                _hasCliff = TryFindCliff(player, out _cliffEdge, out _cliffOutward);
+                string cliffDetail;
+                _hasCliff = TryFindCliff(player, out _cliffEdge, out _cliffOutward,
+                    out cliffDetail);
                 if (_hasCliff)
                 {
                     _lastCliffDistance = XzDistance(player.transform.position, _cliffEdge);
                     _lastCliffProgressAt = Time.time;
                     _cliffJumpLogged = false;
                     FileLogger.Log("SURVIVAL", "reachable cliff candidate edge=" + FormatVec(_cliffEdge) +
-                        " outward=" + FormatVec(_cliffOutward) + " dist=" + _lastCliffDistance.ToString("0.0"));
+                        " outward=" + FormatVec(_cliffOutward) + " dist=" + _lastCliffDistance.ToString("0.0") +
+                        " " + cliffDetail);
                 }
                 else if (Time.time >= _nextCliffTraceAt)
                 {
                     _nextCliffTraceAt = Time.time + 4f;
-                    FileLogger.Log("SURVIVAL", "no directly reachable cliff; waiting for server-suicide fallback");
+                    FileLogger.Log("SURVIVAL", "no verified cliff; waiting for server-suicide fallback " +
+                        cliffDetail);
                 }
             }
 
@@ -1256,8 +1357,36 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (_cliffJumpLogged)
             {
+                Vector3 position = player.transform.position;
+                float elapsed = Mathf.Max(0f, Time.time - _cliffJumpStartedAt);
+                float verticalDrop = _cliffJumpStart.y - position.y;
+                Vector3 displacement = position - _cliffJumpStart;
+                displacement.y = 0f;
+                float forwardProgress = Vector3.Dot(displacement, _cliffOutward);
+                bool grounded = SafeIsOnGround(player);
+                if (Time.time >= _nextCliffJumpTraceAt)
+                {
+                    _nextCliffJumpTraceAt = Time.time + 0.5f;
+                    FileLogger.Log("SURVIVAL", "cliff jump trace elapsed=" + elapsed.ToString("0.0") +
+                        " pos=" + FormatVec(position) + " drop=" + verticalDrop.ToString("0.0") +
+                        " forward=" + forwardProgress.ToString("0.0") +
+                        " grounded=" + grounded);
+                }
+
+                bool blocked = elapsed >= 0.9f && grounded && forwardProgress < 0.60f;
+                bool landedWithoutDrop = elapsed >= 1.8f && grounded && verticalDrop < 3.0f;
+                bool noFall = elapsed >= 2.2f && verticalDrop < 1.5f;
+                if (blocked || landedWithoutDrop || noFall)
+                {
+                    AbandonCliffCandidate(blocked ? "jump_blocked" :
+                        (landedWithoutDrop ? "landed_without_fatal_drop" : "jump_no_fall"),
+                        position, verticalDrop, forwardProgress);
+                    return;
+                }
+
                 AutoBattleInput.SetMoveWorld(player, _cliffOutward, false);
-                AutoBattleInput.HoldAction(ActionType.kActionJump, 0.18f);
+                if (elapsed <= 0.85f)
+                    AutoBattleInput.HoldAction(ActionType.kActionJump, 0.18f);
                 StatusText = "任务完成，保持向外坠落";
                 return;
             }
@@ -1272,7 +1401,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 }
                 else if (Time.time - _lastCliffProgressAt > 5f)
                 {
-                    MarkCandidateFailed(_cliffEdge);
+                    MarkCliffCandidateFailed(_cliffEdge);
                     _hasCliff = false;
                     _nextCliffScanAt = 0f;
                     AutoBattleInput.ClearMovement();
@@ -1289,7 +1418,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     {
                         FileLogger.Log("SURVIVAL", "cliff candidate abandoned reason=" +
                             SurvivalCombatAdapter.LastPath + " edge=" + FormatVec(_cliffEdge));
-                        MarkCandidateFailed(_cliffEdge);
+                        MarkCliffCandidateFailed(_cliffEdge);
                         _hasCliff = false;
                         _nextCliffScanAt = 0f;
                         AutoBattleInput.ClearMovement();
@@ -1302,14 +1431,28 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     return;
                 }
 
+                string launchDetail;
+                float verifiedDrop;
+                if (!TryValidateCliffApproach(_cliffEdge, _cliffOutward,
+                    player.transform.root, out verifiedDrop, out launchDetail))
+                {
+                    AbandonCliffCandidate("launch_recheck:" + launchDetail,
+                        player.transform.position, 0f, 0f);
+                    return;
+                }
+
                 AutoBattleInput.SetMoveWorld(player, _cliffOutward, false);
                 AutoBattleInput.PressAction(ActionType.kActionJump, 0.12f);
                 AutoBattleInput.HoldAction(ActionType.kActionJump, 0.38f);
                 if (!_cliffJumpLogged)
                 {
                     _cliffJumpLogged = true;
+                    _cliffJumpStartedAt = Time.time;
+                    _nextCliffJumpTraceAt = 0f;
+                    _cliffJumpStart = player.transform.position;
                     FileLogger.Log("SURVIVAL", "cliff jump issued edge=" + FormatVec(_cliffEdge) +
-                        " outward=" + FormatVec(_cliffOutward));
+                        " outward=" + FormatVec(_cliffOutward) + " drop=" +
+                        verifiedDrop.ToString("0.0") + " " + launchDetail);
                 }
                 StatusText = "任务完成，跳崖结束对局";
                 return;
@@ -1415,6 +1558,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 Phase = SurvivalBotPhase.Lobby;
                 StatusText = "等待返回频道大厅";
+                return;
+            }
+
+            string rainLoadGate;
+            if (!RuntimeRainNavMesh.CanStartHighDetailSceneLoad(out rainLoadGate))
+            {
+                Phase = SurvivalBotPhase.Lobby;
+                StatusText = "RAIN 加载门禁 | " + rainLoadGate;
                 return;
             }
 
@@ -2289,44 +2440,176 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return target != null && target.transform != null && !target.IsDied && !target.Is_Viewer;
         }
 
-        private static bool TryFindCliff(Character player, out Vector3 edge, out Vector3 outward)
+        private static bool TryFindCliff(Character player, out Vector3 edge, out Vector3 outward,
+            out string detail)
         {
             edge = Vector3.zero;
             outward = Vector3.zero;
+            detail = "source=rain_boundary unavailable";
+            if (player == null || player.transform == null) return false;
+
             Vector3 origin = player.transform.position;
-            float bestDistance = float.MaxValue;
-            for (int i = 0; i < 24; i++)
+            int candidateCount = RuntimeRainNavDerivedData.CollectNearbyBoundaries(origin, 60f, 96,
+                CliffBoundaryCandidates);
+            if (candidateCount <= 0)
             {
-                Vector3 dir = Quaternion.AngleAxis(i * 15f, Vector3.up) * Vector3.forward;
-                Vector3 lastGround = Vector3.zero;
-                float lastSafeDistance = 0f;
-                for (float distance = 2f; distance <= 18f; distance += 1f)
+                detail = "source=rain_boundary candidates=0";
+                return false;
+            }
+
+            int failed = 0;
+            int approachRejected = 0;
+            int dropRejected = 0;
+            string lastReject = "none";
+            for (int i = 0; i < CliffBoundaryCandidates.Count; i++)
+            {
+                RuntimeRainBoundarySample sample = CliffBoundaryCandidates[i];
+                Vector3 direction = sample.Outward;
+                direction.y = 0f;
+                if (direction.sqrMagnitude < 0.01f) continue;
+                direction.Normalize();
+
+                Vector3 approach;
+                if (!TryProjectStaticGround(sample.Position - direction * 0.72f,
+                    sample.Position.y, 1.4f, player.transform.root, out approach) ||
+                    IsFailedCliffCandidate(approach))
                 {
+                    failed++;
+                    continue;
+                }
+                if (!AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(approach, 1.0f) ||
+                    !AutoBattleRoutePlanner.HasSupportedStandingPoint(approach, player.transform.root) ||
+                    !AutoBattleRoutePlanner.CanFollowRouteSegment(approach,
+                        sample.Position - direction * 0.08f, player.transform.root))
+                {
+                    approachRejected++;
+                    continue;
+                }
+
+                float drop;
+                string validation;
+                if (!TryValidateCliffApproach(approach, direction, player.transform.root,
+                    out drop, out validation))
+                {
+                    dropRejected++;
+                    lastReject = validation;
+                    continue;
+                }
+
+                edge = approach;
+                outward = direction;
+                detail = "source=rain_boundary candidates=" + candidateCount +
+                    " checked=" + (i + 1) + " failed=" + failed +
+                    " approachReject=" + approachRejected + " dropReject=" + dropRejected +
+                    " width=" + sample.Width.ToString("0.0") +
+                    " drop=" + drop.ToString("0.0");
+                return true;
+            }
+
+            detail = "source=rain_boundary candidates=" + candidateCount +
+                " failed=" + failed + " approachReject=" + approachRejected +
+                " dropReject=" + dropRejected + " last=" + lastReject;
+            return false;
+        }
+
+        private static bool TryValidateCliffApproach(Vector3 approach, Vector3 outward,
+            Transform ignoreRoot, out float minimumDrop, out string detail)
+        {
+            minimumDrop = float.MaxValue;
+            detail = "invalid_direction";
+            outward.y = 0f;
+            if (outward.sqrMagnitude < 0.01f) return false;
+            outward.Normalize();
+
+            Vector3 lip = approach + outward * 0.72f;
+            if (!AutoBattleRoutePlanner.CanFollowRouteSegment(approach,
+                lip - outward * 0.08f, ignoreRoot))
+            {
+                detail = "approach_blocked";
+                return false;
+            }
+            if (!HasCliffExitClearance(lip, outward))
+            {
+                detail = "exit_lane_blocked";
+                return false;
+            }
+
+            Vector3 side = Vector3.Cross(Vector3.up, outward).normalized;
+            int fatal = 0;
+            int supported = 0;
+            int centerSupported = 0;
+            for (int d = 0; d < CliffProbeDistances.Length; d++)
+            {
+                for (int s = 0; s < CliffProbeSideOffsets.Length; s++)
+                {
+                    Vector3 probe = lip + outward * CliffProbeDistances[d] +
+                        side * CliffProbeSideOffsets[s];
                     Vector3 ground;
-                    if (TryProjectGround(origin + dir * distance, origin.y, 3f, out ground))
+                    if (!TryFindStaticGroundBelow(probe + Vector3.up * 1.25f, 16f,
+                        ignoreRoot, out ground))
                     {
-                        lastGround = ground;
-                        lastSafeDistance = distance;
+                        fatal++;
+                        minimumDrop = Mathf.Min(minimumDrop, 16f);
                         continue;
                     }
 
-                    if (lastSafeDistance < 4f || !IsFatalDrop(lastGround, dir)) break;
-                    Vector3 candidate = lastGround - dir * 1.1f;
-                    if (IsFailedCandidate(candidate)) break;
-                    if (!HasCliffExitClearance(candidate, dir)) break;
-                    float routePenalty = AutoBattleRoutePlanner.CandidatePenalty(origin, candidate, player.transform.root);
-                    bool directlyReachable = routePenalty <= 0.01f &&
-                        AutoBattleRoutePlanner.CanFollowSegment(origin, candidate, player.transform.root);
-                    if (directlyReachable && lastSafeDistance < bestDistance)
+                    float drop = lip.y - ground.y;
+                    if (drop >= 5f)
                     {
-                        bestDistance = lastSafeDistance;
-                        edge = candidate;
-                        outward = dir;
+                        fatal++;
+                        minimumDrop = Mathf.Min(minimumDrop, drop);
                     }
-                    break;
+                    else
+                    {
+                        supported++;
+                        if (s == 1) centerSupported++;
+                    }
                 }
             }
-            return outward.sqrMagnitude > 0.01f;
+
+            if (minimumDrop == float.MaxValue) minimumDrop = 0f;
+            if (centerSupported > 0 || fatal < 10)
+            {
+                detail = "drop_probe_rejected fatal=" + fatal + "/12 supported=" + supported +
+                    " centerSupported=" + centerSupported + " minDrop=" +
+                    minimumDrop.ToString("0.0");
+                return false;
+            }
+
+            detail = "drop_probe_ok fatal=" + fatal + "/12 supported=" + supported;
+            return true;
+        }
+
+        private static bool TryProjectStaticGround(Vector3 point, float referenceY, float maxDelta,
+            Transform ignoreRoot, out Vector3 ground)
+        {
+            Vector3 origin = point + Vector3.up * (maxDelta + 0.8f);
+            if (!TryFindStaticGroundBelow(origin, maxDelta * 2f + 1.6f, ignoreRoot, out ground))
+                return false;
+            return Mathf.Abs(ground.y - referenceY) <= maxDelta;
+        }
+
+        private static bool TryFindStaticGroundBelow(Vector3 origin, float distance,
+            Transform ignoreRoot, out Vector3 ground)
+        {
+            ground = origin;
+            try
+            {
+                RaycastHit[] hits = Physics.RaycastAll(origin, Vector3.down, distance);
+                Array.Sort(hits, CompareHitDistance);
+                for (int i = 0; i < hits.Length; i++)
+                {
+                    Collider collider = hits[i].collider;
+                    if (collider == null || collider.isTrigger || hits[i].normal.y < 0.38f) continue;
+                    Transform root = collider.transform == null ? null : collider.transform.root;
+                    if (root != null && (root == ignoreRoot || root.GetComponent<Character>() != null))
+                        continue;
+                    ground = hits[i].point;
+                    return true;
+                }
+            }
+            catch { }
+            return false;
         }
 
         private static bool TryProjectGround(Vector3 point, float referenceY, float maxDelta, out Vector3 ground)
@@ -2380,21 +2663,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return blocked >= 2;
         }
 
-        private static bool IsFatalDrop(Vector3 edgeGround, Vector3 outward)
-        {
-            try
-            {
-                Vector3 probe = edgeGround + outward.normalized * 1.8f + Vector3.up * 0.8f;
-                int mask = LayerMask.GetMask(new string[] { "Terrarin" });
-                RaycastHit hit;
-                bool found = mask != 0
-                    ? Physics.Raycast(probe, Vector3.down, out hit, 12f, mask)
-                    : Physics.Raycast(probe, Vector3.down, out hit, 12f);
-                return !found || edgeGround.y - hit.point.y >= 5f;
-            }
-            catch { return false; }
-        }
-
         private static bool HasCliffExitClearance(Vector3 edgeGround, Vector3 outward)
         {
             outward.y = 0f;
@@ -2404,6 +2672,30 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Vector3 to = edgeGround + outward * 2.6f;
             return !HasMapBlock(from + Vector3.up * 0.65f, to + Vector3.up * 0.65f) &&
                    !HasMapBlock(from + Vector3.up * 1.25f, to + Vector3.up * 1.25f);
+        }
+
+        private static void AbandonCliffCandidate(string reason, Vector3 position,
+            float verticalDrop, float forwardProgress)
+        {
+            MarkCliffCandidateFailed(_cliffEdge);
+            _hasCliff = false;
+            _cliffJumpLogged = false;
+            _cliffJumpStartedAt = 0f;
+            _nextCliffJumpTraceAt = 0f;
+            _cliffJumpStart = Vector3.zero;
+            _nextCliffScanAt = 0f;
+            AutoBattleInput.ClearMovement();
+            SurvivalCombatAdapter.SuspendSurvivalNavigation("suicide_cliff_failed");
+            FileLogger.Log("SURVIVAL", "cliff candidate abandoned reason=" + reason +
+                " edge=" + FormatVec(_cliffEdge) + " pos=" + FormatVec(position) +
+                " drop=" + verticalDrop.ToString("0.0") +
+                " forward=" + forwardProgress.ToString("0.0"));
+        }
+
+        private static bool SafeIsOnGround(Character player)
+        {
+            try { return player != null && player.IsOnGround(); }
+            catch { return false; }
         }
 
         private static bool IsRouteFailure(string intent)
@@ -2426,6 +2718,25 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _failedCandidateCursor = (_failedCandidateCursor + 1) % FailedCandidates.Length;
         }
 
+        private static void MarkCliffCandidateFailed(Vector3 point)
+        {
+            FailedCliffCandidates[_failedCliffCandidateCursor] = point;
+            FailedCliffCandidateUntil[_failedCliffCandidateCursor] = Time.time + 45f;
+            _failedCliffCandidateCursor = (_failedCliffCandidateCursor + 1) %
+                FailedCliffCandidates.Length;
+        }
+
+        private static bool IsFailedCliffCandidate(Vector3 point)
+        {
+            for (int i = 0; i < FailedCliffCandidates.Length; i++)
+            {
+                if (Time.time < FailedCliffCandidateUntil[i] &&
+                    XzDistance(point, FailedCliffCandidates[i]) < 3f)
+                    return true;
+            }
+            return false;
+        }
+
         private static bool IsFailedCandidate(Vector3 point)
         {
             for (int i = 0; i < FailedCandidates.Length; i++)
@@ -2444,6 +2755,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 FailedCandidateUntil[i] = 0f;
             }
             _failedCandidateCursor = 0;
+        }
+
+        private static void ClearFailedCliffCandidates()
+        {
+            for (int i = 0; i < FailedCliffCandidateUntil.Length; i++)
+            {
+                FailedCliffCandidates[i] = Vector3.zero;
+                FailedCliffCandidateUntil[i] = 0f;
+            }
+            _failedCliffCandidateCursor = 0;
+            CliffBoundaryCandidates.Clear();
         }
 
         private static void ResetAttackSearchRuntime()

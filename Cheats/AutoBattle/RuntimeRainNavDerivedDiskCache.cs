@@ -33,11 +33,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return Path.ChangeExtension(basePath, ".rainmeta");
         }
 
+        internal static string GetCachePath(string mapName, bool highDetail)
+        {
+            return Path.ChangeExtension(RuntimeRainNavDiskCache.GetCachePath(mapName, highDetail),
+                ".rainmeta");
+        }
+
         internal static bool TryLoad(string mapName, string rainIdentity, string graphSignature,
             int graphSize, out RuntimeRainDerivedCacheRecord record, out string status)
         {
             record = null;
-            string path = GetCachePath(mapName);
+            bool highDetail = IsHighDetailSignature(graphSignature);
+            string path = GetCachePath(mapName, highDetail);
+            string legacyPath = GetCachePath(mapName);
+            if (!File.Exists(path) && highDetail && File.Exists(legacyPath)) path = legacyPath;
             if (!File.Exists(path))
             {
                 status = "miss";
@@ -137,7 +146,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             IList<RuntimeRainBoundarySample> boundaries, IList<RuntimeRainSurfaceSample> surfaces,
             int componentCount, int safeSpawnCount, out long fileBytes, out string path, out string status)
         {
-            path = GetCachePath(mapName);
+            path = GetCachePath(mapName, IsHighDetailSignature(graphSignature));
             fileBytes = 0L;
             string tempPath = path + ".tmp." + System.Diagnostics.Process.GetCurrentProcess().Id;
             try
@@ -238,6 +247,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 writer.Flush();
                 return stream.ToArray();
             }
+        }
+
+        private static bool IsHighDetailSignature(string graphSignature)
+        {
+            return !string.IsNullOrEmpty(graphSignature) &&
+                   graphSignature.IndexOf("maxDetail=1", StringComparison.Ordinal) >= 0;
         }
 
         private static RuntimeRainDerivedCacheRecord Deserialize(byte[] payload, int graphSize)

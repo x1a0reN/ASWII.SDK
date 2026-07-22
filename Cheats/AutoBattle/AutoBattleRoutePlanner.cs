@@ -2,6 +2,7 @@ using ASWDEBUG.Logger;
 using ASWDEBUG.Cheats.SurvivalBot;
 using RAIN.Navigation;
 using RAIN.Navigation.Graph;
+using RAIN.Navigation.NavMesh;
 using RAIN.Navigation.Pathfinding;
 using System;
 using System.Collections;
@@ -9,6 +10,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using UnityEngine;
 
 namespace ASWDEBUG.Cheats.AutoBattle
@@ -57,9 +59,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const float MaxStepHeight = 1.25f;
         private const float NavLoadTimeout = 8.0f;
         private const float MaxWalkableRampGrade = 0.92f;
+        private const float WalkGradeSlack = 0.22f;
+        private const float SamePositionTolerance = 0.12f;
+        private const float SamePositionVerticalTolerance = 0.28f;
         private const float RainCornerClearanceRadius = 0.62f;
         private const float NavigationBodyRadius = 0.48f;
         private const float RainShortcutCorridorRadius = 0.28f;
+        private const float RainDetourCellSize = 0.75f;
+        private const int RainDetourRadiusCells = 12;
+        private const int RainDetourMaxExpanded = 720;
+        private const int RainPathStepsPerSlice = 2048;
+        private const float RainStartLayerTolerance = 1.65f;
+        private const float RainStartAnchorMaxRadius = 5.25f;
 
         private static readonly int[] Dx = { 1, -1, 0, 0, 1, 1, -1, -1 };
         private static readonly int[] Dz = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -68,6 +79,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static readonly float[] JumpProbeHeights = { 0.32f, 1.12f };
         private static readonly float[] NavigationProbeHeights = { 0.38f, 0.92f, 1.42f };
         private static readonly float[] NavigationProbeOffsetScales = { -1f, 0f, 1f };
+        private static readonly float[] JumpProbeSideOffsets = { -0.42f, 0f, 0.42f };
 
         private static int _groundMask = int.MinValue;
         private static int _blockMask = int.MinValue;
@@ -88,6 +100,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _sliceSpentMilliseconds;
         private static float _frameMillisecondsEma = TargetFrameMilliseconds;
         private static string _mapBakeDeferredReason = string.Empty;
+        private static readonly HashSet<string> RainFailureDumps = new HashSet<string>();
 
         internal static AutoBattleNavResourceState NavigationState
         {
@@ -145,23 +158,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         internal static void DeactivateNavigationForSceneExit(string reason)
         {
+            // level33 keeps only the materialized managed graph. Registration and the Unity mount
+            // are scene-local and must be removed before the next GameLoading transition.
             DeactivateNavigation(reason, true);
         }
 
-        private static void DeactivateNavigation(string reason, bool releaseMemoryCache)
+        private static void DeactivateNavigation(string reason, bool sceneExit)
         {
             _physicsSearchJob = null;
             _rainSearchJob = null;
-            if (SurvivalBotManager.MapBakeEnabled && RuntimeRainNavMesh.IsHighDetail &&
-                RuntimeRainNavMesh.IsBuilding)
-            {
-                FileLogger.Log("AUTO-BATTLE][NAVMESH", "background_build_preserved reason=" +
-                    SafeOneLine(reason, 80) + " map=" + SafeMap(RuntimeRainNavMesh.CurrentMapName));
-                return;
-            }
-            RuntimeRainNavMesh.Deactivate(reason);
-            if (releaseMemoryCache)
-                RuntimeRainNavMesh.ReleaseMemoryCache("scene_exit:" + reason);
+            if (sceneExit) RuntimeRainNavMesh.SuspendForSceneExit(reason);
+            else RuntimeRainNavMesh.Deactivate(reason);
             ResetNavigationState();
         }
 
@@ -180,20 +187,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool declared = ManifestDeclaresNavMesh(normalized);
             bool bakeMode = SurvivalBotManager.MapBakeEnabled;
             bool level33Test = SurvivalBotManager.Level33TestEnabled;
+            bool residentLevel33 = string.Equals(normalized, "level33", StringComparison.OrdinalIgnoreCase);
 
-            if (declared && !loadNavmesh)
+            if (residentLevel33)
+                loadNavmesh = false;
+            else if (declared && !loadNavmesh)
                 loadNavmesh = true;
 
-            if (bakeMode && RuntimeRainNavMesh.IsHighDetail && RuntimeRainNavMesh.IsBuilding &&
-                string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized, StringComparison.OrdinalIgnoreCase))
-            {
-                FileLogger.Log("AUTO-BATTLE][NAVMESH", "background_build_kept activeMap=" +
-                    SafeMap(RuntimeRainNavMesh.CurrentMapName) + " incomingMap=" + SafeMap(normalized));
-                return;
-            }
-
-            RuntimeRainNavMesh.PrepareMap(normalized, bakeMode || level33Test || !declared,
-                bakeMode || level33Test);
+            bool runtimeRainRequired = residentLevel33 || bakeMode || level33Test || !declared;
+            // Maximum-detail level33 consumes too much address space to survive another Unity
+            // scene load in this 32-bit client. Other maps retain their existing profile.
+            bool highDetailRain = residentLevel33 ? false : runtimeRainRequired;
+            RuntimeRainNavMesh.PrepareMap(normalized, runtimeRainRequired, highDetailRain);
 
             _navMapName = normalized;
             _navResourceDeclared = declared;
@@ -250,12 +255,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             _mapBakeDeferredReason = string.Empty;
             string normalized = level.map_name.Trim().ToLowerInvariant();
-            if (RuntimeRainNavMesh.IsHighDetail && RuntimeRainNavMesh.IsBuilding) return;
-            if (RuntimeRainNavMesh.Requested && RuntimeRainNavMesh.IsHighDetail &&
+            bool highDetail = !string.Equals(normalized, "level33", StringComparison.OrdinalIgnoreCase);
+            if (RuntimeRainNavMesh.IsBuilding && RuntimeRainNavMesh.IsHighDetail == highDetail &&
+                string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized,
+                    StringComparison.OrdinalIgnoreCase)) return;
+            if (RuntimeRainNavMesh.Requested && RuntimeRainNavMesh.IsHighDetail == highDetail &&
                 string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            RuntimeRainNavMesh.PrepareMap(normalized, true, true);
+            RuntimeRainNavMesh.PrepareMap(normalized, true, highDetail);
             _navMapName = normalized;
             _navResourceDeclared = ManifestDeclaresNavMesh(normalized);
             _navLoadRequested = true;
@@ -264,7 +272,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _physicsSearchJob = null;
             _rainSearchJob = null;
             SetNavigationState(AutoBattleNavResourceState.Loading,
-                "map=" + SafeMap(normalized) + " provider=runtime profile=max_detail source=map_bake");
+                "map=" + SafeMap(normalized) + " provider=runtime profile=" +
+                (highDetail ? "max_detail" : "long_run_0.20") + " source=map_bake");
         }
 
         private static bool ManifestDeclaresNavMesh(string mapName)
@@ -310,30 +319,34 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 bool rainPartial;
                 bool rainOffMesh;
                 List<bool> rainOffMeshFlags;
-                if (TryBuildRainPath(from, to, capabilities, out points, out rainDetail,
+                if (TryBuildRainPath(from, to, capabilities, ignoreRoot, out points, out rainDetail,
                     out rainPending, out rainPartial, out rainOffMesh, out rainOffMeshFlags))
                 {
                     string optimizeDetail;
+                    bool optimizerPartial = false;
                     if (rainOffMesh)
                     {
                         List<bool> optimizedFlags;
                         points = OptimizeRainPathWithHardLinks(from, points, rainOffMeshFlags,
-                            ignoreRoot, out optimizedFlags, out optimizeDetail);
+                            capabilities, ignoreRoot, out optimizedFlags, out optimizerPartial,
+                            out optimizeDetail);
                         rainOffMeshFlags = optimizedFlags;
                     }
                     else
                     {
-                        points = OptimizeRainPath(from, points, ignoreRoot, out optimizeDetail);
+                        points = OptimizeRainPath(from, points, capabilities, ignoreRoot,
+                            out optimizerPartial, out optimizeDetail);
                     }
                     rainDetail += " " + optimizeDetail;
                     string validationDetail = "not_checked";
                     List<bool> validatedJumpFlags = new List<bool>();
-                    bool physicsValidated = !rainPartial && ValidateRainPath(from, points, capabilities,
+                    bool physicsValidated = !rainPartial && points != null && points.Count > 0 &&
+                        ValidateRainPath(from, points, capabilities,
                         ignoreRoot, rainOffMeshFlags, out validatedJumpFlags, out validationDetail);
                     if (physicsValidated)
                     {
                         _physicsSearchJob = null;
-                        route = FromPoints("rain_navmesh", false, points,
+                        route = FromPoints("rain_navmesh", optimizerPartial, points,
                             rainDetail + " validate=" + validationDetail);
                         for (int i = 0; i < route.JumpFlags.Count && i < validatedJumpFlags.Count; i++)
                             route.JumpFlags[i] = validatedJumpFlags[i];
@@ -375,12 +388,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
             {
                 Vector3 point = route.Corners[i];
                 float horizontal = XZDistance(previous, point);
-                bool walkable = CanTraverseWalkableSurface(previous, point, ignoreRoot);
+                int walkBlockedSegment;
+                int walkSegmentCount;
+                bool walkable = CanFollowSegmentDense(previous, point, ignoreRoot,
+                    out walkBlockedSegment, out walkSegmentCount);
                 float rise = point.y - previous.y;
                 bool jump = i < route.JumpFlags.Count && route.JumpFlags[i];
+                // Derived links may only bridge disconnected RAIN polygons on a staircase.
+                // A link that is physically walkable must never force the follower to jump.
+                jump = jump && !walkable;
                 jump = jump || (capabilities.AllowJump &&
-                                !walkable &&
-                                rise > 0.72f &&
+                                 !walkable &&
+                                 rise > 0.72f &&
                                 horizontal <= 4.2f &&
                                 TryJumpSegment(previous, point, capabilities, ignoreRoot));
                 if (i < route.JumpFlags.Count) route.JumpFlags[i] = jump;
@@ -391,8 +410,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
         }
 
         private static List<Vector3> OptimizeRainPath(Vector3 from, List<Vector3> raw,
-            Transform ignoreRoot, out string detail)
+            AutoBattleRouteCapabilities capabilities, Transform ignoreRoot,
+            out bool partial, out string detail)
         {
+            partial = false;
             Stopwatch timer = Stopwatch.StartNew();
             int rawCount = raw == null ? 0 : raw.Count;
             List<Vector3> clean = new List<Vector3>(rawCount);
@@ -413,19 +434,72 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Vector3 anchor = from;
             int cursor = 0;
             int shortcuts = 0;
+            int denseRejects = 0;
+            int detourCount = 0;
+            int detourExpanded = 0;
+            int inferredJumps = 0;
             while (cursor < clean.Count)
             {
-                int selected = cursor;
+                int selected = -1;
                 int furthest = Mathf.Min(clean.Count - 1, cursor + 6);
-                for (int candidate = furthest; candidate > cursor; candidate--)
+                for (int candidate = furthest; candidate >= cursor; candidate--)
                 {
-                    if (!RainShortcutFollowsRawCorridor(anchor, clean, cursor, candidate,
+                    if (candidate > cursor && !RainShortcutFollowsRawCorridor(anchor, clean, cursor, candidate,
                         RainShortcutCorridorRadius)) continue;
-                    if (!CanTraverseWalkableSurface(anchor, clean[candidate], ignoreRoot) ||
-                        !HasNavigationBodyClearance(anchor, clean[candidate], ignoreRoot,
-                            NavigationBodyRadius)) continue;
+                    int blockedSegment;
+                    int segmentCount;
+                    if (!CanFollowSegmentDense(anchor, clean[candidate], ignoreRoot,
+                        out blockedSegment, out segmentCount))
+                    {
+                        denseRejects++;
+                        continue;
+                    }
                     selected = candidate;
                     break;
+                }
+                if (selected < 0)
+                {
+                    Vector3 blockedPoint = clean[cursor];
+                    Vector3 jumpDirection = blockedPoint - anchor;
+                    jumpDirection.y = 0f;
+                    float jumpHorizontal = jumpDirection.magnitude;
+                    float rise = blockedPoint.y - anchor.y;
+                    bool lowObstacle = ShouldJumpForwardObstacle(anchor, jumpDirection,
+                        ignoreRoot);
+                    bool implicitJump = capabilities != null && capabilities.AllowJump &&
+                        jumpHorizontal <= 4.2f && (rise > 0.62f || lowObstacle) &&
+                        TryJumpSegment(anchor, blockedPoint, capabilities, ignoreRoot);
+                    if (implicitJump)
+                    {
+                        simplified.Add(blockedPoint);
+                        inferredJumps++;
+                        anchor = blockedPoint;
+                        cursor++;
+                        continue;
+                    }
+
+                    List<Vector3> detour;
+                    int resumeIndex;
+                    int expanded;
+                    string detourDetail;
+                    if (!TryBuildRainLocalDetour(anchor, clean, cursor, furthest, ignoreRoot,
+                        out detour, out resumeIndex, out expanded, out detourDetail))
+                    {
+                        partial = simplified.Count > 0;
+                        detail = "opt=rain_blocked raw=" + rawCount + " clean=" + clean.Count +
+                                 " at=" + cursor + " prefix=" + simplified.Count +
+                                 " partial=" + (partial ? "1" : "0") +
+                                 " denseRejects=" + denseRejects + " " + detourDetail;
+                        DumpRainPathFailure(from, clean, null, simplified, null, ignoreRoot,
+                            cursor, furthest, -1, detail);
+                        return simplified;
+                    }
+                    for (int i = 0; i < detour.Count; i++) simplified.Add(detour[i]);
+                    detourCount++;
+                    detourExpanded += expanded;
+                    anchor = clean[resumeIndex];
+                    cursor = resumeIndex + 1;
+                    continue;
                 }
                 if (selected > cursor) shortcuts += selected - cursor;
                 simplified.Add(clean[selected]);
@@ -459,6 +533,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
             detail = "opt=rain raw=" + rawCount + " clean=" + clean.Count +
                       " smooth=" + simplified.Count + " corners=" + adjustedCorners +
                       " shortcuts=" + shortcuts +
+                      " denseRejects=" + denseRejects +
+                      " detours=" + detourCount +
+                      " detourExpanded=" + detourExpanded +
+                      " inferredJumps=" + inferredJumps +
                       " body=" + NavigationBodyRadius.ToString("0.00") +
                       " corridor=" + RainShortcutCorridorRadius.ToString("0.00") +
                       " optMs=" + timer.ElapsedMilliseconds;
@@ -503,12 +581,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     if (!TrySnapToGroundNear(raw, corner.y, 1.25f, out candidate, false)) continue;
                     if (!IsPointOnOwnedRainGraph(candidate, 1.0f)) continue;
                     if (!HasStandingSpace(candidate, ignoreRoot)) continue;
-                    if (!CanTraverseWalkableSurface(previous, candidate, ignoreRoot) ||
-                        !CanTraverseWalkableSurface(candidate, next, ignoreRoot) ||
-                        !HasNavigationBodyClearance(previous, candidate, ignoreRoot,
-                            NavigationBodyRadius) ||
-                        !HasNavigationBodyClearance(candidate, next, ignoreRoot,
-                            NavigationBodyRadius))
+                    int blockedSegment;
+                    int segmentCount;
+                    if (!CanFollowSegmentDense(previous, candidate, ignoreRoot,
+                            out blockedSegment, out segmentCount) ||
+                        !CanFollowSegmentDense(candidate, next, ignoreRoot,
+                            out blockedSegment, out segmentCount))
                         continue;
 
                     float clearance = MeasureWallClearance(candidate, ignoreRoot);
@@ -527,9 +605,25 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         public static bool CanTraverseWalkableSurface(Vector3 from, Vector3 to, Transform ignoreRoot)
         {
+            if (!IsPlausibleWalkTransition(from, to)) return false;
             if (HasWalkSegment(from, to, ignoreRoot) && HasGroundSupportSegment(from, to, ignoreRoot))
                 return true;
             return IsContinuousWalkableRamp(from, to, ignoreRoot);
+        }
+
+        public static bool IsDegenerateVerticalTransition(Vector3 from, Vector3 to)
+        {
+            return XZDistance(from, to) < SamePositionTolerance &&
+                   Mathf.Abs(to.y - from.y) > SamePositionVerticalTolerance;
+        }
+
+        private static bool IsPlausibleWalkTransition(Vector3 from, Vector3 to)
+        {
+            float horizontal = XZDistance(from, to);
+            float vertical = Mathf.Abs(to.y - from.y);
+            if (horizontal < SamePositionTolerance)
+                return vertical <= SamePositionVerticalTolerance;
+            return vertical <= horizontal * MaxWalkableRampGrade + WalkGradeSlack;
         }
 
         public static bool TryFindRainClearanceDirection(Vector3 from, Vector3 desiredDirection,
@@ -744,10 +838,93 @@ namespace ASWDEBUG.Cheats.AutoBattle
                    !HasNavigationBodyClearance(from, to, ignoreRoot, NavigationBodyRadius, false);
         }
 
+        public static bool HasForwardBlockToWaypoint(Vector3 from, Vector3 waypoint,
+            Transform ignoreRoot)
+        {
+            Vector3 flat = waypoint - from;
+            flat.y = 0f;
+            float distance = flat.magnitude;
+            if (distance < 0.08f) return false;
+
+            Vector3 probeEnd = from + flat / distance * Mathf.Min(1.05f, distance);
+            probeEnd.y = Mathf.Lerp(from.y, waypoint.y, Mathf.Min(1f, 1.05f / distance));
+            return !CanTraverseWalkableSurface(from, probeEnd, ignoreRoot) ||
+                   !HasNavigationBodyClearance(from, probeEnd, ignoreRoot,
+                       NavigationBodyRadius, false);
+        }
+
         public static bool CanFollowSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
         {
             return CanTraverseWalkableSurface(from, to, ignoreRoot) &&
                    HasNavigationBodyClearance(from, to, ignoreRoot, NavigationBodyRadius);
+        }
+
+        public static bool CanFollowRouteSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
+        {
+            int blockedSegment;
+            int segmentCount;
+            return CanFollowSegmentDense(from, to, ignoreRoot,
+                out blockedSegment, out segmentCount);
+        }
+
+        public static string DescribeRouteSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
+        {
+            int blockedSegment;
+            int segmentCount;
+            bool dense = CanFollowSegmentDense(from, to, ignoreRoot,
+                out blockedSegment, out segmentCount);
+            return "dense=" + (dense ? "1" : "0") +
+                   " blocked=" + blockedSegment + "/" + segmentCount +
+                   " shortBlock=" + (HasForwardBlockToWaypoint(from, to, ignoreRoot) ? "1" : "0") +
+                   " graphTo=" + (IsPointOnOwnedRainGraph(to, 0.72f) ? "1" : "0") +
+                   " standingTo=" + (HasStandingSpace(to, ignoreRoot) ? "1" : "0") +
+                   " clearanceTo=" + MeasureWallClearance(to, ignoreRoot).ToString("0.00");
+        }
+
+        public static bool CanAdvanceToWaypoint(Vector3 from, Vector3 waypoint, bool jump,
+            AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
+        {
+            if (!IsFinite(from) || !IsFinite(waypoint)) return false;
+            return jump
+                ? CanExecuteJump(from, waypoint,
+                    capabilities ?? new AutoBattleRouteCapabilities(), ignoreRoot)
+                : CanFollowRouteSegment(from, waypoint, ignoreRoot);
+        }
+
+        public static int CopyPathForFollower(List<Vector3> points, List<bool> jumpFlags,
+            Vector3 from, AutoBattleRouteCapabilities capabilities, Transform ignoreRoot,
+            List<Vector3> outputPath, List<bool> outputJumps)
+        {
+            if (points == null || outputPath == null || outputJumps == null) return 0;
+            Vector3 edgeStart = from;
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (!IsFinite(points[i])) return 0;
+                if (IsDegenerateVerticalTransition(edgeStart, points[i])) return 0;
+                bool jump = jumpFlags != null && i < jumpFlags.Count && jumpFlags[i];
+                if (!CanAdvanceToWaypoint(edgeStart, points[i], jump, capabilities,
+                    ignoreRoot))
+                    return 0;
+                edgeStart = points[i];
+            }
+
+            int startIndex = 0;
+            while (startIndex < points.Count)
+            {
+                bool currentJump = jumpFlags != null && startIndex < jumpFlags.Count &&
+                                   jumpFlags[startIndex];
+                float horizontal = XZDistance(from, points[startIndex]);
+                float heightError = Mathf.Abs(from.y - points[startIndex].y);
+                if (horizontal >= 0.50f || heightError > (currentJump ? 0.35f : 1.25f)) break;
+                startIndex++;
+            }
+
+            for (int i = startIndex; i < points.Count && outputPath.Count < 48; i++)
+            {
+                outputPath.Add(points[i]);
+                outputJumps.Add(jumpFlags != null && i < jumpFlags.Count && jumpFlags[i]);
+            }
+            return startIndex;
         }
 
         private static bool HasNavigationBodyClearance(Vector3 from, Vector3 to,
@@ -833,11 +1010,21 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return TryJumpSegment(from, to, capabilities ?? new AutoBattleRouteCapabilities(), ignoreRoot);
         }
 
+        public static bool HasSupportedStandingPoint(Vector3 point, Transform ignoreRoot)
+        {
+            Vector3 grounded;
+            return TrySnapToGroundNear(point, point.y, 0.72f, out grounded, false) &&
+                   XZDistance(point, grounded) <= 0.20f &&
+                   Mathf.Abs(point.y - grounded.y) <= 0.72f &&
+                   HasStandingSpace(grounded, ignoreRoot);
+        }
+
         public static bool HasWalkSegment(Vector3 from, Vector3 to, Transform ignoreRoot)
         {
             Vector3 a = from;
             Vector3 b = to;
             if (Mathf.Abs(a.y - b.y) > MaxStepHeight) return false;
+            if (!IsPlausibleWalkTransition(a, b)) return false;
             Vector3 delta = b - a;
             delta.y = 0f;
             float dist = delta.magnitude;
@@ -1307,6 +1494,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         }
 
         private static bool TryBuildRainPath(Vector3 from, Vector3 to, AutoBattleRouteCapabilities capabilities,
+            Transform ignoreRoot,
             out List<Vector3> result, out string detail, out bool pending, out bool partial, out bool offMesh,
             out List<bool> offMeshFlags)
         {
@@ -1350,6 +1538,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 RainSearchJob job = _rainSearchJob;
                 if (job == null || !job.Matches(graph, from, to))
                 {
+                    Vector3 pathFrom;
+                    NavigationGraphNode startNode;
+                    string startDetail;
+                    if (!TryResolveRainStart(graph, from, to, ignoreRoot, null,
+                        out pathFrom, out startNode, out startDetail))
+                    {
+                        _rainSearchJob = null;
+                        detail = "rain=start_layer_unresolved " + startDetail;
+                        return false;
+                    }
+
                     RAINPathFinder finder = graph.CreatePathFinder();
                     if (finder == null)
                     {
@@ -1359,10 +1558,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     }
 
                     finder.MaxYOffset = 4f;
-                    finder.MaxPathfindingSteps = 32768;
+                    finder.MaxPathfindingSteps = RainPathStepsPerSlice;
                     finder.MaxPathLength = 1200f;
-                    finder.StartPath(graph, from, to);
-                    job = new RainSearchJob(graph, finder, from, to);
+                    finder.StartPath(graph, pathFrom, to);
+                    job = new RainSearchJob(graph, finder, from, to, pathFrom, startNode, startDetail);
                     _rainSearchJob = job;
                 }
 
@@ -1375,7 +1574,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
                 if (!complete && job.Finder.InProgress)
                 {
-                    if (job.Slices >= 120 || job.CpuMilliseconds >= 1200L)
+                    if (job.Slices >= 120 ||
+                        (job.Slices >= 8 && job.CpuMilliseconds >= 2500L))
                     {
                         _rainSearchJob = null;
                         detail = "rain=timeout graph=" + graph.GetType().Name + " slices=" + job.Slices + " ms=" + job.CpuMilliseconds;
@@ -1394,14 +1594,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     return false;
                 }
 
+                string endpointDetail = AnchorRainPathEndpoints(path, job.PathFrom, to);
+
                 List<Vector3> linkedPath;
                 List<bool> linkedFlags;
-                offMesh = RuntimeRainNavDerivedData.TryBuildLinkedWorldPath(path, from, to,
+                offMesh = RuntimeRainNavDerivedData.TryBuildLinkedWorldPath(path, job.PathFrom, to,
                     out linkedPath, out linkedFlags);
                 if (offMesh)
                 {
                     result = linkedPath;
                     offMeshFlags = linkedFlags;
+                    endpointDetail += " linked=poly_corridor";
                 }
                 else
                 {
@@ -1409,10 +1612,48 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     for (int i = 0; i < path.WaypointCount; i++)
                         result.Add(path.GetWaypointPosition(i));
                 }
+
+                if (XZDistance(job.PathFrom, from) > 0.10f ||
+                    Mathf.Abs(job.PathFrom.y - from.y) > 0.18f)
+                {
+                    result.Insert(0, from);
+                    if (offMeshFlags != null) offMeshFlags.Insert(0, false);
+                }
+
+                Vector3 badStartPoint;
+                if (TryGetInvalidRainStartTransition(from, result, offMeshFlags, out badStartPoint))
+                {
+                    Vector3 escape;
+                    NavigationGraphNode escapeNode;
+                    string escapeDetail;
+                    NavigationGraphNode excluded = path.PathNodes != null && path.PathNodes.Count > 0
+                        ? path.PathNodes[0]
+                        : job.StartNode;
+                    if (TryResolveRainStart(graph, from, to, ignoreRoot, excluded,
+                        out escape, out escapeNode, out escapeDetail) &&
+                        (XZDistance(escape, from) > 0.35f || Mathf.Abs(escape.y - from.y) > 0.30f))
+                    {
+                        result = new List<Vector3> { from, escape };
+                        offMesh = false;
+                        offMeshFlags = null;
+                        partial = false;
+                        detail = "rain=start_layer_escape bad=" + FormatVector(badStartPoint) +
+                            " escape=" + FormatVector(escape) + " " + escapeDetail;
+                        return true;
+                    }
+
+                    detail = "rain=start_layer_mismatch bad=" + FormatVector(badStartPoint) +
+                        " " + escapeDetail;
+                    result = null;
+                    offMesh = false;
+                    offMeshFlags = null;
+                    return false;
+                }
                 partial = path.IsPartial;
                 detail = "rain=ok graph=" + graph.GetType().Name + " pts=" + result.Count +
                     " partial=" + (path.IsPartial ? "1" : "0") + " offmesh=" + (offMesh ? "1" : "0") +
-                    " slices=" + job.Slices + " ms=" + job.CpuMilliseconds;
+                    " slices=" + job.Slices + " ms=" + job.CpuMilliseconds + " " +
+                    job.StartDetail + " " + endpointDetail;
                 return result.Count > 0;
             }
             catch (Exception ex)
@@ -1420,6 +1661,193 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _rainSearchJob = null;
                 detail = "rain=ex:" + ex.GetType().Name + ":" + SafeOneLine(ex.Message, 96);
                 return false;
+            }
+        }
+
+        private static bool TryResolveRainStart(RAINNavigationGraph graph, Vector3 from, Vector3 to,
+            Transform ignoreRoot, NavigationGraphNode excludedNode, out Vector3 pathFrom,
+            out NavigationGraphNode startNode, out string detail)
+        {
+            pathFrom = from;
+            startNode = null;
+            detail = "start=unresolved";
+            if (graph == null) return false;
+
+            NavigationGraphNode direct = null;
+            Vector3 directSurface;
+            try { direct = graph.QuantizeToNode(from, 4f); }
+            catch { }
+            if (direct != null && direct != excludedNode &&
+                TryGetRainSurfacePoint(graph, direct, from, out directSurface) &&
+                Mathf.Abs(directSurface.y - from.y) <= RainStartLayerTolerance)
+            {
+                startNode = direct;
+                detail = "start=direct nodeType=" + direct.GetType().Name +
+                    " surfaceY=" + directSurface.y.ToString("0.00") +
+                    " dy=" + Mathf.Abs(directSurface.y - from.y).ToString("0.00");
+                return true;
+            }
+
+            Vector3 metadataAnchor;
+            NavigationGraphNode metadataNode;
+            string metadataDetail;
+            if (RuntimeRainNavDerivedData.TryFindSameLayerAnchor(graph, from, to, ignoreRoot,
+                excludedNode, out metadataAnchor, out metadataNode, out metadataDetail))
+            {
+                pathFrom = metadataAnchor;
+                startNode = metadataNode;
+                detail = "start=relocated " + metadataDetail;
+                return true;
+            }
+
+            Vector3 forward = to - from;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+            forward.Normalize();
+            Vector3 right = new Vector3(forward.z, 0f, -forward.x);
+            float bestScore = float.MaxValue;
+            Vector3 best = Vector3.zero;
+            NavigationGraphNode bestNode = null;
+            float bestDy = 0f;
+            float bestRadius = 0f;
+            int tested = 0;
+            int sameLayer = 0;
+            int walkable = 0;
+            int rings = Mathf.CeilToInt(RainStartAnchorMaxRadius / 0.65f);
+            for (int ring = 1; ring <= rings; ring++)
+            {
+                float radius = Mathf.Min(RainStartAnchorMaxRadius, ring * 0.65f);
+                int directions = ring <= 2 ? 12 : 20;
+                for (int i = 0; i < directions; i++)
+                {
+                    float angle = (Mathf.PI * 2f * i) / directions;
+                    Vector3 direction = forward * Mathf.Cos(angle) + right * Mathf.Sin(angle);
+                    Vector3 probe = from + direction * radius;
+                    NavigationGraphNode candidateNode;
+                    try { candidateNode = graph.QuantizeToNode(probe, 1.35f); }
+                    catch { continue; }
+                    tested++;
+                    if (candidateNode == null || candidateNode == excludedNode) continue;
+                    Vector3 surface;
+                    if (!TryGetRainSurfacePoint(graph, candidateNode, probe, out surface)) continue;
+                    float dy = Mathf.Abs(surface.y - from.y);
+                    if (dy > RainStartLayerTolerance) continue;
+                    sameLayer++;
+                    if (!HasStandingSpace(surface, ignoreRoot)) continue;
+                    int blockedSegment;
+                    int segmentCount;
+                    if (!CanFollowSegmentDense(from, surface, ignoreRoot,
+                        out blockedSegment, out segmentCount)) continue;
+                    if (MeasureWallClearance(surface, ignoreRoot) < NavigationBodyRadius + 0.06f) continue;
+                    walkable++;
+                    float towardPenalty = Mathf.Max(0f, -Vector3.Dot(direction, forward)) * 0.45f;
+                    float score = radius + dy * 1.6f + towardPenalty -
+                        Mathf.Min(1.2f, MeasureWallClearance(surface, ignoreRoot)) * 0.20f;
+                    if (score >= bestScore) continue;
+                    bestScore = score;
+                    best = surface;
+                    bestNode = candidateNode;
+                    bestDy = dy;
+                    bestRadius = radius;
+                }
+                if (bestNode != null && ring >= 2) break;
+            }
+
+            if (bestNode == null)
+            {
+                string directText = direct == null ? "none" : direct.GetType().Name;
+                float directDy = TryGetRainSurfacePoint(graph, direct, from, out directSurface)
+                    ? Mathf.Abs(directSurface.y - from.y)
+                    : -1f;
+                detail = "start=anchor_failed direct=" + directText +
+                    " directDy=" + directDy.ToString("0.00") +
+                    " tested=" + tested + " sameLayer=" + sameLayer + " walkable=" + walkable +
+                    " " + metadataDetail;
+                return false;
+            }
+
+            pathFrom = best;
+            startNode = bestNode;
+            detail = "start=relocated nodeType=" + bestNode.GetType().Name +
+                " radius=" + bestRadius.ToString("0.00") +
+                " dy=" + bestDy.ToString("0.00") +
+                " tested=" + tested + " sameLayer=" + sameLayer + " walkable=" + walkable;
+            return true;
+        }
+
+        private static bool TryGetRainSurfacePoint(RAINNavigationGraph graph,
+            NavigationGraphNode node, Vector3 worldProbe, out Vector3 worldSurface)
+        {
+            worldSurface = worldProbe;
+            NavMeshPoly poly = node as NavMeshPoly;
+            if (graph == null || poly == null) return false;
+            try
+            {
+                Vector3 localProbe = graph.MountInverseTransform.MultiplyPoint(worldProbe);
+                Vector3 localSurface;
+                if (!poly.GetYInterceptPoint(localProbe, out localSurface)) return false;
+                worldSurface = graph.MountTransform.MultiplyPoint(localSurface);
+                return IsFinite(worldSurface);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryGetInvalidRainStartTransition(Vector3 from, List<Vector3> points,
+            List<bool> jumpFlags, out Vector3 badPoint)
+        {
+            badPoint = Vector3.zero;
+            if (points == null || points.Count < 2) return false;
+            Vector3 previous = from;
+            int inspected = 0;
+            for (int i = 0; i < points.Count && inspected < 4; i++)
+            {
+                Vector3 candidate = points[i];
+                if (XZDistance(previous, candidate) <= 0.18f &&
+                    Mathf.Abs(candidate.y - previous.y) <= 0.30f)
+                    continue;
+                inspected++;
+                bool linkedJump = jumpFlags != null && i < jumpFlags.Count && jumpFlags[i];
+                float horizontal = XZDistance(previous, candidate);
+                float vertical = Mathf.Abs(candidate.y - previous.y);
+                if (!linkedJump && horizontal <= 1.35f && vertical > 2.40f)
+                {
+                    badPoint = candidate;
+                    return true;
+                }
+                previous = candidate;
+            }
+            return false;
+        }
+
+        private static string AnchorRainPathEndpoints(RAINPath path, Vector3 from, Vector3 to)
+        {
+            try
+            {
+                int pathPointCount = path == null || path.PathPoints == null ? 0 : path.PathPoints.Count;
+                if (pathPointCount < 2) return "endpoints=unavailable";
+
+                // RAIN's path finder stores the start/goal polygon centers in PathPoints.
+                // Replace them before NavMeshPath smoothing so the corridor starts and ends
+                // at the requested world positions instead of repeatedly routing to centers.
+                path.SetPathNode(0, from);
+                if (!path.IsPartial) path.SetPathNode(pathPointCount - 1, to);
+
+                float startError = path.WaypointCount > 0
+                    ? XZDistance(path.GetWaypointPosition(0), from)
+                    : float.MaxValue;
+                float endError = !path.IsPartial && path.WaypointCount > 0
+                    ? XZDistance(path.GetWaypointPosition(path.WaypointCount - 1), to)
+                    : -1f;
+                return "endpoints=" + (path.IsPartial ? "start_only" : "anchored") +
+                       " startErr=" + startError.ToString("0.00") +
+                       " endErr=" + endError.ToString("0.00");
+            }
+            catch (Exception ex)
+            {
+                return "endpoints=error:" + ex.GetType().Name;
             }
         }
 
@@ -1449,6 +1877,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 float horizontal = XZDistance(previous, target);
                 if (horizontal < 0.12f)
                 {
+                    float vertical = Mathf.Abs(target.y - previous.y);
+                    if (vertical > SamePositionVerticalTolerance)
+                    {
+                        detail = "vertical_transition waypoint=" + i +
+                                 " dy=" + vertical.ToString("0.00");
+                        return false;
+                    }
                     previous = target;
                     continue;
                 }
@@ -1456,6 +1891,14 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 bool forcedJump = forcedJumpFlags != null && i < forcedJumpFlags.Count && forcedJumpFlags[i];
                 if (forcedJump)
                 {
+                    int walkBlockedSegment;
+                    int walkSegmentCount;
+                    if (CanFollowSegmentDense(previous, target, ignoreRoot,
+                        out walkBlockedSegment, out walkSegmentCount))
+                    {
+                        previous = target;
+                        continue;
+                    }
                     bool validLink = capabilities != null && capabilities.AllowJump &&
                                      TryJumpSegment(previous, target, capabilities, ignoreRoot);
                     if (!validLink)
@@ -1469,20 +1912,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     continue;
                 }
 
-                int segments = Mathf.Clamp(Mathf.CeilToInt(horizontal / 0.9f), 1, 96);
-                Vector3 segmentStart = previous;
-                int blockedSegment = 0;
-                for (int segment = 1; segment <= segments; segment++)
-                {
-                    Vector3 segmentEnd = Vector3.Lerp(previous, target, (float)segment / segments);
-                    if (!CanFollowSegment(segmentStart, segmentEnd, ignoreRoot))
-                    {
-                        blockedSegment = segment;
-                        break;
-                    }
-                    segmentStart = segmentEnd;
-                }
-                if (blockedSegment > 0)
+                int blockedSegment;
+                int segments;
+                if (!CanFollowSegmentDense(previous, target, ignoreRoot, out blockedSegment, out segments))
                 {
                     Vector3 jumpDirection = target - previous;
                     jumpDirection.y = 0f;
@@ -1493,7 +1925,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                                     TryJumpSegment(previous, target, capabilities, ignoreRoot);
                     if (!jumpable)
                     {
-                        detail = "blocked waypoint=" + i + " segment=" + blockedSegment + "/" + segments;
+                        detail = "blocked_walk waypoint=" + i + " segment=" +
+                                 blockedSegment + "/" + segments;
                         return false;
                     }
                     jumpFlags[i] = true;
@@ -1506,9 +1939,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
         }
 
         private static List<Vector3> OptimizeRainPathWithHardLinks(Vector3 from, List<Vector3> points,
-            List<bool> jumpFlags, Transform ignoreRoot, out List<bool> optimizedFlags, out string detail)
+            List<bool> jumpFlags, AutoBattleRouteCapabilities capabilities, Transform ignoreRoot,
+            out List<bool> optimizedFlags,
+            out bool partial, out string detail)
         {
             optimizedFlags = new List<bool>();
+            partial = false;
             List<Vector3> optimized = new List<Vector3>();
             if (points == null || points.Count == 0)
             {
@@ -1519,6 +1955,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Vector3 anchor = from;
             int index = 0;
             int removed = 0;
+            int detourCount = 0;
+            int detourExpanded = 0;
+            int inferredJumps = 0;
+            int walkLinks = 0;
             while (index < points.Count)
             {
                 int jumpIndex = -1;
@@ -1534,12 +1974,65 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 int cursor = index;
                 while (cursor <= normalEnd)
                 {
-                    int chosen = cursor;
-                    for (int candidate = normalEnd; candidate > cursor; candidate--)
+                    int chosen = -1;
+                    int blockedSegment = 0;
+                    int segmentCount = 0;
+                    for (int candidate = normalEnd; candidate >= cursor; candidate--)
                     {
-                        if (!CanFollowSegment(anchor, points[candidate], ignoreRoot)) continue;
+                        if (!CanFollowSegmentDense(anchor, points[candidate], ignoreRoot,
+                            out blockedSegment, out segmentCount)) continue;
                         chosen = candidate;
                         break;
+                    }
+                    if (chosen < 0)
+                    {
+                        Vector3 blockedPoint = points[cursor];
+                        Vector3 jumpDirection = blockedPoint - anchor;
+                        jumpDirection.y = 0f;
+                        float jumpHorizontal = jumpDirection.magnitude;
+                        float rise = blockedPoint.y - anchor.y;
+                        bool lowObstacle = ShouldJumpForwardObstacle(anchor, jumpDirection,
+                            ignoreRoot);
+                        bool implicitJump = capabilities != null && capabilities.AllowJump &&
+                            jumpHorizontal <= 4.2f && (rise > 0.62f || lowObstacle) &&
+                            TryJumpSegment(anchor, blockedPoint, capabilities, ignoreRoot);
+                        if (implicitJump)
+                        {
+                            AddOptimizedPoint(optimized, optimizedFlags, blockedPoint, true);
+                            inferredJumps++;
+                            anchor = blockedPoint;
+                            cursor++;
+                            continue;
+                        }
+
+                        List<Vector3> detour;
+                        int resumeIndex;
+                        int expanded;
+                        string detourDetail;
+                        if (!TryBuildRainLocalDetour(anchor, points, cursor, normalEnd, ignoreRoot,
+                            out detour, out resumeIndex, out expanded, out detourDetail))
+                        {
+                            partial = optimized.Count > 0;
+                            detail = "opt=offmesh_blocked in=" + points.Count + " at=" + cursor +
+                                     " normalEnd=" + normalEnd + " jumpIndex=" + jumpIndex +
+                                     " anchor=" + FormatVector(anchor) +
+                                     " blocked=" + FormatVector(points[cursor]) +
+                                     " segment=" + blockedSegment + "/" + segmentCount +
+                                     " implicitJump=0" +
+                                     " prefix=" + optimized.Count + " partial=" + (partial ? "1" : "0") +
+                                     " removed=" + removed + " " + detourDetail;
+                            DumpRainPathFailure(from, points, jumpFlags, optimized, optimizedFlags,
+                                ignoreRoot, cursor, normalEnd, jumpIndex, detail);
+                            return optimized;
+                        }
+                        for (int i = 0; i < detour.Count; i++)
+                            AddOptimizedPoint(optimized, optimizedFlags, detour[i], false);
+                        detourCount++;
+                        detourExpanded += expanded;
+                        removed += resumeIndex - cursor;
+                        anchor = points[resumeIndex];
+                        cursor = resumeIndex + 1;
+                        continue;
                     }
                     AddOptimizedPoint(optimized, optimizedFlags, points[chosen], false);
                     removed += chosen - cursor;
@@ -1547,13 +2040,396 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     cursor = chosen + 1;
                 }
                 if (jumpIndex < 0) break;
-                AddOptimizedPoint(optimized, optimizedFlags, points[jumpIndex], true);
+                int walkBlockedSegment;
+                int walkSegmentCount;
+                if (CanFollowSegmentDense(anchor, points[jumpIndex], ignoreRoot,
+                    out walkBlockedSegment, out walkSegmentCount))
+                {
+                    AddOptimizedPoint(optimized, optimizedFlags, points[jumpIndex], false);
+                    walkLinks++;
+                }
+                else
+                {
+                    List<Vector3> walkDetour;
+                    int walkResumeIndex;
+                    int walkExpanded;
+                    string walkDetail;
+                    if (TryBuildRainLocalDetour(anchor, points, jumpIndex, jumpIndex,
+                        ignoreRoot, out walkDetour, out walkResumeIndex, out walkExpanded,
+                        out walkDetail))
+                    {
+                        for (int i = 0; i < walkDetour.Count; i++)
+                            AddOptimizedPoint(optimized, optimizedFlags, walkDetour[i], false);
+                        detourCount++;
+                        detourExpanded += walkExpanded;
+                        walkLinks++;
+                    }
+                    else
+                    {
+                        AddOptimizedPoint(optimized, optimizedFlags, points[jumpIndex], true);
+                    }
+                }
                 anchor = points[jumpIndex];
                 index = jumpIndex + 1;
             }
             detail = "opt=offmesh_hard_anchors in=" + points.Count + " out=" + optimized.Count +
-                " removed=" + removed;
+                " removed=" + removed + " detours=" + detourCount +
+                " detourExpanded=" + detourExpanded + " inferredJumps=" + inferredJumps +
+                " walkLinks=" + walkLinks;
             return optimized;
+        }
+
+        private static bool TryBuildRainLocalDetour(Vector3 from, List<Vector3> path,
+            int first, int last, Transform ignoreRoot, out List<Vector3> detour,
+            out int resumeIndex, out int expanded, out string detail)
+        {
+            detour = new List<Vector3>();
+            resumeIndex = -1;
+            expanded = 0;
+            detail = "rainDetour=none";
+            if (path == null || first < 0 || first >= path.Count || last < first) return false;
+            last = Mathf.Min(last, path.Count - 1);
+
+            List<GridNode> open = new List<GridNode>(256);
+            Dictionary<GridKey, GridNode> nodes = new Dictionary<GridKey, GridNode>();
+            GridNode start = new GridNode();
+            start.X = 0;
+            start.Z = 0;
+            start.Layer = HeightLayer(from.y);
+            start.Key = new GridKey(0, 0, start.Layer);
+            start.Pos = from;
+            start.G = 0f;
+            start.H = RainDetourHeuristic(from, path, first, last);
+            open.Add(start);
+            nodes[start.Key] = start;
+
+            GridNode connected = null;
+            int reconnectRejectFollow = 0;
+            int rejectBounds = 0;
+            int rejectGround = 0;
+            int rejectGraph = 0;
+            int rejectStanding = 0;
+            int rejectFollow = 0;
+            int rejectClearance = 0;
+            int rejectKnown = 0;
+            float minimumY = from.y;
+            float maximumY = from.y;
+            while (open.Count > 0 && expanded < RainDetourMaxExpanded)
+            {
+                int bestIndex = PopBestIndex(open);
+                GridNode current = open[bestIndex];
+                open.RemoveAt(bestIndex);
+                if (current.Closed) continue;
+                current.Closed = true;
+                expanded++;
+
+                if (current != start)
+                {
+                    for (int candidate = last; candidate >= first; candidate--)
+                    {
+                        int blockedSegment;
+                        int segmentCount;
+                        if (!CanFollowSegmentDense(current.Pos, path[candidate], ignoreRoot,
+                            out blockedSegment, out segmentCount))
+                        {
+                            reconnectRejectFollow++;
+                            continue;
+                        }
+                        connected = current;
+                        resumeIndex = candidate;
+                        break;
+                    }
+                    if (connected != null) break;
+                }
+
+                for (int direction = 0; direction < Dx.Length; direction++)
+                {
+                    int nx = current.X + Dx[direction];
+                    int nz = current.Z + Dz[direction];
+                    if (Mathf.Abs(nx) > RainDetourRadiusCells || Mathf.Abs(nz) > RainDetourRadiusCells)
+                    {
+                        rejectBounds++;
+                        continue;
+                    }
+
+                    Vector3 raw = new Vector3(from.x + nx * RainDetourCellSize,
+                        current.Pos.y, from.z + nz * RainDetourCellSize);
+                    Vector3 grounded;
+                    if (!TrySnapToGroundNear(raw, current.Pos.y, 1.20f, out grounded, false))
+                    {
+                        rejectGround++;
+                        continue;
+                    }
+                    minimumY = Mathf.Min(minimumY, grounded.y);
+                    maximumY = Mathf.Max(maximumY, grounded.y);
+                    if (!IsPointOnOwnedRainGraph(grounded, 0.72f))
+                    {
+                        rejectGraph++;
+                        continue;
+                    }
+                    if (!HasStandingSpace(grounded, ignoreRoot))
+                    {
+                        rejectStanding++;
+                        continue;
+                    }
+                    int blockedSegment;
+                    int segmentCount;
+                    if (!CanFollowSegmentDense(current.Pos, grounded, ignoreRoot,
+                        out blockedSegment, out segmentCount))
+                    {
+                        rejectFollow++;
+                        continue;
+                    }
+                    float clearance = MeasureWallClearance(grounded, ignoreRoot);
+                    if (clearance < NavigationBodyRadius + 0.06f)
+                    {
+                        rejectClearance++;
+                        continue;
+                    }
+
+                    GridKey key = new GridKey(nx, nz, HeightLayer(grounded.y));
+                    float stepCost = XZDistance(current.Pos, grounded) +
+                                     Mathf.Abs(grounded.y - current.Pos.y) * 0.65f +
+                                     Mathf.Max(0f, 0.90f - clearance) * 0.8f;
+                    float tentative = current.G + stepCost;
+                    GridNode node;
+                    if (nodes.TryGetValue(key, out node))
+                    {
+                        if (node.Closed || tentative >= node.G - 0.02f)
+                        {
+                            rejectKnown++;
+                            continue;
+                        }
+                        node.G = tentative;
+                        node.H = RainDetourHeuristic(grounded, path, first, last);
+                        node.Pos = grounded;
+                        node.Parent = current;
+                        open.Add(node);
+                        continue;
+                    }
+
+                    node = new GridNode();
+                    node.X = nx;
+                    node.Z = nz;
+                    node.Layer = key.Layer;
+                    node.Key = key;
+                    node.Pos = grounded;
+                    node.G = tentative;
+                    node.H = RainDetourHeuristic(grounded, path, first, last);
+                    node.Parent = current;
+                    nodes[key] = node;
+                    open.Add(node);
+                }
+            }
+
+            if (connected == null || resumeIndex < first)
+            {
+                string termination = open.Count == 0 ? "open_exhausted" : "max_expanded";
+                detail = "rainDetour=failed term=" + termination +
+                         " expanded=" + expanded + " nodes=" + nodes.Count +
+                         " reconnectReject=" + reconnectRejectFollow +
+                         " rejectBounds=" + rejectBounds + " rejectGround=" + rejectGround +
+                         " rejectGraph=" + rejectGraph + " rejectStanding=" + rejectStanding +
+                         " rejectFollow=" + rejectFollow + " rejectClearance=" + rejectClearance +
+                         " rejectKnown=" + rejectKnown +
+                         " y=" + minimumY.ToString("0.00") + ".." + maximumY.ToString("0.00");
+                return false;
+            }
+
+            List<Vector3> rawDetour = new List<Vector3>();
+            GridNode cursor = connected;
+            while (cursor != null && cursor != start)
+            {
+                rawDetour.Add(cursor.Pos);
+                cursor = cursor.Parent;
+            }
+            rawDetour.Reverse();
+            rawDetour.Add(path[resumeIndex]);
+
+            Vector3 anchor = from;
+            int rawIndex = 0;
+            while (rawIndex < rawDetour.Count)
+            {
+                int chosen = rawIndex;
+                for (int candidate = rawDetour.Count - 1; candidate > rawIndex; candidate--)
+                {
+                    int blockedSegment;
+                    int segmentCount;
+                    if (!CanFollowSegmentDense(anchor, rawDetour[candidate], ignoreRoot,
+                        out blockedSegment, out segmentCount)) continue;
+                    chosen = candidate;
+                    break;
+                }
+                detour.Add(rawDetour[chosen]);
+                anchor = rawDetour[chosen];
+                rawIndex = chosen + 1;
+            }
+
+            detail = "rainDetour=ok expanded=" + expanded + " nodes=" + nodes.Count +
+                     " points=" + detour.Count + " resume=" + resumeIndex;
+            return detour.Count > 0;
+        }
+
+        private static void DumpRainPathFailure(Vector3 from, List<Vector3> rawPoints,
+            List<bool> rawFlags, List<Vector3> prefix, List<bool> prefixFlags,
+            Transform ignoreRoot, int failedIndex, int normalEnd, int jumpIndex, string reason)
+        {
+            try
+            {
+                Vector3 to = rawPoints != null && rawPoints.Count > 0
+                    ? rawPoints[rawPoints.Count - 1]
+                    : from;
+                string signature = RuntimeRainNavMesh.CurrentMapName + "|" +
+                    Mathf.RoundToInt(from.x * 2f) + ":" + Mathf.RoundToInt(from.y * 2f) + ":" + Mathf.RoundToInt(from.z * 2f) + "|" +
+                    Mathf.RoundToInt(to.x * 2f) + ":" + Mathf.RoundToInt(to.y * 2f) + ":" + Mathf.RoundToInt(to.z * 2f) + "|" +
+                    failedIndex + ":" + normalEnd + ":" + jumpIndex;
+                if (RainFailureDumps.Contains(signature)) return;
+                if (RainFailureDumps.Count >= 32) RainFailureDumps.Clear();
+                RainFailureDumps.Add(signature);
+
+                string directory = Path.Combine(Path.Combine(Application.persistentDataPath,
+                    "ASWDEBUG"), "NavDiagnostics");
+                Directory.CreateDirectory(directory);
+                string file = Path.Combine(directory, "rain_route_failure_pid" +
+                    Process.GetCurrentProcess().Id + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmssfff") + ".txt");
+                StringBuilder builder = new StringBuilder(32768);
+                builder.AppendLine("map=" + RuntimeRainNavMesh.CurrentMapName);
+                builder.AppendLine("from=" + FormatVector(from) + " to=" + FormatVector(to));
+                builder.AppendLine("failedIndex=" + failedIndex + " normalEnd=" + normalEnd +
+                    " jumpIndex=" + jumpIndex);
+                builder.AppendLine("reason=" + reason);
+                AppendRainDumpPoints(builder, "raw", from, rawPoints, rawFlags, ignoreRoot);
+                AppendRainDumpPoints(builder, "accepted_prefix", from, prefix, prefixFlags, ignoreRoot);
+                File.WriteAllText(file, builder.ToString(), Encoding.UTF8);
+                FileLogger.Log("AUTO-BATTLE][ROUTE-DUMP", "saved=" + file +
+                    " raw=" + (rawPoints == null ? 0 : rawPoints.Count) +
+                    " prefix=" + (prefix == null ? 0 : prefix.Count));
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("AUTO-BATTLE][ROUTE-DUMP", "failed=" + ex.GetType().Name + ":" +
+                    SafeOneLine(ex.Message, 120));
+            }
+        }
+
+        public static void DumpFollowerPathFailure(Vector3 from, List<Vector3> points,
+            List<bool> flags, int startIndex, Transform ignoreRoot, string reason)
+        {
+            try
+            {
+                int count = points == null ? 0 : points.Count;
+                startIndex = Mathf.Clamp(startIndex, 0, count);
+                Vector3 to = count > 0 ? points[count - 1] : from;
+                string signature = "follow|" + RuntimeRainNavMesh.CurrentMapName + "|" +
+                    Mathf.RoundToInt(from.x * 2f) + ":" + Mathf.RoundToInt(from.y * 2f) + ":" + Mathf.RoundToInt(from.z * 2f) + "|" +
+                    Mathf.RoundToInt(to.x * 2f) + ":" + Mathf.RoundToInt(to.y * 2f) + ":" + Mathf.RoundToInt(to.z * 2f) + "|" +
+                    startIndex + "|" + SafeOneLine(reason, 64);
+                if (RainFailureDumps.Contains(signature)) return;
+                if (RainFailureDumps.Count >= 32) RainFailureDumps.Clear();
+                RainFailureDumps.Add(signature);
+
+                List<Vector3> remaining = new List<Vector3>(Mathf.Min(48, count - startIndex));
+                List<bool> remainingFlags = new List<bool>(Mathf.Min(48, count - startIndex));
+                for (int i = startIndex; i < count && remaining.Count < 48; i++)
+                {
+                    remaining.Add(points[i]);
+                    remainingFlags.Add(flags != null && i < flags.Count && flags[i]);
+                }
+
+                string directory = Path.Combine(Path.Combine(Application.persistentDataPath,
+                    "ASWDEBUG"), "NavDiagnostics");
+                Directory.CreateDirectory(directory);
+                string file = Path.Combine(directory, "rain_follow_failure_pid" +
+                    Process.GetCurrentProcess().Id + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmssfff") + ".txt");
+                StringBuilder builder = new StringBuilder(16384);
+                builder.AppendLine("map=" + RuntimeRainNavMesh.CurrentMapName);
+                builder.AppendLine("from=" + FormatVector(from) + " to=" + FormatVector(to));
+                builder.AppendLine("startIndex=" + startIndex + " total=" + count);
+                builder.AppendLine("reason=" + reason);
+                if (remaining.Count > 0)
+                    builder.AppendLine("first=" + DescribeRouteSegment(from, remaining[0], ignoreRoot));
+                AppendRainDumpPoints(builder, "follower_remaining", from, remaining,
+                    remainingFlags, ignoreRoot);
+                File.WriteAllText(file, builder.ToString(), Encoding.UTF8);
+                FileLogger.Log("AUTO-BATTLE][ROUTE-DUMP", "saved=" + file +
+                    " remaining=" + remaining.Count + " reason=" + SafeOneLine(reason, 96));
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("AUTO-BATTLE][ROUTE-DUMP", "failed=" + ex.GetType().Name + ":" +
+                    SafeOneLine(ex.Message, 120));
+            }
+        }
+
+        private static void AppendRainDumpPoints(StringBuilder builder, string label, Vector3 from,
+            List<Vector3> points, List<bool> flags, Transform ignoreRoot)
+        {
+            int count = points == null ? 0 : points.Count;
+            builder.AppendLine("[" + label + "] count=" + count);
+            Vector3 previous = from;
+            for (int i = 0; i < count; i++)
+            {
+                Vector3 point = points[i];
+                int blockedSegment;
+                int segmentCount;
+                bool follow = CanFollowSegmentDense(previous, point, ignoreRoot,
+                    out blockedSegment, out segmentCount);
+                bool jump = flags != null && i < flags.Count && flags[i];
+                builder.Append(i.ToString("D3")).Append(" point=").Append(FormatVector(point))
+                    .Append(" from=").Append(FormatVector(previous))
+                    .Append(" dist=").Append(XZDistance(previous, point).ToString("0.00"))
+                    .Append(" dy=").Append((point.y - previous.y).ToString("0.00"))
+                    .Append(" jump=").Append(jump ? "1" : "0")
+                    .Append(" follow=").Append(follow ? "1" : "0")
+                    .Append(" blocked=").Append(blockedSegment).Append('/').Append(segmentCount)
+                    .Append(" graph=").Append(IsPointOnOwnedRainGraph(point, 0.72f) ? "1" : "0")
+                    .Append(" standing=").Append(HasStandingSpace(point, ignoreRoot) ? "1" : "0")
+                    .Append(" clearance=").Append(MeasureWallClearance(point, ignoreRoot).ToString("0.00"))
+                    .AppendLine();
+                previous = point;
+            }
+        }
+
+        private static string FormatVector(Vector3 value)
+        {
+            return value.x.ToString("0.00") + "," + value.y.ToString("0.00") + "," +
+                   value.z.ToString("0.00");
+        }
+
+        private static float RainDetourHeuristic(Vector3 point, List<Vector3> path, int first, int last)
+        {
+            float best = float.MaxValue;
+            for (int i = first; i <= last; i++)
+            {
+                float distance = XZDistance(point, path[i]) + Mathf.Abs(point.y - path[i].y) * 1.35f;
+                if (distance < best) best = distance;
+            }
+            return best;
+        }
+
+        private static bool CanFollowSegmentDense(Vector3 from, Vector3 to, Transform ignoreRoot,
+            out int blockedSegment, out int segmentCount)
+        {
+            float horizontal = XZDistance(from, to);
+            segmentCount = Mathf.Clamp(Mathf.CeilToInt(horizontal / 0.9f), 1, 96);
+            blockedSegment = 0;
+            if (!IsPlausibleWalkTransition(from, to))
+            {
+                blockedSegment = 1;
+                return false;
+            }
+            Vector3 segmentStart = from;
+            for (int segment = 1; segment <= segmentCount; segment++)
+            {
+                Vector3 segmentEnd = Vector3.Lerp(from, to, (float)segment / segmentCount);
+                if (!CanFollowSegment(segmentStart, segmentEnd, ignoreRoot))
+                {
+                    blockedSegment = segment;
+                    return false;
+                }
+                segmentStart = segmentEnd;
+            }
+            return true;
         }
 
         private static void AddOptimizedPoint(List<Vector3> points, List<bool> flags, Vector3 point, bool jump)
@@ -2044,24 +2920,35 @@ namespace ASWDEBUG.Cheats.AutoBattle
             float maxHorizontal = Mathf.Clamp(runSpeed * (2.0f * jumpVelocity / 19.6f) * 0.65f, 2.2f, 4.2f);
             if (horizontal < 0.35f || horizontal > maxHorizontal) return false;
             if (rise > jumpHeight * 0.92f || rise < -Mathf.Max(8.0f, jumpHeight + 2.0f)) return false;
-            if (!HasStandingSpace(to, ignoreRoot)) return false;
+            if (!HasSupportedStandingPoint(from, ignoreRoot) ||
+                !HasSupportedStandingPoint(to, ignoreRoot)) return false;
 
             Vector3 previous = from;
             float arc = Mathf.Max(0.72f, jumpHeight - Mathf.Max(0f, rise) * 0.35f);
-            const int samples = 7;
+            const int samples = 12;
             for (int i = 1; i <= samples; i++)
             {
                 float t = (float)i / samples;
                 Vector3 next = Vector3.Lerp(from, to, t);
                 next.y += 4.0f * arc * t * (1.0f - t);
-                Vector3 segment = next - previous;
-                float length = segment.magnitude;
-                if (length > 0.01f)
+                Vector3 forward = next - previous;
+                forward.y = 0f;
+                Vector3 side = forward.sqrMagnitude > 0.001f
+                    ? Vector3.Cross(Vector3.up, forward.normalized)
+                    : Vector3.right;
+                for (int s = 0; s < JumpProbeSideOffsets.Length; s++)
                 {
-                    Vector3 dir = segment / length;
                     for (int h = 0; h < JumpProbeHeights.Length; h++)
                     {
-                        RaycastHit[] hits = Physics.RaycastAll(previous + Vector3.up * JumpProbeHeights[h], dir, length, BlockMask);
+                        Vector3 offset = side * JumpProbeSideOffsets[s] +
+                                         Vector3.up * JumpProbeHeights[h];
+                        Vector3 probeStart = previous + offset;
+                        Vector3 probeEnd = next + offset;
+                        Vector3 segment = probeEnd - probeStart;
+                        float length = segment.magnitude;
+                        if (length <= 0.01f) continue;
+                        RaycastHit[] hits = Physics.RaycastAll(probeStart, segment / length,
+                            length, BlockMask);
                         if (HasNonIgnoredHit(hits, ignoreRoot)) return false;
                     }
                 }
@@ -2399,15 +3286,22 @@ namespace ASWDEBUG.Cheats.AutoBattle
             public readonly RAINPathFinder Finder;
             public readonly Vector3 From;
             public readonly Vector3 To;
+            public readonly Vector3 PathFrom;
+            public readonly NavigationGraphNode StartNode;
+            public readonly string StartDetail;
             public int Slices;
             public long CpuMilliseconds;
 
-            public RainSearchJob(RAINNavigationGraph graph, RAINPathFinder finder, Vector3 from, Vector3 to)
+            public RainSearchJob(RAINNavigationGraph graph, RAINPathFinder finder, Vector3 from, Vector3 to,
+                Vector3 pathFrom, NavigationGraphNode startNode, string startDetail)
             {
                 Graph = graph;
                 Finder = finder;
                 From = from;
                 To = to;
+                PathFrom = pathFrom;
+                StartNode = startNode;
+                StartDetail = startDetail ?? "start=unknown";
             }
 
             public bool Matches(RAINNavigationGraph graph, Vector3 from, Vector3 to)

@@ -35,6 +35,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return Path.Combine(directory, SafeFileName(mapName) + ".rainnav");
         }
 
+        internal static string GetCachePath(string mapName, bool highDetail)
+        {
+            string directory = Path.Combine(Path.Combine(Application.persistentDataPath, "ASWDEBUG"), "NavMeshCache");
+            return Path.Combine(directory, SafeFileName(mapName) +
+                (highDetail ? ".max.rainnav" : ".runtime.rainnav"));
+        }
+
         internal static string GetContentFingerprint()
         {
             if (!string.IsNullOrEmpty(_contentFingerprint)) return _contentFingerprint;
@@ -62,7 +69,11 @@ namespace ASWDEBUG.Cheats.AutoBattle
             out RuntimeRainNavCacheRecord record, out string status)
         {
             record = null;
-            string path = GetCachePath(mapName);
+            bool highDetail = IsHighDetailSignature(generatorSignature);
+            string path = GetCachePath(mapName, highDetail);
+            // Existing caches predate profile-specific file names and are maximum-detail.
+            string legacyPath = GetCachePath(mapName);
+            if (!File.Exists(path) && highDetail && File.Exists(legacyPath)) path = legacyPath;
             if (!File.Exists(path))
             {
                 status = "miss";
@@ -181,7 +192,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             out long fileBytes, out string path, out string status)
         {
             fileBytes = 0L;
-            path = GetCachePath(mapName);
+            path = GetCachePath(mapName, IsHighDetailSignature(generatorSignature));
             string contentFingerprint = GetContentFingerprint();
             if (contentFingerprint == "missing")
             {
@@ -280,6 +291,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 result.Append(valid ? c : '_');
             }
             return result.Length == 0 ? "unknown" : result.ToString();
+        }
+
+        private static bool IsHighDetailSignature(string generatorSignature)
+        {
+            return !string.IsNullOrEmpty(generatorSignature) &&
+                   generatorSignature.IndexOf("maxDetail=1", StringComparison.Ordinal) >= 0;
         }
 
         private static void WriteString(BinaryWriter writer, string value)

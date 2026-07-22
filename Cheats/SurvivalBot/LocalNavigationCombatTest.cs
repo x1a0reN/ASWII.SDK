@@ -125,14 +125,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return true;
             }
 
-            string cachePath = RuntimeRainNavDiskCache.GetCachePath(PhysicalMapName);
-            if (!File.Exists(cachePath))
-            {
-                detail = "未找到 level33.rainnav，请先完成该地图建图";
-                StatusText = detail;
-                State = LocalNavigationTestState.Failed;
-                return false;
-            }
+            string cachePath = RuntimeRainNavDiskCache.GetCachePath(PhysicalMapName, false);
+            bool cacheExists = File.Exists(cachePath);
 
             CaptureCurrentProfile();
             if (!MapBakeSceneLoader.RequestPhysicalScene(
@@ -155,7 +149,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             StatusText = "正在加载生存模式 level33";
             SurvivalBotSettings.SetEnemyEspEnabled(true);
             AutoBattleManager.SetEnabled(false, "level33_test_loading");
-            FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "requested cache=" + cachePath);
+            FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "requested cache=" + cachePath +
+                " exists=" + (cacheExists ? "1" : "0") + " profile=long_run_0.20");
             return true;
         }
 
@@ -165,7 +160,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             MapBakeSceneLoader.Tick();
 
             float now = Time.realtimeSinceStartup;
-            if (now - _startedAt > LoadTimeoutSeconds && !_actorsPrepared)
+            if (now - _startedAt > LoadTimeoutSeconds && !_actorsPrepared &&
+                !RuntimeRainNavMesh.IsPending && !RuntimeRainNavMesh.IsReady)
             {
                 FailAndReturn("level33 测试加载超时");
                 return;
@@ -173,7 +169,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (!MapBakeSceneLoader.DirectSceneActive)
             {
-                if (!MapBakeSceneLoader.IsTransitioning && now - _startedAt > 4f)
+                if (MapBakeSceneLoader.IsTransitioning)
+                {
+                    State = LocalNavigationTestState.Loading;
+                    StatusText = MapBakeSceneLoader.StatusText;
+                    return;
+                }
+                if (now - _startedAt > 4f)
                     FailAndReturn("level33 直接场景未能启动");
                 return;
             }
@@ -200,8 +202,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
             if (snapshot.State == RuntimeRainNavState.Building)
             {
-                AutoBattleRoutePlanner.DeactivateNavigation("level33_test_cache_miss");
-                FailAndReturn("level33.rainnav 未命中，已禁止现场重新建图");
+                StatusText = "正在生成 level33 长挂机导航 " +
+                    (snapshot.Progress01 * 100f).ToString("0.0") + "%";
                 return;
             }
             if (snapshot.State == RuntimeRainNavState.Failed)
@@ -210,22 +212,31 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
             if (!string.Equals(snapshot.CacheSource, "disk", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(snapshot.CacheSource, "memory", StringComparison.OrdinalIgnoreCase))
+                !string.Equals(snapshot.CacheSource, "memory", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(snapshot.CacheSource, "memory_payload", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(snapshot.CacheSource, "generated", StringComparison.OrdinalIgnoreCase))
             {
-                if (now - _startedAt > 3f)
-                {
-                    AutoBattleRoutePlanner.DeactivateNavigation("level33_test_cache_not_reused");
-                    FailAndReturn("level33.rainnav 未通过缓存校验: " + snapshot.CacheStatus);
-                }
-                else
-                {
-                    StatusText = "正在校验 level33.rainnav";
-                }
+                // Initial long-run cache creation and scene settling can legitimately take time.
+                StatusText = snapshot.Detail != null &&
+                    snapshot.Detail.StartsWith("address_space", StringComparison.Ordinal)
+                    ? "正在释放上一场导航内存"
+                    : "正在清理上一场景并校验 level33.rainnav";
                 return;
             }
             if (!RuntimeRainNavMesh.IsReady)
             {
                 StatusText = "正在从" + CacheSourceName(snapshot.CacheSource) + "挂载 level33.rainnav";
+                return;
+            }
+            if (snapshot.Derived.Stage == RuntimeRainDerivedStage.Failed)
+            {
+                FailAndReturn("level33 派生数据生成失败: " + snapshot.Derived.Detail);
+                return;
+            }
+            if (snapshot.Derived.Stage != RuntimeRainDerivedStage.Ready)
+            {
+                StatusText = "正在生成 level33 路径派生数据 " +
+                    (snapshot.Derived.Progress01 * 100f).ToString("0.0") + "%";
                 return;
             }
 
@@ -1168,7 +1179,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static string CacheSourceName(string source)
         {
-            return string.Equals(source, "memory", StringComparison.OrdinalIgnoreCase) ? "内存缓存" : "磁盘缓存";
+            if (string.Equals(source, "memory_payload", StringComparison.OrdinalIgnoreCase))
+                return "内存序列化缓存";
+            if (string.Equals(source, "memory", StringComparison.OrdinalIgnoreCase))
+                return "内存图缓存";
+            return "磁盘缓存";
         }
 
         private static string FormatVector(Vector3 value)

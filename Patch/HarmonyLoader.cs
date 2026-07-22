@@ -249,22 +249,46 @@ namespace ASWDEBUG.Patch
             return !AutoBattleInput.TryAnyKeyDown(ref __result);
         }
 
-        private static void LevelLoadMapPrefix(string name, ref bool load_navmesh)
+        private static void LevelLoadMapPrefix(Level __instance, string name, ref bool load_navmesh,
+            out bool __state)
         {
-            AutoBattleRoutePlanner.PrepareNavigationLoad(name, ref load_navmesh);
+            __state = __instance != null && __instance.state == Level.State.kPrepare &&
+                !string.IsNullOrEmpty(name);
+            if (__state)
+                AutoBattleRoutePlanner.PrepareNavigationLoad(name, ref load_navmesh);
         }
 
-        private static void LevelLoadMapPostfix(string name, bool __result)
+        private static void LevelLoadMapPostfix(string name, bool __result, bool __state)
         {
+            if (!__state) return;
             if (__result) MapBakeSceneLoader.NotifyResolvedScene(name);
             else AutoBattleRoutePlanner.DeactivateNavigation("load_map_rejected");
         }
 
         private static void LevelExitPrefix()
         {
-            LocalNavigationCombatTest.NotifyLevelExit();
-            MapBakeSceneLoader.NotifyLevelExit();
-            AutoBattleRoutePlanner.DeactivateNavigationForSceneExit("level_exit");
+            // Release graph ownership first. Auxiliary test cleanup must never prevent the game
+            // from completing its native Level.OnExit path.
+            try { AutoBattleRoutePlanner.DeactivateNavigationForSceneExit("level_exit"); }
+            catch (Exception ex)
+            {
+                FileLogger.Log("PATCH", "level_exit_nav_release_ex=" + ex.GetType().Name + ":" + ex.Message);
+            }
+            try { SurvivalBotManager.NotifyLevelExit(); }
+            catch (Exception ex)
+            {
+                FileLogger.Log("PATCH", "level_exit_survival_reset_ex=" + ex.GetType().Name + ":" + ex.Message);
+            }
+            try { LocalNavigationCombatTest.NotifyLevelExit(); }
+            catch (Exception ex)
+            {
+                FileLogger.Log("PATCH", "level_exit_local_test_ex=" + ex.GetType().Name + ":" + ex.Message);
+            }
+            try { MapBakeSceneLoader.NotifyLevelExit(); }
+            catch (Exception ex)
+            {
+                FileLogger.Log("PATCH", "level_exit_map_loader_ex=" + ex.GetType().Name + ":" + ex.Message);
+            }
         }
 
         private static bool PlayerSyncPrefix()

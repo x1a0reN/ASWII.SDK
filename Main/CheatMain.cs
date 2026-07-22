@@ -46,13 +46,17 @@ namespace ASWDEBUG.Main
 
             try
             {
-                if (SurvivalBotManager.MapBakeEnabled)
-                    AutoBattleRoutePlanner.EnsureMapBake(level);
-                AutoBattleRoutePlanner.TickNavigation(level, player,
-                    SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled ||
-                    SurvivalBotManager.RoomTestEnabled || SurvivalBotManager.MapBakeEnabled ||
-                    SurvivalBotManager.Level33TestEnabled);
-                SurvivalBotManager.Tick(level, player, CameraMain);
+                bool lifecycleBlocked = SurvivalBotManager.TickRainLifecycleGate();
+                if (!lifecycleBlocked)
+                {
+                    if (SurvivalBotManager.MapBakeEnabled)
+                        AutoBattleRoutePlanner.EnsureMapBake(level);
+                    AutoBattleRoutePlanner.TickNavigation(level, player,
+                        SurvivalBotManager.Enabled || SurvivalBotManager.CombatTestEnabled ||
+                        SurvivalBotManager.RoomTestEnabled || SurvivalBotManager.MapBakeEnabled ||
+                        SurvivalBotManager.Level33TestEnabled);
+                    SurvivalBotManager.Tick(level, player, CameraMain);
+                }
                 NavigationPathVisualizer.Tick(level, player);
             }
             catch (Exception ex)

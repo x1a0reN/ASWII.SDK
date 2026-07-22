@@ -201,9 +201,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return false;
             }
 
-            // A disk cache is reusable; a large live RAIN graph is not safe to carry through
-            // Unity's unload/load cycle in this 32-bit client.
-            AutoBattleRoutePlanner.ShutdownNavigation("direct_map_transition:" + option.Key);
+            // level33 keeps its validated long-run graph resident; other maps release their
+            // scene-owned graph before the transition.
+            AutoBattleRoutePlanner.DeactivateNavigationForSceneExit(
+                "direct_map_transition:" + option.Key);
             _pendingOption = option;
             _pendingMap = option.Token;
             _resolvedSceneMap = string.Empty;
@@ -220,6 +221,19 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             if (!string.IsNullOrEmpty(_pendingMap))
             {
+                if (RuntimeRainNavMesh.HasDeferredSceneCleanup)
+                {
+                    StatusText = "正在释放上一场导航内存，完成后自动加载";
+                    return;
+                }
+                string memoryGate;
+                if (!RuntimeRainNavMesh.CanStartHighDetailSceneLoad(out memoryGate))
+                {
+                    StatusText = "RAIN 加载门禁：" + memoryGate;
+                    return;
+                }
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_load_preflight_passed " +
+                    Safe(memoryGate));
                 MapOption requested = _pendingOption;
                 _pendingMap = string.Empty;
                 _pendingOption = null;
@@ -283,6 +297,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 StatusText = detail;
                 FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "auto_return_requested logical=" + Safe(_activeMap) +
                     " scene=" + Safe(_resolvedSceneMap));
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_return_nav_release_begin");
+                AutoBattleRoutePlanner.DeactivateNavigationForSceneExit("direct_return_prechange");
+                FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_return_nav_release_complete");
+                if (RuntimeRainNavMesh.SceneExitReleaseBlocked)
+                {
+                    _returnRequested = false;
+                    detail = "RAIN 释放校验失败，请重启游戏";
+                    StatusText = detail;
+                    FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_return_blocked_by_rain_lifecycle");
+                    return false;
+                }
                 manager.ChangeState(GameStateType.Lobby);
                 return true;
             }

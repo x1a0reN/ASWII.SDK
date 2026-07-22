@@ -11,6 +11,7 @@ namespace ASWDEBUG.UI
     {
         private const float RefreshInterval = 0.06f;
         private const float FloorOffset = 0.055f;
+        private const float MaxFloorSnapDelta = 1.10f;
         private const int MaxRoutePoints = 64;
         private static readonly Color RouteStartColor = new Color(0.95f, 0.08f, 0.02f, 0.86f);
         private static readonly Color RouteEndColor = new Color(1f, 0.72f, 0.08f, 1f);
@@ -254,10 +255,22 @@ namespace ASWDEBUG.UI
 
         private static Vector3 SnapToFloor(Vector3 point)
         {
-            RaycastHit hit;
             Vector3 origin = point + Vector3.up * 1.25f;
-            if (Physics.Raycast(origin, Vector3.down, out hit, 3.25f, TerrainMask))
-                return hit.point + Vector3.up * FloorOffset;
+            RaycastHit[] hits = Physics.RaycastAll(origin, Vector3.down, 3.25f, TerrainMask);
+            float bestDelta = MaxFloorSnapDelta;
+            Vector3 best = point;
+            bool found = false;
+            for (int i = 0; hits != null && i < hits.Length; i++)
+            {
+                RaycastHit hit = hits[i];
+                if (hit.collider == null || hit.collider.isTrigger || hit.normal.y < 0.35f) continue;
+                float delta = Mathf.Abs(hit.point.y - point.y);
+                if (delta > bestDelta) continue;
+                bestDelta = delta;
+                best = hit.point;
+                found = true;
+            }
+            if (found) return best + Vector3.up * FloorOffset;
             point.y += FloorOffset;
             return point;
         }
