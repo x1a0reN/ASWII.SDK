@@ -169,3 +169,21 @@ private_peak_delta=2101248
 
 自动测试能证明输出线段不离开数据层安全走廊；真实 Collider、角色控制器和网络状态仍需
 通过上述实机路线验证，不能把未运行的游戏内测试标记为已通过。
+
+## 7. 部署状态
+
+游戏进程退出后已执行 Debug/PostBuild 部署。旧 `ASWDEBUG.dll` 保存在：
+
+```text
+C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWDEBUG.DeployBackups\20260722_193922340\Managed\ASWDEBUG.dll
+```
+
+新 `ASWDEBUG.dll` 长度为 494,592 bytes，SHA-256：
+
+```text
+4CB87AF41B02782D52755AB67624C56102FA81F7A886BAE7ABB8CBD582B4A570
+```
+
+`ASWDEBUG.dll`、`0Harmony.dll`、`Mono.Cecil.dll`、`BouncyCastle.Crypto.dll`、
+x86 `winhttp.dll` 和 `doorstop_config.ini` 六对源/目标文件均已验证存在、长度一致、
+SHA-256 一致。
