@@ -32,8 +32,17 @@
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs">
       <Link>CompactRainNavConverter.cs</Link>
     </Compile>
+    <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainNavDataset.cs">
+      <Link>CompactRainNavDataset.cs</Link>
+    </Compile>
+    <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainNavLoader.cs">
+      <Link>CompactRainNavLoader.cs</Link>
+    </Compile>
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainMetaReader.cs">
       <Link>CompactRainMetaReader.cs</Link>
+    </Compile>
+    <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainSpatialIndex.cs">
+      <Link>CompactRainSpatialIndex.cs</Link>
     </Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

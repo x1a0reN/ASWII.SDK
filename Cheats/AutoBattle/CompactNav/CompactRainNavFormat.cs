@@ -495,6 +495,19 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         public float MinimumY;
         public float MaximumY;
         public int Reserved;
+
+        public CompactRainSpatialCellRecord(int x, int y, int z, int polyStart, int polyCount,
+            float minimumY, float maximumY)
+        {
+            X = x;
+            Y = y;
+            Z = z;
+            PolyStart = polyStart;
+            PolyCount = polyCount;
+            MinimumY = minimumY;
+            MaximumY = maximumY;
+            Reserved = 0;
+        }
     }
 
     internal sealed class CompactRainNavBuildData
