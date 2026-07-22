@@ -1,4 +1,5 @@
 using ASWDEBUG.Cheats.AutoBattle;
+using ASWDEBUG.Cheats.AutoBattle.CompactNav;
 using ASWDEBUG.Logger;
 using CodeStage.AntiCheat.ObscuredTypes;
 using System;
@@ -201,8 +202,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return false;
             }
 
-            // level33 keeps its validated long-run graph resident; other maps release their
-            // scene-owned graph before the transition.
+            // level33 retains only the Unity-free compact dataset; map-bake RAIN graphs remain scene-owned.
             AutoBattleRoutePlanner.DeactivateNavigationForSceneExit(
                 "direct_map_transition:" + option.Key);
             _pendingOption = option;
@@ -298,9 +298,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "auto_return_requested logical=" + Safe(_activeMap) +
                     " scene=" + Safe(_resolvedSceneMap));
                 FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_return_nav_release_begin");
+                bool compactScene = CompactRainNavRuntime.Requested;
                 AutoBattleRoutePlanner.DeactivateNavigationForSceneExit("direct_return_prechange");
                 FileLogger.Log("AUTO-BATTLE][MAP-BAKE", "direct_return_nav_release_complete");
-                if (RuntimeRainNavMesh.SceneExitReleaseBlocked)
+                if (!compactScene && RuntimeRainNavMesh.SceneExitReleaseBlocked)
                 {
                     _returnRequested = false;
                     detail = "RAIN 释放校验失败，请重启游戏";

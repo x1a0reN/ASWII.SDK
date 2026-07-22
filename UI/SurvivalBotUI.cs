@@ -1,4 +1,5 @@
 using ASWDEBUG.Cheats.AutoBattle;
+using ASWDEBUG.Cheats.AutoBattle.CompactNav;
 using ASWDEBUG.Cheats.SurvivalBot;
 using ASWDEBUG.Patch;
 using UnityEngine;
@@ -213,6 +214,13 @@ namespace ASWDEBUG.UI
 
         private static void DrawNavigationPanel(Rect panel, bool compact)
         {
+            CompactRainRuntimeSnapshot compactSnapshot = CompactRainNavRuntime.GetSnapshot();
+            if (compactSnapshot.Requested || (SurvivalBotManager.Level33TestEnabled &&
+                string.Equals(compactSnapshot.MapName, "level33", System.StringComparison.OrdinalIgnoreCase)))
+            {
+                DrawCompactNavigationPanel(panel, compact, compactSnapshot);
+                return;
+            }
             RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
             RuntimeRainDerivedSnapshot derived = snapshot.Derived;
             bool derivedActive = derived.Stage != RuntimeRainDerivedStage.Idle &&
@@ -293,6 +301,45 @@ namespace ASWDEBUG.UI
             DrawClippedLine(panel.y + 61f, cacheLine, textX, textWidth);
             DrawClippedLine(panel.y + 78f, pathLine, textX, textWidth);
             DrawClippedLine(panel.y + 95f, detailLine, textX, textWidth);
+        }
+
+        private static void DrawCompactNavigationPanel(Rect panel, bool compact,
+            CompactRainRuntimeSnapshot snapshot)
+        {
+            DrawPanel(panel, _panelInnerTexture, _borderTexture);
+            float textX = panel.x + 7f;
+            float textWidth = panel.width - 14f;
+            string state = snapshot.Ready ? "就绪" : (snapshot.Failed ? "失败" : "加载中");
+            string header = "导航  ASWNAV 0.10m · " + state + "  |  level33  #" + snapshot.SceneEpoch;
+            GUI.Label(new Rect(textX, panel.y + 1f, textWidth, 18f),
+                ClipToWidth(header, _secondaryLabelStyle, textWidth), _secondaryLabelStyle);
+            Rect progressTrack = new Rect(textX, panel.y + 20f, textWidth, 5f);
+            GUI.DrawTexture(progressTrack, _borderTexture);
+            if (snapshot.Ready)
+                GUI.DrawTexture(new Rect(progressTrack.x, progressTrack.y, progressTrack.width,
+                    progressTrack.height), _accentTexture);
+            string memory = "缓存  " + FormatBytes(snapshot.FileBytes) + "  |  常驻 " +
+                FormatBytes(snapshot.ResidentBytes) + "  |  查询 " + FormatBytes(snapshot.WorkspaceBytes);
+            if (compact)
+            {
+                GUI.Label(new Rect(textX, panel.y + 28f, textWidth, 20f),
+                    ClipToWidth(memory, _secondaryLabelStyle, textWidth), _secondaryLabelStyle);
+                return;
+            }
+            string geometry = "几何  顶点 " + snapshot.VertexCount + "  |  Poly " +
+                snapshot.PolyCount + "  |  Portal " + snapshot.PortalCount;
+            string metadata = "数据  分区 " + snapshot.ComponentCount + "  |  Link " +
+                snapshot.LinkCount + "  |  边界 " + snapshot.BoundaryCount +
+                "  |  安全点 " + snapshot.SafeSpawnCount;
+            string route = "路径  ASWNAV / " + AutoBattleManager.LastPathProvider +
+                "  |  导航点 " + NavigationPathVisualizer.VisiblePointCount +
+                "  |  " + AutoBattleManager.State + "  |  " + AutoBattleManager.LastPath;
+            string detail = "细节  " + (string.IsNullOrEmpty(snapshot.Detail) ? "-" : snapshot.Detail);
+            DrawClippedLine(panel.y + 27f, geometry, textX, textWidth);
+            DrawClippedLine(panel.y + 44f, memory, textX, textWidth);
+            DrawClippedLine(panel.y + 61f, metadata, textX, textWidth);
+            DrawClippedLine(panel.y + 78f, route, textX, textWidth);
+            DrawClippedLine(panel.y + 95f, detail, textX, textWidth);
         }
 
         private static void DrawClippedLine(float y, string text, float x, float width)

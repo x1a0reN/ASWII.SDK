@@ -1,5 +1,6 @@
 using ASWDEBUG.Logger;
 using ASWDEBUG.Cheats.SurvivalBot;
+using ASWDEBUG.Cheats.AutoBattle.CompactNav;
 using RAIN.Navigation;
 using RAIN.Navigation.Graph;
 using RAIN.Navigation.NavMesh;
@@ -89,6 +90,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static string _navMapName = string.Empty;
         private static bool _navResourceDeclared;
         private static bool _navLoadRequested;
+        private static bool _compactNavigationRequested;
         private static float _navLoadStartedAt;
         private static float _nextNavProbeTime;
         private static float _nextNavLogTime;
@@ -114,6 +116,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         internal static bool IsPointOnOwnedRainGraph(Vector3 point, float tolerance)
         {
+            if (_compactNavigationRequested)
+                return CompactRainNavRuntime.IsPointOnGraph(point, tolerance);
             try
             {
                 NavigationManager manager = NavigationManager.Instance;
@@ -138,7 +142,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         internal static void TickNavigation(Level level, Character player, bool navigationActive)
         {
-            RuntimeRainNavMesh.Tick(level, player, navigationActive);
+            if (!_compactNavigationRequested)
+                RuntimeRainNavMesh.Tick(level, player, navigationActive);
             if (player != null && player.transform != null)
                 UpdateNavigationStatus(player.transform.position);
         }
@@ -147,7 +152,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             _physicsSearchJob = null;
             _rainSearchJob = null;
-            RuntimeRainNavMesh.Shutdown(reason);
+            bool runtimeRainActive = !_compactNavigationRequested && !string.IsNullOrEmpty(_navMapName);
+            CompactRainNavRuntime.Shutdown(reason);
+            if (runtimeRainActive) RuntimeRainNavMesh.Shutdown(reason);
             ResetNavigationState();
         }
 
@@ -158,8 +165,6 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         internal static void DeactivateNavigationForSceneExit(string reason)
         {
-            // level33 keeps only the materialized managed graph. Registration and the Unity mount
-            // are scene-local and must be removed before the next GameLoading transition.
             DeactivateNavigation(reason, true);
         }
 
@@ -167,8 +172,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             _physicsSearchJob = null;
             _rainSearchJob = null;
-            if (sceneExit) RuntimeRainNavMesh.SuspendForSceneExit(reason);
-            else RuntimeRainNavMesh.Deactivate(reason);
+            if (_compactNavigationRequested)
+                CompactRainNavRuntime.DeactivateScene(reason);
+            else if (!string.IsNullOrEmpty(_navMapName))
+            {
+                if (sceneExit) RuntimeRainNavMesh.SuspendForSceneExit(reason);
+                else RuntimeRainNavMesh.Deactivate(reason);
+            }
             ResetNavigationState();
         }
 
@@ -177,6 +187,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _navMapName = string.Empty;
             _navResourceDeclared = false;
             _navLoadRequested = false;
+            _compactNavigationRequested = false;
             _navState = AutoBattleNavResourceState.Unavailable;
         }
 
@@ -188,33 +199,45 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool bakeMode = SurvivalBotManager.MapBakeEnabled;
             bool level33Test = SurvivalBotManager.Level33TestEnabled;
             bool residentLevel33 = string.Equals(normalized, "level33", StringComparison.OrdinalIgnoreCase);
+            bool compactLevel33 = residentLevel33 && !bakeMode;
 
-            if (residentLevel33)
+            if (compactLevel33)
                 loadNavmesh = false;
             else if (declared && !loadNavmesh)
                 loadNavmesh = true;
 
-            bool runtimeRainRequired = residentLevel33 || bakeMode || level33Test || !declared;
-            // Maximum-detail level33 consumes too much address space to survive another Unity
-            // scene load in this 32-bit client. Other maps retain their existing profile.
-            bool highDetailRain = residentLevel33 ? false : runtimeRainRequired;
-            RuntimeRainNavMesh.PrepareMap(normalized, runtimeRainRequired, highDetailRain);
+            bool runtimeRainRequired = !compactLevel33 && (bakeMode || level33Test || !declared);
+            bool highDetailRain = runtimeRainRequired;
+            bool compactReady = false;
+            _compactNavigationRequested = compactLevel33;
+            if (compactLevel33)
+                compactReady = CompactRainNavRuntime.PrepareMap(normalized);
+            else
+            {
+                CompactRainNavRuntime.DeactivateScene("prepare_noncompact:" + normalized);
+                RuntimeRainNavMesh.PrepareMap(normalized, runtimeRainRequired, highDetailRain);
+            }
 
             _navMapName = normalized;
             _navResourceDeclared = declared;
-            _navLoadRequested = loadNavmesh || RuntimeRainNavMesh.Requested;
+            _navLoadRequested = compactLevel33 || loadNavmesh || RuntimeRainNavMesh.Requested;
             _navLoadStartedAt = Time.realtimeSinceStartup;
             _nextNavProbeTime = 0f;
             _physicsSearchJob = null;
             _rainSearchJob = null;
-            SetNavigationState(_navLoadRequested ? AutoBattleNavResourceState.Loading : AutoBattleNavResourceState.Unavailable,
+            AutoBattleNavResourceState initialState = compactLevel33
+                ? (compactReady ? AutoBattleNavResourceState.Ready : AutoBattleNavResourceState.Fallback)
+                : (_navLoadRequested ? AutoBattleNavResourceState.Loading : AutoBattleNavResourceState.Unavailable);
+            SetNavigationState(initialState,
                 "map=" + SafeMap(normalized) +
                 " manifest=" + (declared ? "hit" : "miss") +
                 " original=" + (original ? "1" : "0") +
                 " native=" + (loadNavmesh ? "1" : "0") +
+                " compact=" + (compactLevel33 ? "1" : "0") +
                 " runtime=" + (RuntimeRainNavMesh.Requested ? "1" : "0") +
                 " bake=" + (bakeMode ? "1" : "0") +
-                " forced=" + (!original && loadNavmesh ? "1" : "0"));
+                " forced=" + (!original && loadNavmesh ? "1" : "0") +
+                (compactLevel33 ? " detail=" + CompactRainNavRuntime.Detail : string.Empty));
         }
 
         internal static void EnsureMapBake(Level level)
@@ -255,7 +278,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             _mapBakeDeferredReason = string.Empty;
             string normalized = level.map_name.Trim().ToLowerInvariant();
-            bool highDetail = !string.Equals(normalized, "level33", StringComparison.OrdinalIgnoreCase);
+            bool highDetail = true;
             if (RuntimeRainNavMesh.IsBuilding && RuntimeRainNavMesh.IsHighDetail == highDetail &&
                 string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized,
                     StringComparison.OrdinalIgnoreCase)) return;
@@ -263,6 +286,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 string.Equals(RuntimeRainNavMesh.CurrentMapName, normalized, StringComparison.OrdinalIgnoreCase))
                 return;
 
+            CompactRainNavRuntime.DeactivateScene("map_bake:" + normalized);
+            _compactNavigationRequested = false;
             RuntimeRainNavMesh.PrepareMap(normalized, true, highDetail);
             _navMapName = normalized;
             _navResourceDeclared = ManifestDeclaresNavMesh(normalized);
@@ -311,7 +336,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             List<Vector3> points;
             if (capabilities == null) capabilities = new AutoBattleRouteCapabilities();
             capabilities.RequireRainPath = true;
-            string rainDetail = IsGameNavigationReady ? "ready" : RuntimeRainNavMesh.Detail;
+            string navigationProvider = _compactNavigationRequested ? "aswnav_0_10" : "rain_navmesh";
+            string rainDetail = IsGameNavigationReady ? "ready" :
+                (_compactNavigationRequested ? CompactRainNavRuntime.Detail : RuntimeRainNavMesh.Detail);
 
             if (IsGameNavigationReady)
             {
@@ -346,7 +373,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     if (physicsValidated)
                     {
                         _physicsSearchJob = null;
-                        route = FromPoints("rain_navmesh", optimizerPartial, points,
+                        route = FromPoints(navigationProvider, optimizerPartial, points,
                             rainDetail + " validate=" + validationDetail);
                         for (int i = 0; i < route.JumpFlags.Count && i < validatedJumpFlags.Count; i++)
                             route.JumpFlags[i] = validatedJumpFlags[i];
@@ -358,13 +385,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 }
                 else if (rainPending)
                 {
-                    route = Pending("rain_navmesh_pending", rainDetail);
+                    route = Pending(navigationProvider + "_pending", rainDetail);
                     LogRoute(route);
                     return route;
                 }
 
                 _physicsSearchJob = null;
-                route = Fail("rain_navmesh_required",
+                route = Fail(navigationProvider + "_required",
                     "result=fail reason=complete_rain_path_unavailable " + rainDetail);
                 LogRoute(route);
                 return route;
@@ -372,7 +399,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             else
             {
                 _physicsSearchJob = null;
-                route = Pending("rain_navmesh_pending",
+                route = Pending(navigationProvider + "_pending",
                     "result=pending reason=navigation_not_ready state=" + NavigationState);
                 LogRoute(route);
                 return route;
@@ -1504,6 +1531,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
             partial = false;
             offMesh = false;
             offMeshFlags = null;
+            if (_compactNavigationRequested)
+            {
+                List<bool> compactFlags;
+                bool compactPending;
+                bool compactOffMesh;
+                bool compactResult = CompactRainNavRuntime.TryBuildPath(from, to, capabilities,
+                    out result, out compactFlags, out compactPending, out compactOffMesh, out detail);
+                pending = compactPending;
+                offMesh = compactOffMesh;
+                offMeshFlags = compactFlags;
+                return compactResult;
+            }
             try
             {
                 if (NavigationManager.Instance == null)
@@ -2504,6 +2543,32 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static void UpdateNavigationStatus(Vector3 probe)
         {
+            if (_compactNavigationRequested)
+            {
+                CompactRainRuntimeSnapshot compact = CompactRainNavRuntime.GetSnapshot();
+                if (compact.Failed)
+                {
+                    SetNavigationState(AutoBattleNavResourceState.Fallback,
+                        "map=" + SafeMap(_navMapName) + " provider=aswnav_0_10 reason=" +
+                        CompactRainNavRuntime.Detail);
+                    return;
+                }
+                if (compact.Ready)
+                {
+                    bool projected = CompactRainNavRuntime.IsPointOnGraph(probe, 1.25f);
+                    SetNavigationState(AutoBattleNavResourceState.Ready,
+                        "map=" + SafeMap(_navMapName) + " provider=aswnav_0_10" +
+                        " scene=" + compact.SceneEpoch + " probe=" + (projected ? "1" : "0") +
+                        " fileBytes=" + compact.FileBytes + " resident=" + compact.ResidentBytes +
+                        " workspace=" + compact.WorkspaceBytes + " polys=" + compact.PolyCount +
+                        " portals=" + compact.PortalCount);
+                    return;
+                }
+                SetNavigationState(AutoBattleNavResourceState.Loading,
+                    "map=" + SafeMap(_navMapName) + " provider=aswnav_0_10 " +
+                    CompactRainNavRuntime.Detail);
+                return;
+            }
             bool runtimeRequested = RuntimeRainNavMesh.Requested;
             if ((!_navResourceDeclared || !_navLoadRequested) && !runtimeRequested)
             {

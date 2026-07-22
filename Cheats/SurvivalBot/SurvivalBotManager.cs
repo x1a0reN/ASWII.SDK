@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using ASWDEBUG.Cheats.AutoBattle;
+using ASWDEBUG.Cheats.AutoBattle.CompactNav;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Patch;
 using UnityEngine;
@@ -230,6 +231,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         internal static bool TickRainLifecycleGate()
         {
+            if (CompactRainNavRuntime.Requested) return false;
             if (!RuntimeRainNavMesh.HasDeferredSceneCleanup) return false;
             GameStateManager manager = ASSingleton<GameStateManager>.Instance;
             RuntimeRainNavMesh.TickDeferredSceneCleanup(IsSafeRainCollectionPoint(manager));

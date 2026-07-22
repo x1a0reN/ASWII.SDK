@@ -1,4 +1,5 @@
 using ASWDEBUG.Cheats.AutoBattle;
+using ASWDEBUG.Cheats.AutoBattle.CompactNav;
 using ASWDEBUG.Logger;
 using RAIN.Navigation;
 using RAIN.Navigation.Graph;
@@ -125,7 +126,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return true;
             }
 
-            string cachePath = RuntimeRainNavDiskCache.GetCachePath(PhysicalMapName, false);
+            string cachePath = CompactRainNavRuntime.GetCachePath();
             bool cacheExists = File.Exists(cachePath);
 
             CaptureCurrentProfile();
@@ -150,7 +151,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             SurvivalBotSettings.SetEnemyEspEnabled(true);
             AutoBattleManager.SetEnabled(false, "level33_test_loading");
             FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "requested cache=" + cachePath +
-                " exists=" + (cacheExists ? "1" : "0") + " profile=long_run_0.20");
+                " exists=" + (cacheExists ? "1" : "0") + " profile=aswnav_0.10");
             return true;
         }
 
@@ -161,7 +162,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             float now = Time.realtimeSinceStartup;
             if (now - _startedAt > LoadTimeoutSeconds && !_actorsPrepared &&
-                !RuntimeRainNavMesh.IsPending && !RuntimeRainNavMesh.IsReady)
+                !CompactRainNavRuntime.IsPending && !CompactRainNavRuntime.IsReady)
             {
                 FailAndReturn("level33 测试加载超时");
                 return;
@@ -193,50 +194,21 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            RuntimeRainNavSnapshot snapshot = RuntimeRainNavMesh.GetStatusSnapshot();
+            CompactRainRuntimeSnapshot snapshot = CompactRainNavRuntime.GetSnapshot();
             State = LocalNavigationTestState.WaitingCache;
             if (!string.Equals(snapshot.MapName, PhysicalMapName, StringComparison.OrdinalIgnoreCase))
             {
-                FailAndReturn("导航钩子未准备 level33 缓存，实际 " + (snapshot.MapName ?? "-"));
+                FailAndReturn("导航钩子未准备 level33.aswnav，实际 " + (snapshot.MapName ?? "-"));
                 return;
             }
-            if (snapshot.State == RuntimeRainNavState.Building)
+            if (snapshot.Failed)
             {
-                StatusText = "正在生成 level33 长挂机导航 " +
-                    (snapshot.Progress01 * 100f).ToString("0.0") + "%";
+                FailAndReturn("level33.aswnav 加载失败: " + snapshot.Detail);
                 return;
             }
-            if (snapshot.State == RuntimeRainNavState.Failed)
+            if (!snapshot.Ready)
             {
-                FailAndReturn("level33.rainnav 加载失败: " + snapshot.Detail);
-                return;
-            }
-            if (!string.Equals(snapshot.CacheSource, "disk", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(snapshot.CacheSource, "memory", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(snapshot.CacheSource, "memory_payload", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(snapshot.CacheSource, "generated", StringComparison.OrdinalIgnoreCase))
-            {
-                // Initial long-run cache creation and scene settling can legitimately take time.
-                StatusText = snapshot.Detail != null &&
-                    snapshot.Detail.StartsWith("address_space", StringComparison.Ordinal)
-                    ? "正在释放上一场导航内存"
-                    : "正在清理上一场景并校验 level33.rainnav";
-                return;
-            }
-            if (!RuntimeRainNavMesh.IsReady)
-            {
-                StatusText = "正在从" + CacheSourceName(snapshot.CacheSource) + "挂载 level33.rainnav";
-                return;
-            }
-            if (snapshot.Derived.Stage == RuntimeRainDerivedStage.Failed)
-            {
-                FailAndReturn("level33 派生数据生成失败: " + snapshot.Derived.Detail);
-                return;
-            }
-            if (snapshot.Derived.Stage != RuntimeRainDerivedStage.Ready)
-            {
-                StatusText = "正在生成 level33 路径派生数据 " +
-                    (snapshot.Derived.Progress01 * 100f).ToString("0.0") + "%";
+                StatusText = "正在校验并加载 level33.aswnav | " + snapshot.Detail;
                 return;
             }
 
@@ -254,7 +226,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _lastNavigablePlayerPosition = player.transform.position;
                 AutoBattleManager.SetEnabled(true, "level33_test_ready");
                 State = LocalNavigationTestState.WaitingNavigation;
-                StatusText = "Bot 已生成，等待玩家位置接入 RAIN 导航";
+                StatusText = "Bot 已生成，等待玩家位置接入 ASWNAV 0.10m 导航";
                 return;
             }
 
@@ -270,7 +242,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     RecoverPlayerToLastNavigablePosition(player);
                 }
                 State = LocalNavigationTestState.WaitingNavigation;
-                StatusText = "等待 RAIN 路径查询就绪 | Bot " + AliveBotCount + "/" + Bots.Count;
+                StatusText = "等待 ASWNAV 路径查询就绪 | Bot " + AliveBotCount + "/" + Bots.Count;
                 return;
             }
 
@@ -292,7 +264,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _nextStatusAt = now + 0.25f;
                 StatusText = "level33 纯寻路巡回 | Bot " + AliveBotCount + "/" + Bots.Count +
                     " | 当前目标 " + (_patrolIndex + 1) + "/" + Bots.Count +
-                    " | " + CacheSourceName(snapshot.CacheSource) + " " + snapshot.GraphSize + " 节点" +
+                    " | ASWNAV 0.10m " + snapshot.PortalCount + " Portal" +
                     " | 路径 " + AutoBattleManager.LastPathProvider;
             }
         }
@@ -372,15 +344,15 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     break;
                 }
             }
-            RAINNavigationGraph graph = RuntimeRainNavMesh.OwnedGraph;
-            if (targetIndex < 0 || graph == null || graph.Size <= 0 || !_playableBounds.Valid)
+            if (targetIndex < 0 || !CompactRainNavRuntime.IsReady ||
+                CompactRainNavRuntime.PolyCount <= 0 || !_playableBounds.Valid)
                 return false;
 
             Vector3 spawn;
-            if (!TrySampleGraphPoint(graph, _playableBounds, origin, 10f, 44f, Bots, out spawn) &&
-                !TrySampleGraphPoint(graph, _playableBounds, origin, 5f, 28f, Bots, out spawn))
+            if (!TrySampleGraphPoint(_playableBounds, origin, 10f, 44f, Bots, out spawn) &&
+                !TrySampleGraphPoint(_playableBounds, origin, 5f, 28f, Bots, out spawn))
             {
-                detail = "Bot " + (targetIndex + 1) + " 无法重置到当前 RAIN 连通区";
+                detail = "Bot " + (targetIndex + 1) + " 无法重置到当前 ASWNAV 连通区";
                 return false;
             }
 
@@ -395,7 +367,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 expectedTarget.ActivateObjects();
                 FreezeRobot(expectedTarget as RobotControl);
                 Bots[targetIndex].RespawnAt = 0f;
-                detail = "Bot " + (targetIndex + 1) + " 已重置到当前可达 RAIN 连通区";
+                detail = "Bot " + (targetIndex + 1) + " 已重置到当前可达 ASWNAV 连通区";
                 FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "patrol_target_relocated index=" +
                     (targetIndex + 1) + " from=" + FormatVector(origin) + " to=" + FormatVector(spawn));
                 return true;
@@ -476,10 +448,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool PrepareActors(Level level, Character player, out string error)
         {
             error = string.Empty;
-            RAINNavigationGraph graph = RuntimeRainNavMesh.OwnedGraph;
-            if (graph == null || graph.Size <= 0)
+            if (!CompactRainNavRuntime.IsReady || CompactRainNavRuntime.PolyCount <= 0)
             {
-                error = "RAIN 图为空";
+                error = "ASWNAV 数据集未就绪";
                 return false;
             }
 
@@ -490,7 +461,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             Vector3 playerSpawn;
-            if (!TrySelectPlayableAnchor(graph, _playableBounds, out playerSpawn))
+            if (!TrySelectPlayableAnchor(_playableBounds, out playerSpawn))
             {
                 error = "实际可玩区域内没有可用的玩家导航出生点";
                 return false;
@@ -501,7 +472,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             for (int i = 0; i < DesiredBotCount; i++)
             {
                 Vector3 botSpawn;
-                if (!TrySampleGraphPoint(graph, _playableBounds, playerSpawn, 12f, 52f, Bots, out botSpawn))
+                if (!TrySampleGraphPoint(_playableBounds, playerSpawn, 12f, 52f, Bots, out botSpawn))
                 {
                     error = "只能生成 " + Bots.Count + "/" + DesiredBotCount + " 个导航 Bot";
                     return false;
@@ -512,7 +483,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             FileLogger.Log("AUTO-BATTLE][LEVEL33-TEST", "actors_ready player=" + FormatVector(playerSpawn) +
-                " bots=" + Bots.Count + " graph=" + graph.Size +
+                " bots=" + Bots.Count + " polys=" + CompactRainNavRuntime.PolyCount +
                 " bounds=center(" + _playableBounds.CenterX.ToString("0.0") + "," +
                 _playableBounds.CenterZ.ToString("0.0") + ") half(" +
                 _playableBounds.HalfX.ToString("0.0") + "," + _playableBounds.HalfZ.ToString("0.0") + ")");
@@ -531,7 +502,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 player.hpLabelName = "BaseBodyHPLabel" + player.uid;
                 player.gameObject.name = player.baseName;
                 player.SetTeam(0);
-                CharacterInfoData info = BuildProfile(_capturedProfile, player.uid, 0, "RAIN 测试员");
+                CharacterInfoData info = BuildProfile(_capturedProfile, player.uid, 0, "ASWNAV 测试员");
                 player.SetCharacterInfo(info);
                 player.InitBuff();
                 player.ready = true;
@@ -595,7 +566,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 bot.hpLabelName = "BaseBodyHPLabel" + uid;
                 gameObject.name = bot.baseName;
                 bot.SetTeam(1);
-                bot.SetCharacterInfo(BuildProfile(_capturedProfile, uid, 1, "RAIN Bot-" + sequence.ToString("00")));
+                bot.SetCharacterInfo(BuildProfile(_capturedProfile, uid, 1, "ASWNAV Bot-" + sequence.ToString("00")));
                 bot.InitBuff();
                 bot.SetPhysxControl(false);
                 bot.transform.position = new Vector3(-10000f, -10000f, -10000f);
@@ -643,8 +614,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static void TickBotRespawns(Level level, Character player)
         {
-            RAINNavigationGraph graph = RuntimeRainNavMesh.OwnedGraph;
-            if (graph == null) return;
+            if (!CompactRainNavRuntime.IsReady) return;
             float now = Time.realtimeSinceStartup;
             for (int i = 0; i < Bots.Count; i++)
             {
@@ -665,7 +635,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 if (now < entry.RespawnAt) continue;
 
                 Vector3 spawn;
-                if (!TrySampleGraphPoint(graph, _playableBounds, player.transform.position, 12f, 52f, Bots, out spawn))
+                if (!TrySampleGraphPoint(_playableBounds, player.transform.position, 12f, 52f, Bots, out spawn))
                     spawn = bot.transform.position - Vector3.up;
                 Quaternion rotation = FaceTowards(spawn, player.transform.position);
                 bot.Rebirth(ActorHealth, 0, spawn, rotation);
@@ -680,29 +650,35 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
         }
 
-        private static bool TrySampleGraphPoint(RAINNavigationGraph graph, PlayableBounds bounds, Vector3 origin,
+        private static bool TrySampleGraphPoint(PlayableBounds bounds, Vector3 origin,
             float minDistance, float maxDistance, List<LocalBotEntry> existing, out Vector3 point)
         {
             point = Vector3.zero;
-            if (graph == null || graph.Size <= 0 || !bounds.Valid) return false;
-            int pathChecks = 0;
+            if (!CompactRainNavRuntime.IsReady || CompactRainNavRuntime.PolyCount <= 0 || !bounds.Valid)
+                return false;
+            int originComponent = -1;
+            if (minDistance > 0f)
+            {
+                Vector3 projected;
+                int originPoly;
+                if (!CompactRainNavRuntime.TryProjectInfo(origin, 1.5f, 2.25f,
+                    out projected, out originPoly, out originComponent)) return false;
+            }
             for (int attempt = 0; attempt < 12000; attempt++)
             {
-                NavigationGraphNode node;
-                try { node = graph.GetNode(UnityEngine.Random.Range(0, graph.Size)); }
-                catch { continue; }
-                NavMeshPoly poly = node as NavMeshPoly;
-                if (poly == null || poly.Unwalkable || poly.TriangleCount <= 0 || !IsWellConnected(poly)) continue;
-                Vector3 candidate = poly.Position;
+                int component;
+                int sharedPortals;
+                bool safeSpawn;
+                Vector3 candidate;
+                int polyIndex = UnityEngine.Random.Range(0, CompactRainNavRuntime.PolyCount);
+                if (!CompactRainNavRuntime.TryGetPolySample(polyIndex, out candidate,
+                    out component, out sharedPortals, out safeSpawn) || !safeSpawn || sharedPortals < 2)
+                    continue;
                 if (!IsPlayableCandidate(bounds, candidate)) continue;
                 float distance = minDistance <= 0f ? 0f : XzDistance(origin, candidate);
                 if (distance < minDistance || distance > maxDistance) continue;
                 if (!IsSeparated(candidate, existing, 8f)) continue;
-                if (minDistance > 0f)
-                {
-                    if (pathChecks++ >= 48) return false;
-                    if (!HasCompleteGraphPath(graph, origin, candidate)) continue;
-                }
+                if (minDistance > 0f && component != originComponent) continue;
                 Vector3 grounded;
                 if (!TryValidateSpawnPoint(bounds, candidate, out grounded)) continue;
                 point = grounded;
@@ -711,20 +687,21 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return false;
         }
 
-        private static bool TrySelectPlayableAnchor(RAINNavigationGraph graph, PlayableBounds bounds, out Vector3 point)
+        private static bool TrySelectPlayableAnchor(PlayableBounds bounds, out Vector3 point)
         {
             point = Vector3.zero;
-            if (graph == null || graph.Size <= 0 || !bounds.Valid) return false;
+            if (!CompactRainNavRuntime.IsReady || CompactRainNavRuntime.PolyCount <= 0 || !bounds.Valid)
+                return false;
 
             float bestScore = float.MaxValue;
-            for (int i = 0; i < graph.Size; i++)
+            for (int i = 0; i < CompactRainNavRuntime.PolyCount; i++)
             {
-                NavigationGraphNode node;
-                try { node = graph.GetNode(i); }
-                catch { continue; }
-                NavMeshPoly poly = node as NavMeshPoly;
-                if (poly == null || poly.Unwalkable || poly.TriangleCount <= 0 || !IsWellConnected(poly)) continue;
-                Vector3 candidate = poly.Position;
+                int component;
+                int sharedPortals;
+                bool safeSpawn;
+                Vector3 candidate;
+                if (!CompactRainNavRuntime.TryGetPolySample(i, out candidate, out component,
+                    out sharedPortals, out safeSpawn) || !safeSpawn || sharedPortals < 2) continue;
                 if (!IsPlayableCandidate(bounds, candidate)) continue;
 
                 float dx = (candidate.x - bounds.CenterX) / Mathf.Max(1f, bounds.HalfX);
@@ -814,6 +791,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static bool HasCompleteGraphPath(RAINNavigationGraph graph, Vector3 from, Vector3 to)
         {
+            // Retained for explicit legacy RAIN diagnostics; official level33 tests use component IDs.
             try
             {
                 NavigationManager manager = NavigationManager.Instance;

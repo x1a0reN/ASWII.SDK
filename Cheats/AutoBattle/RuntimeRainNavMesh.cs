@@ -45,6 +45,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
     internal static class RuntimeRainNavMesh
     {
         private const string ResidentMapName = "level33";
+        private static readonly bool EnableResidentRainGraph = false;
         private const float SceneSettleSeconds = 0.80f;
         private const float ColliderWaitSeconds = 20f;
         private const float BuildTimeoutSeconds = 75f;
@@ -949,6 +950,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         private static void PinResidentGraphIfEligible(string source)
         {
+            // Official level33 routing is process-resident ASWNAV data. RAIN graphs are diagnostic
+            // scene resources only and must never enter the broken unregister/remount lifecycle.
+            if (!EnableResidentRainGraph) return;
             if (!string.Equals(_mapName, ResidentMapName, StringComparison.OrdinalIgnoreCase) ||
                 !_registered || _navMesh == null || _navMesh.Graph == null) return;
 
