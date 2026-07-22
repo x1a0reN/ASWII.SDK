@@ -16,6 +16,10 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     return RunPathTest(args[1]);
                 if (args.Length == 2 && string.Equals(args[0], "--safetytest", StringComparison.OrdinalIgnoreCase))
                     return RunSafetyTest(args[1]);
+                if (args.Length == 2 && string.Equals(args[0], "--topologyaudit", StringComparison.OrdinalIgnoreCase))
+                    return RunTopologyAudit(args[1]);
+                if (args.Length == 1 && string.Equals(args[0], "--topologytest", StringComparison.OrdinalIgnoreCase))
+                    return RunTopologyTest();
                 if (args.Length == 2 && string.Equals(args[0], "--selftest", StringComparison.OrdinalIgnoreCase))
                 {
                     CompactRainNavLoadResult load;
@@ -94,6 +98,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     Console.Error.WriteLine("   or: CompactNavConverter --pathtest <level33.aswnav>");
                     Console.Error.WriteLine("   or: CompactNavConverter --safetytest <level33.aswnav>");
                     Console.Error.WriteLine("   or: CompactNavConverter --stress <level33.aswnav>");
+                    Console.Error.WriteLine("   or: CompactNavConverter --topologytest");
+                    Console.Error.WriteLine("   or: CompactNavConverter --topologyaudit <level33.aswnav>");
                     return 2;
                 }
 
@@ -113,6 +119,9 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 Console.WriteLine("vertices={0} polys={1} portals={2} links={3} boundaries={4} surfaces={5} components={6} safe={7}",
                     result.VertexCount, result.PolyCount, result.PortalCount, result.LinkCount,
                     result.BoundaryCount, result.SurfaceCount, result.ComponentCount, result.SafeSpawnCount);
+                Console.WriteLine("topology_raw_invalid={0} topology_replaced={1} topology_closed_edges={2} topology_output_invalid={3}",
+                    result.RawInvalidTopologyReferenceCount, result.ReplacedTopologyReferenceCount,
+                    result.ClosedContourEdgeCount, result.InvalidTopologyReferenceCount);
                 return 0;
             }
             catch (Exception ex)
@@ -333,7 +342,157 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 unsafeSegments, component);
             return cornerRegression && shortCornerRegression && gapRegression &&
                 cliffMarginRegression && topologyRegression && completed == corpusCount &&
-                failed == 0 && unsafeSegments == 0 ? 0 : 6;
+                invalidTopologyReferences == 0 && failed == 0 && unsafeSegments == 0 ? 0 : 6;
+        }
+
+        private static int RunTopologyTest()
+        {
+            CompactRainNavBuildData data = new CompactRainNavBuildData();
+            data.Polys = new CompactRainNavPolyRecord[2];
+            data.Polys[0].ContourStart = 0;
+            data.Polys[0].ContourCount = 4;
+            data.Polys[0].PortalStart = 0;
+            data.Polys[0].PortalCount = 4;
+            data.Polys[1].ContourStart = 4;
+            data.Polys[1].ContourCount = 4;
+            data.Polys[1].PortalStart = 4;
+            data.Polys[1].PortalCount = 4;
+            data.ContourIndices = new int[] { 0, 1, 2, 3, 1, 4, 5, 2 };
+            data.PolyPortalIndices = new int[] { 4, 1, 2, 3, 0, 5, 6, 1 };
+            data.Portals = new CompactRainNavPortalRecord[7];
+            SetSyntheticPortal(data.Portals, 0, 0, 1, 0, 1);
+            SetSyntheticPortal(data.Portals, 1, 1, 2, 1, 2);
+            SetSyntheticPortal(data.Portals, 2, 2, 3, 3, 1);
+            SetSyntheticPortal(data.Portals, 3, 3, 0, 4, 1);
+            SetSyntheticPortal(data.Portals, 4, 1, 4, 5, 1);
+            SetSyntheticPortal(data.Portals, 5, 4, 5, 6, 1);
+            SetSyntheticPortal(data.Portals, 6, 5, 2, 7, 1);
+            data.PortalPolyIndices = new int[] { 1, 0, 1, 0, 0, 0, 1, 1 };
+
+            int rawInvalid = CompactRainNavConverter.CountInvalidTopologyReferences(data);
+            CompactRainNavConverter.RebuildTopologyFromContours(data);
+            int outputInvalid = CompactRainNavConverter.CountInvalidTopologyReferences(data);
+            bool canonical = data.PolyPortalIndices.Length == 8 &&
+                data.PolyPortalIndices[0] == 0 && data.PolyPortalIndices[4] == 4 &&
+                data.Portals[0].PolyCount == 1 && data.PortalPolyIndices[data.Portals[0].PolyStart] == 0 &&
+                data.Portals[4].PolyCount == 1 && data.PortalPolyIndices[data.Portals[4].PolyStart] == 1;
+            Console.WriteLine("topologytest raw_invalid={0} replaced={1} closed_edges={2} output_invalid={3} canonical={4}",
+                rawInvalid, data.ReplacedTopologyReferenceCount, data.ClosedContourEdgeCount,
+                outputInvalid, canonical);
+            return rawInvalid == 2 && data.RawInvalidTopologyReferenceCount == 2 &&
+                data.ReplacedTopologyReferenceCount == 4 && data.ClosedContourEdgeCount == 0 &&
+                outputInvalid == 0 && canonical ? 0 : 7;
+        }
+
+        private static int RunTopologyAudit(string path)
+        {
+            CompactRainNavLoadResult load;
+            CompactRainNavDataset dataset = CompactRainNavLoader.Load(path, out load);
+            Dictionary<long, int> portalsByEdge = new Dictionary<long, int>(dataset.PortalCount);
+            bool[] usedPortals = new bool[dataset.PortalCount];
+            int duplicatePortalEdges = 0;
+            for (int portalIndex = 0; portalIndex < dataset.PortalCount; portalIndex++)
+            {
+                CompactRainNavPortalRecord portal = dataset.GetPortal(portalIndex);
+                long key = SyntheticEdgeKey(portal.VertexOne, portal.VertexTwo);
+                if (portalsByEdge.ContainsKey(key)) duplicatePortalEdges++;
+                else portalsByEdge.Add(key, portalIndex);
+            }
+
+            int contourEdges = 0;
+            int missingPortalEdges = 0;
+            int invalidReferences = 0;
+            int geometricExactReferences = 0;
+            int geometric0001References = 0;
+            int geometric001References = 0;
+            float maximumInvalidEndpointError = 0f;
+            for (int polyIndex = 0; polyIndex < dataset.PolyCount; polyIndex++)
+            {
+                CompactRainNavPolyRecord poly = dataset.GetPoly(polyIndex);
+                for (int edge = 0; edge < poly.ContourCount; edge++)
+                {
+                    contourEdges++;
+                    int first = dataset.GetContourIndex(poly.ContourStart + edge);
+                    int second = dataset.GetContourIndex(poly.ContourStart +
+                        ((edge + 1) % poly.ContourCount));
+                    int portalIndex;
+                    if (!portalsByEdge.TryGetValue(SyntheticEdgeKey(first, second), out portalIndex))
+                        missingPortalEdges++;
+                    else usedPortals[portalIndex] = true;
+                }
+                for (int offset = 0; offset < poly.PortalCount; offset++)
+                {
+                    int portalIndex = dataset.GetPolyPortalIndex(poly.PortalStart + offset);
+                    if (dataset.IsPortalOnPolyBoundary(portalIndex, polyIndex)) continue;
+                    invalidReferences++;
+                    float error = MinimumPortalEndpointError(dataset, portalIndex, polyIndex);
+                    if (error == 0f) geometricExactReferences++;
+                    if (error <= 0.0001f) geometric0001References++;
+                    if (error <= 0.001f) geometric001References++;
+                    if (error > maximumInvalidEndpointError) maximumInvalidEndpointError = error;
+                }
+            }
+            int orphanPortals = 0;
+            for (int i = 0; i < usedPortals.Length; i++) if (!usedPortals[i]) orphanPortals++;
+            bool rebuildable = duplicatePortalEdges == 0 && orphanPortals == 0;
+            Console.WriteLine("topologyaudit contour_edges={0} portals={1} duplicate_portal_edges={2} missing_portal_edges={3} orphan_portals={4} rebuildable={5}",
+                contourEdges, dataset.PortalCount, duplicatePortalEdges, missingPortalEdges,
+                orphanPortals, rebuildable);
+            Console.WriteLine("topologyaudit_invalid refs={0} coordinate_exact={1} within_0.0001={2} within_0.001={3} max_endpoint_error={4:0.000000}",
+                invalidReferences, geometricExactReferences, geometric0001References,
+                geometric001References, maximumInvalidEndpointError);
+            return rebuildable ? 0 : 8;
+        }
+
+        private static float MinimumPortalEndpointError(CompactRainNavDataset dataset,
+            int portalIndex, int polyIndex)
+        {
+            CompactRainNavPortalRecord portal = dataset.GetPortal(portalIndex);
+            CompactRainPoint portalOne = dataset.GetVertex(portal.VertexOne);
+            CompactRainPoint portalTwo = dataset.GetVertex(portal.VertexTwo);
+            CompactRainNavPolyRecord poly = dataset.GetPoly(polyIndex);
+            float best = float.MaxValue;
+            for (int edge = 0; edge < poly.ContourCount; edge++)
+            {
+                CompactRainPoint first = dataset.GetVertex(dataset.GetContourIndex(
+                    poly.ContourStart + edge));
+                CompactRainPoint second = dataset.GetVertex(dataset.GetContourIndex(
+                    poly.ContourStart + ((edge + 1) % poly.ContourCount)));
+                float forward = Math.Max(PointDistance(portalOne, first),
+                    PointDistance(portalTwo, second));
+                float reverse = Math.Max(PointDistance(portalOne, second),
+                    PointDistance(portalTwo, first));
+                float error = Math.Min(forward, reverse);
+                if (error < best) best = error;
+            }
+            return best;
+        }
+
+        private static float PointDistance(CompactRainPoint left, CompactRainPoint right)
+        {
+            float x = left.X - right.X;
+            float y = left.Y - right.Y;
+            float z = left.Z - right.Z;
+            return (float)Math.Sqrt(x * x + y * y + z * z);
+        }
+
+        private static void SetSyntheticPortal(CompactRainNavPortalRecord[] portals, int index,
+            int first, int second, int polyStart, int polyCount)
+        {
+            CompactRainNavPortalRecord portal = new CompactRainNavPortalRecord();
+            portal.VertexOne = first;
+            portal.VertexTwo = second;
+            portal.PolyStart = polyStart;
+            portal.PolyCount = polyCount;
+            portal.Flags = polyCount == 1 ? CompactRainNavFormat.PortalBoundary : 0;
+            portals[index] = portal;
+        }
+
+        private static long SyntheticEdgeKey(int first, int second)
+        {
+            uint minimum = (uint)Math.Min(first, second);
+            uint maximum = (uint)Math.Max(first, second);
+            return ((long)minimum << 32) | maximum;
         }
 
         private static bool RunSyntheticCornerRegression()

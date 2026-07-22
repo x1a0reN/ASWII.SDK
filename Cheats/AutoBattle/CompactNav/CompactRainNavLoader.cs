@@ -147,7 +147,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 value.BoundsSizeY = reader.ReadSingle(); value.BoundsSizeZ = reader.ReadSingle();
                 if (value.ContourStart < 0 || value.ContourCount < 3 || value.TriangleStart < 0 ||
                     value.TriangleCount < 3 || (value.TriangleCount % 3) != 0 || value.PortalStart < 0 ||
-                    value.PortalCount != value.ContourCount || value.Component < 0 ||
+                    value.PortalCount < 0 || value.PortalCount > value.ContourCount || value.Component < 0 ||
                     value.Component >= header.ComponentCount ||
                     (value.Flags & ~CompactRainNavFormat.PolyUnwalkable) != 0 ||
                     !FiniteVector(value.CenterX, value.CenterY, value.CenterZ) ||

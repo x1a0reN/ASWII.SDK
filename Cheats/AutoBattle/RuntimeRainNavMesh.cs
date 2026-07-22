@@ -1,4 +1,5 @@
 using ASWDEBUG.Logger;
+using ASWDEBUG.Cheats.AutoBattle.CompactNav;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -39,6 +40,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         public long CacheBytes;
         public Vector3 BoundsSize;
         public RuntimeRainDerivedSnapshot Derived;
+        public CompactRainAutoConversionSnapshot Compact;
         public bool BakeArtifactReady;
     }
 
@@ -241,6 +243,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (_state == RuntimeRainNavState.Building && _buildStartedAt > 0f)
                 elapsed = Mathf.Max(0f, Time.realtimeSinceStartup - _buildStartedAt);
             RuntimeRainDerivedSnapshot derived = RuntimeRainNavDerivedData.GetSnapshot();
+            CompactRainAutoConversionSnapshot compact = CompactRainNavAutoConverter.GetSnapshot();
+            bool compactRequired = _highDetail && string.Equals(_mapName, ResidentMapName,
+                StringComparison.OrdinalIgnoreCase);
             return new RuntimeRainNavSnapshot
             {
                 State = _state,
@@ -262,8 +267,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 CacheBytes = _cacheBytes,
                 BoundsSize = _boundsSize,
                 Derived = derived,
+                Compact = compact,
                 BakeArtifactReady = _state == RuntimeRainNavState.Ready && _cacheBytes > 0L &&
-                    derived.Stage == RuntimeRainDerivedStage.Ready && derived.CacheBytes > 0L
+                    derived.Stage == RuntimeRainDerivedStage.Ready && derived.CacheBytes > 0L &&
+                    (!compactRequired || compact.Ready)
             };
         }
 
@@ -364,6 +371,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 RuntimeRainNavDerivedData.Prepare(_mapName, OwnedGraph, _highDetail,
                     GetRainIdentity(), ActiveGeneratorSignature);
                 RuntimeRainNavDerivedData.Tick();
+                if (RuntimeRainNavDerivedData.IsReady)
+                    CompactRainNavAutoConverter.Tick(_mapName, _highDetail);
                 return;
             }
 

@@ -820,6 +820,18 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     return;
                 }
 
+                CompactRainAutoConversionSnapshot compact = snapshot.Compact;
+                bool compactRequired = string.Equals(snapshot.MapName, "level33",
+                    StringComparison.OrdinalIgnoreCase);
+                if (compactRequired && !compact.Ready)
+                {
+                    StatusText = "\u5730\u56fe\u5efa\u56fe | ASWNAV " +
+                        (compact.State == CompactRainAutoConversionState.Failed
+                            ? "\u8f6c\u6362\u5931\u8d25"
+                            : "\u751f\u6210\u4e2d") + " | " + compact.Detail;
+                    return;
+                }
+
                 string displayName = MapBakeSceneLoader.DisplayNameForRuntimeMap(snapshot.MapName);
                 StatusText = "地图建图 | 已完成并可复用 | " + displayName +
                     " | 节点 " + snapshot.GraphSize + " | OffMesh " +

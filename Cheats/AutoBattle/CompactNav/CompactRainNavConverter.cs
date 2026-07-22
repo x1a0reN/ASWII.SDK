@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -19,7 +20,11 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             try
             {
                 result = Convert(navPath, metaPath, outputPath);
-                status = "converted sha256=" + result.OutputSha256 + " bytes=" + result.OutputBytes;
+                status = "converted sha256=" + result.OutputSha256 + " bytes=" + result.OutputBytes +
+                    " topology_raw_invalid=" + result.RawInvalidTopologyReferenceCount +
+                    " topology_replaced=" + result.ReplacedTopologyReferenceCount +
+                    " topology_closed_edges=" + result.ClosedContourEdgeCount +
+                    " topology_output_invalid=" + result.InvalidTopologyReferenceCount;
                 return true;
             }
             catch (Exception ex)
@@ -43,6 +48,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             ApplyMetadata(data, meta);
             data.Links = meta.Links;
             data.Boundaries = meta.Boundaries;
+            RebuildComponents(data);
             data.SpatialCells = new CompactRainSpatialCellRecord[0];
             data.SpatialPolyIndices = new int[0];
             data.Header = CreateHeader(navHeader, meta, data, scan);
@@ -70,8 +76,12 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             result.LinkCount = data.Links.Length;
             result.BoundaryCount = data.Boundaries.Length;
             result.SurfaceCount = data.Surfaces.Length;
-            result.ComponentCount = meta.ComponentCount;
+            result.ComponentCount = data.CanonicalComponentCount;
             result.SafeSpawnCount = meta.SafeSpawnCount;
+            result.RawInvalidTopologyReferenceCount = data.RawInvalidTopologyReferenceCount;
+            result.ReplacedTopologyReferenceCount = data.ReplacedTopologyReferenceCount;
+            result.ClosedContourEdgeCount = data.ClosedContourEdgeCount;
+            result.InvalidTopologyReferenceCount = CountInvalidTopologyReferences(data);
             return result;
         }
 
@@ -297,7 +307,183 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     throw new InvalidDataException("rainnav_read_counts");
             }
             ValidateBidirectionalTopology(data);
+            RebuildTopologyFromContours(data);
+            ValidateBidirectionalTopology(data);
+            int invalidTopology = CountInvalidTopologyReferences(data);
+            if (invalidTopology != 0)
+                throw new InvalidDataException("rainnav_canonical_topology_invalid=" + invalidTopology);
             return data;
+        }
+
+        internal static void RebuildTopologyFromContours(CompactRainNavBuildData data)
+        {
+            if (data == null || data.Polys == null || data.Portals == null ||
+                data.ContourIndices == null || data.PolyPortalIndices == null ||
+                data.PortalPolyIndices == null)
+                throw new ArgumentNullException("data");
+
+            data.RawInvalidTopologyReferenceCount = CountInvalidTopologyReferences(data);
+            int expectedReferenceCount = 0;
+            for (int i = 0; i < data.Polys.Length; i++)
+                expectedReferenceCount = checked(expectedReferenceCount + data.Polys[i].ContourCount);
+
+            Dictionary<long, int> portalByEdge = new Dictionary<long, int>(data.Portals.Length);
+            for (int portalIndex = 0; portalIndex < data.Portals.Length; portalIndex++)
+            {
+                CompactRainNavPortalRecord portal = data.Portals[portalIndex];
+                long key = EdgeKey(portal.VertexOne, portal.VertexTwo);
+                int existing;
+                if (portalByEdge.TryGetValue(key, out existing))
+                    throw new InvalidDataException("rainnav_duplicate_portal_edge=" + existing + "/" +
+                        portalIndex);
+                portalByEdge.Add(key, portalIndex);
+            }
+
+            int[] rebuiltPolyPortalBuffer = new int[expectedReferenceCount];
+            int[] portalPolyCounts = new int[data.Portals.Length];
+            int polyPortalCursor = 0;
+            int replaced = 0;
+            int closedEdges = 0;
+            for (int polyIndex = 0; polyIndex < data.Polys.Length; polyIndex++)
+            {
+                CompactRainNavPolyRecord poly = data.Polys[polyIndex];
+                int oldStart = poly.PortalStart;
+                int oldCount = poly.PortalCount;
+                poly.PortalStart = polyPortalCursor;
+                for (int edge = 0; edge < poly.ContourCount; edge++)
+                {
+                    int first = data.ContourIndices[poly.ContourStart + edge];
+                    int second = data.ContourIndices[poly.ContourStart +
+                        ((edge + 1) % poly.ContourCount)];
+                    int portalIndex;
+                    if (!portalByEdge.TryGetValue(EdgeKey(first, second), out portalIndex))
+                    {
+                        // Missing incidence is a closed contour edge; never substitute a remote portal.
+                        closedEdges++;
+                        continue;
+                    }
+                    for (int previous = poly.PortalStart; previous < polyPortalCursor; previous++)
+                        if (rebuiltPolyPortalBuffer[previous] == portalIndex)
+                            throw new InvalidDataException("rainnav_duplicate_poly_portal poly=" +
+                                polyIndex + " portal=" + portalIndex);
+                    rebuiltPolyPortalBuffer[polyPortalCursor] = portalIndex;
+                    polyPortalCursor++;
+                    portalPolyCounts[portalIndex] = checked(portalPolyCounts[portalIndex] + 1);
+                }
+                poly.PortalCount = polyPortalCursor - poly.PortalStart;
+                replaced += CountReferenceChanges(data.PolyPortalIndices, oldStart, oldCount,
+                    rebuiltPolyPortalBuffer, poly.PortalStart, poly.PortalCount);
+                data.Polys[polyIndex] = poly;
+            }
+            int[] rebuiltPolyPortals = new int[polyPortalCursor];
+            Array.Copy(rebuiltPolyPortalBuffer, rebuiltPolyPortals, polyPortalCursor);
+
+            int[] rebuiltPortalPolys = new int[polyPortalCursor];
+            int[] portalCursors = new int[data.Portals.Length];
+            int portalPolyCursor = 0;
+            for (int portalIndex = 0; portalIndex < data.Portals.Length; portalIndex++)
+            {
+                int count = portalPolyCounts[portalIndex];
+                if (count <= 0)
+                    throw new InvalidDataException("rainnav_orphan_portal=" + portalIndex);
+                CompactRainNavPortalRecord portal = data.Portals[portalIndex];
+                portal.PolyStart = portalPolyCursor;
+                portal.PolyCount = count;
+                portal.Flags = count == 1 ? CompactRainNavFormat.PortalBoundary : 0;
+                if (count > 2) portal.Flags |= CompactRainNavFormat.PortalMultiPoly;
+                data.Portals[portalIndex] = portal;
+                portalCursors[portalIndex] = portalPolyCursor;
+                portalPolyCursor = checked(portalPolyCursor + count);
+            }
+            if (portalPolyCursor != rebuiltPortalPolys.Length)
+                throw new InvalidDataException("rainnav_canonical_portal_poly_count");
+
+            for (int polyIndex = 0; polyIndex < data.Polys.Length; polyIndex++)
+            {
+                CompactRainNavPolyRecord poly = data.Polys[polyIndex];
+                for (int edge = 0; edge < poly.PortalCount; edge++)
+                {
+                    int portalIndex = rebuiltPolyPortals[poly.PortalStart + edge];
+                    int destination = portalCursors[portalIndex]++;
+                    rebuiltPortalPolys[destination] = polyIndex;
+                }
+            }
+
+            data.PolyPortalIndices = rebuiltPolyPortals;
+            data.PortalPolyIndices = rebuiltPortalPolys;
+            data.ReplacedTopologyReferenceCount = replaced;
+            data.ClosedContourEdgeCount = closedEdges;
+        }
+
+        private static int CountReferenceChanges(int[] oldValues, int oldStart, int oldCount,
+            int[] newValues, int newStart, int newCount)
+        {
+            int changes = 0;
+            for (int oldOffset = 0; oldOffset < oldCount; oldOffset++)
+            {
+                int value = oldValues[oldStart + oldOffset];
+                bool found = false;
+                for (int newOffset = 0; newOffset < newCount; newOffset++)
+                    if (newValues[newStart + newOffset] == value) { found = true; break; }
+                if (!found) changes++;
+            }
+            for (int newOffset = 0; newOffset < newCount; newOffset++)
+            {
+                int value = newValues[newStart + newOffset];
+                bool found = false;
+                for (int oldOffset = 0; oldOffset < oldCount; oldOffset++)
+                    if (oldValues[oldStart + oldOffset] == value) { found = true; break; }
+                if (!found) changes++;
+            }
+            return changes;
+        }
+
+        internal static int CountInvalidTopologyReferences(CompactRainNavBuildData data)
+        {
+            if (data == null || data.Polys == null || data.Portals == null ||
+                data.ContourIndices == null || data.PolyPortalIndices == null) return -1;
+            int invalid = 0;
+            for (int polyIndex = 0; polyIndex < data.Polys.Length; polyIndex++)
+            {
+                CompactRainNavPolyRecord poly = data.Polys[polyIndex];
+                if (poly.PortalStart < 0 || poly.PortalCount < 0 ||
+                    poly.PortalStart > data.PolyPortalIndices.Length ||
+                    poly.PortalCount > data.PolyPortalIndices.Length - poly.PortalStart)
+                    return checked(invalid + 1);
+                for (int offset = 0; offset < poly.PortalCount; offset++)
+                {
+                    int portalIndex = data.PolyPortalIndices[poly.PortalStart + offset];
+                    if (portalIndex < 0 || portalIndex >= data.Portals.Length ||
+                        !PortalTouchesPolyContour(data, portalIndex, polyIndex)) invalid++;
+                }
+            }
+            return invalid;
+        }
+
+        private static bool PortalTouchesPolyContour(CompactRainNavBuildData data,
+            int portalIndex, int polyIndex)
+        {
+            CompactRainNavPortalRecord portal = data.Portals[portalIndex];
+            CompactRainNavPolyRecord poly = data.Polys[polyIndex];
+            if (poly.ContourStart < 0 || poly.ContourCount < 2 ||
+                poly.ContourStart > data.ContourIndices.Length ||
+                poly.ContourCount > data.ContourIndices.Length - poly.ContourStart) return false;
+            for (int edge = 0; edge < poly.ContourCount; edge++)
+            {
+                int first = data.ContourIndices[poly.ContourStart + edge];
+                int second = data.ContourIndices[poly.ContourStart +
+                    ((edge + 1) % poly.ContourCount)];
+                if ((portal.VertexOne == first && portal.VertexTwo == second) ||
+                    (portal.VertexOne == second && portal.VertexTwo == first)) return true;
+            }
+            return false;
+        }
+
+        private static long EdgeKey(int first, int second)
+        {
+            uint minimum = (uint)Math.Min(first, second);
+            uint maximum = (uint)Math.Max(first, second);
+            return ((long)minimum << 32) | maximum;
         }
 
         private static GraphPreamble ReadGraphPreamble(BinaryReader reader, int expectedGraphSize,
@@ -360,6 +546,80 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             data.Surfaces = ordered;
         }
 
+        private static void RebuildComponents(CompactRainNavBuildData data)
+        {
+            int[] parents = new int[data.Polys.Length];
+            byte[] ranks = new byte[data.Polys.Length];
+            for (int i = 0; i < parents.Length; i++) parents[i] = i;
+            for (int portalIndex = 0; portalIndex < data.Portals.Length; portalIndex++)
+            {
+                CompactRainNavPortalRecord portal = data.Portals[portalIndex];
+                if (portal.PolyCount <= 1) continue;
+                int first = data.PortalPolyIndices[portal.PolyStart];
+                for (int p = 1; p < portal.PolyCount; p++)
+                    UnionComponents(parents, ranks, first,
+                        data.PortalPolyIndices[portal.PolyStart + p]);
+            }
+
+            Dictionary<int, int> components = new Dictionary<int, int>();
+            for (int polyIndex = 0; polyIndex < data.Polys.Length; polyIndex++)
+            {
+                int root = FindComponent(parents, polyIndex);
+                int component;
+                if (!components.TryGetValue(root, out component))
+                {
+                    component = components.Count;
+                    components.Add(root, component);
+                }
+                CompactRainNavPolyRecord poly = data.Polys[polyIndex];
+                poly.Component = component;
+                data.Polys[polyIndex] = poly;
+                CompactRainNavSurfaceRecord surface = data.Surfaces[polyIndex];
+                surface.Component = component;
+                data.Surfaces[polyIndex] = surface;
+            }
+            if (components.Count <= 0) throw new InvalidDataException("aswnav_canonical_components");
+
+            for (int boundaryIndex = 0; boundaryIndex < data.Boundaries.Length; boundaryIndex++)
+            {
+                CompactRainNavBoundaryRecord boundary = data.Boundaries[boundaryIndex];
+                CompactRainNavPortalRecord portal = data.Portals[boundary.PortalIndex];
+                if (portal.PolyCount != 1)
+                    throw new InvalidDataException("rainmeta_nonboundary_after_canonical=" +
+                        boundary.PortalIndex);
+                int polyIndex = data.PortalPolyIndices[portal.PolyStart];
+                boundary.Component = data.Polys[polyIndex].Component;
+                data.Boundaries[boundaryIndex] = boundary;
+            }
+            data.CanonicalComponentCount = components.Count;
+        }
+
+        private static int FindComponent(int[] parents, int value)
+        {
+            int root = value;
+            while (parents[root] != root) root = parents[root];
+            while (parents[value] != value)
+            {
+                int next = parents[value];
+                parents[value] = root;
+                value = next;
+            }
+            return root;
+        }
+
+        private static void UnionComponents(int[] parents, byte[] ranks, int left, int right)
+        {
+            int leftRoot = FindComponent(parents, left);
+            int rightRoot = FindComponent(parents, right);
+            if (leftRoot == rightRoot) return;
+            if (ranks[leftRoot] < ranks[rightRoot]) parents[leftRoot] = rightRoot;
+            else
+            {
+                parents[rightRoot] = leftRoot;
+                if (ranks[leftRoot] == ranks[rightRoot]) ranks[leftRoot]++;
+            }
+        }
+
         private static CompactRainNavHeader CreateHeader(CompactRainSourceCacheHeader nav,
             CompactRainMetaData meta, CompactRainNavBuildData data, GraphScan scan)
         {
@@ -385,7 +645,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             header.BoundsSizeZ = nav.BoundsSizeZ;
             header.ColliderCount = nav.ColliderCount;
             header.RawGraphSize = nav.GraphSize;
-            header.ComponentCount = meta.ComponentCount;
+            header.ComponentCount = data.CanonicalComponentCount;
             header.SafeSpawnCount = meta.SafeSpawnCount;
             return header;
         }
@@ -501,7 +761,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             int portalPolyCount = CompactRainNavFormat.FindSection(header, CompactRainNavFormat.PortalPolysSection).Count;
             int surfaceCount = CompactRainNavFormat.FindSection(header, CompactRainNavFormat.SurfacesSection).Count;
             if (polyCount <= 0 || portalCount <= 0 || surfaceCount != polyCount ||
-                polyCount + portalCount != header.RawGraphSize || contourCount != polyPortalCount ||
+                polyCount + portalCount != header.RawGraphSize || polyPortalCount > contourCount ||
                 polyPortalCount != portalPolyCount)
                 throw new InvalidDataException("aswnav_cross_section_counts");
         }
@@ -519,6 +779,20 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     for (int p = 0; p < portal.PolyCount; p++)
                         if (data.PortalPolyIndices[portal.PolyStart + p] == polyIndex) { found = true; break; }
                     if (!found) throw new InvalidDataException("rainnav_topology_poly=" + polyIndex);
+                }
+            }
+            for (int portalIndex = 0; portalIndex < data.Portals.Length; portalIndex++)
+            {
+                CompactRainNavPortalRecord portal = data.Portals[portalIndex];
+                for (int i = 0; i < portal.PolyCount; i++)
+                {
+                    int polyIndex = data.PortalPolyIndices[portal.PolyStart + i];
+                    CompactRainNavPolyRecord poly = data.Polys[polyIndex];
+                    bool found = false;
+                    for (int p = 0; p < poly.PortalCount; p++)
+                        if (data.PolyPortalIndices[poly.PortalStart + p] == portalIndex)
+                        { found = true; break; }
+                    if (!found) throw new InvalidDataException("rainnav_topology_portal=" + portalIndex);
                 }
             }
         }
@@ -701,5 +975,9 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         public int SurfaceCount;
         public int ComponentCount;
         public int SafeSpawnCount;
+        public int RawInvalidTopologyReferenceCount;
+        public int ReplacedTopologyReferenceCount;
+        public int ClosedContourEdgeCount;
+        public int InvalidTopologyReferenceCount;
     }
 }

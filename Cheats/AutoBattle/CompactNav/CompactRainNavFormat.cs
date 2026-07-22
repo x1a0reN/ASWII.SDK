@@ -525,6 +525,10 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         public CompactRainNavSurfaceRecord[] Surfaces;
         public CompactRainSpatialCellRecord[] SpatialCells;
         public int[] SpatialPolyIndices;
+        public int RawInvalidTopologyReferenceCount;
+        public int ReplacedTopologyReferenceCount;
+        public int ClosedContourEdgeCount;
+        public int CanonicalComponentCount;
 
         public int VertexCount
         {

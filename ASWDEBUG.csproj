@@ -77,6 +77,7 @@
     <Compile Include="Cheats\AutoBattle\AutoBattleTakeoverManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavAutoConverter.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainCorridorValidator.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavDataset.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavFormat.cs" />
@@ -112,4 +113,16 @@
   <PropertyGroup Condition=" '$(Configuration)' != 'Auction' ">
     <PostBuildEvent>copy /Y "$(ProjectDir)bin\$(Configuration)\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>
   </PropertyGroup>
+  <Target Name="BuildCompactNavConverter" BeforeTargets="PostBuildEvent" Condition=" '$(Configuration)' != 'Auction' ">
+    <MSBuild Projects="$(ProjectDir)Tools\CompactNavConverter\CompactNavConverter.csproj"
+      Targets="Build" Properties="Configuration=Release" />
+  </Target>
+  <Target Name="DeployCompactNavConverter" AfterTargets="PostBuildEvent" Condition=" '$(Configuration)' != 'Auction' ">
+    <PropertyGroup>
+      <CompactNavToolDeployDir>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWDEBUG.Tools</CompactNavToolDeployDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(CompactNavToolDeployDir)" />
+    <Copy SourceFiles="$(ProjectDir)Tools\CompactNavConverter\bin\Release\CompactNavConverter.exe"
+      DestinationFiles="$(CompactNavToolDeployDir)\CompactNavConverter.exe" />
+  </Target>
 </Project>
