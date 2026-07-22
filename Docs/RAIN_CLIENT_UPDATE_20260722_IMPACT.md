@@ -141,3 +141,27 @@ RAIN 数据格式或寻路算法。
    能在退场后成立。
 2. 完成 20 次进退场、50 局与 24/72 小时内存曲线验收。
 3. 若使用 MapBake/诊断路径，单独执行一次 smoke test；正式长期运行继续保持关闭。
+
+## 6. 本次部署记录
+
+部署时间：2026-07-22 18:36（游戏进程已退出）。
+
+- 部署前仅 `Managed\ASWDEBUG.dll` 与当前 SurvivalBot 源构建不同；原主分支部署文件已备份到：
+
+  ```text
+  C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWDEBUG.DeployBackups\
+    20260722_183609\Managed\ASWDEBUG.dll
+  ```
+
+- 最终部署的 SurvivalBot `ASWDEBUG.dll` 长度为 486912，SHA-256 为：
+
+  ```text
+  FA0FF80D817F0991FE53B903555317C03A36FFB0A6AF9F70105B51920C2A9666
+  ```
+
+- `ASWDEBUG.dll`、`0Harmony.dll`、`Mono.Cecil.dll`、`BouncyCastle.Crypto.dll`、x86
+  `winhttp.dll` 与 `doorstop_config.ini` 六对源/目标文件均已验证长度和 SHA-256 相同。
+- 最终 DLL 反编译确认包含 `CompactRainNavRuntime`、provider `aswnav_0_10`，并保持
+  `RuntimeRainNavMesh.EnableResidentRainGraph=false`。
+- 当前游戏目录中的活动 DLL 是刻意裁剪的 SurvivalBot 构建，不包含主分支 `AutoAim` UI/功能；
+  主分支检测适配保留在 `main` 的 `2c4f27e`，两套部署不能在同一个 `ASWDEBUG.dll` 中同时生效。
