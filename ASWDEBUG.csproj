@@ -76,6 +76,9 @@
     <Compile Include="Cheats\AutoBattle\AutoBattleManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleTakeoverManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavFormat.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainMetaReader.cs" />
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavDiskCache.cs" />
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavDerivedDiskCache.cs" />
     <Compile Include="Cheats\AutoBattle\RuntimeRainNavDerivedData.cs" />

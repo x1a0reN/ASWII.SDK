@@ -1,0 +1,6 @@
+D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\Forks\SurvivalBot\Tools\CompactNavConverter\bin\Release\CompactNavConverter.exe
+D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\Forks\SurvivalBot\Tools\CompactNavConverter\bin\Release\CompactNavConverter.pdb
+D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\Forks\SurvivalBot\Tools\CompactNavConverter\obj\Release\CompactNavConverter.csproj.AssemblyReference.cache
+D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\Forks\SurvivalBot\Tools\CompactNavConverter\obj\Release\CompactNavConverter.csproj.CoreCompileInputs.cache
+D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\Forks\SurvivalBot\Tools\CompactNavConverter\obj\Release\CompactNavConverter.exe
+D:\逆向\逆向-源码\创想兵团腾讯\ASWDEBUG\Forks\SurvivalBot\Tools\CompactNavConverter\obj\Release\CompactNavConverter.pdb
