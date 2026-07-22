@@ -7,6 +7,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         internal const byte WalkAction = 0;
         internal const byte JumpAction = 1;
         internal const byte DropAction = 2;
+        internal const float DefaultMaximumHorizontalProjection = 0.55f;
+        internal const float DefaultMaximumVerticalProjection = 2.25f;
 
         private readonly CompactRainPathfinder _pathfinder;
         private int _epoch;
@@ -21,6 +23,12 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         internal CompactRainPathResult Result { get { return _pathfinder.Result; } }
         internal string Detail { get { return _pathfinder.Detail; } }
         internal long WorkspaceBytes { get { return _pathfinder.WorkspaceBytes; } }
+
+        internal bool TryValidateWalkSegment(CompactRainPoint from, CompactRainPoint to,
+            out string detail)
+        {
+            return _pathfinder.TryValidateWalkSegment(from, to, out detail);
+        }
 
         internal int Begin(CompactRainPoint start, CompactRainPoint goal,
             CompactRainPathCapabilities capabilities, float maximumHorizontalProjection,
@@ -53,7 +61,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             int maximumTotalExpansions, out CompactRainPathResult result, out string detail)
         {
             result = null;
-            int epoch = Begin(start, goal, capabilities, 1.25f, 2.25f);
+            int epoch = Begin(start, goal, capabilities,
+                DefaultMaximumHorizontalProjection, DefaultMaximumVerticalProjection);
             if (_pathfinder.Status == CompactRainSearchStatus.Complete)
             {
                 result = _pathfinder.Result;

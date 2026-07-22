@@ -43,16 +43,19 @@ C:\Users\x1a0reN\AppData\LocalLow\____________II\ASWDEBUG\NavMeshCache\level33.a
 & 'Tools\CompactNavConverter\bin\Release\CompactNavConverter.exe' --load    '<level33.aswnav>'
 & 'Tools\CompactNavConverter\bin\Release\CompactNavConverter.exe' --selftest '<level33.aswnav>'
 & 'Tools\CompactNavConverter\bin\Release\CompactNavConverter.exe' --pathtest '<level33.aswnav>'
+& 'Tools\CompactNavConverter\bin\Release\CompactNavConverter.exe' --safetytest '<level33.aswnav>'
 ```
 
 结果：
 
 - 流式加载成功：文件 54,491,474 bytes，Dataset + 3D BVH 估算常驻 57,936,004 bytes，BVH 65,535 nodes。
-- 本次独立加载耗时 1322 ms；托管内存增量 58,186,808 bytes，Private Bytes 增量 61,456,384 bytes。
+- 本次独立加载耗时 1388 ms；托管内存增量 58,187,008 bytes，Private Bytes 增量 61,652,992 bytes。
 - 1505 个三角形中心投影全部成功，1505 个均返回原 Poly；错误 0；地图外点被拒绝。
-- 普通路径连续两次完全一致：component 0（181,117 Poly），cost 132.403，63 Portal，65 waypoint，展开 491 nodes。
-- Off-Mesh 测试使用 link 0 成功：2 Portal，6 waypoint，1 个动作，展开 13 nodes。
-- 可复用 A* 工作区为 15,168,316 bytes；Dataset + 工作区合计 73,104,320 bytes（约 69.72 MiB），低于 100 MB 导航常驻预算。
+- 普通路径连续两次完全一致：component 0（181,117 Poly），cost 132.403，63 Portal，5 waypoint，展开 491 nodes；中心线间隔 0.10m，长段额外横向余量上限 0.18m。
+- Off-Mesh 测试使用 link 0 成功：2 Portal，4 waypoint，1 个动作，展开 13 nodes。
+- 安全回归的凹角、短凹角、断层、悬崖边余量和远端伪拓扑五项合成用例全部通过；70 次尝试取得 64/64 条真实可达路径，1495 个步行段、unsafe=0。
+- 当前正式缓存包含 96 条不属于对应 Poly 轮廓边的 Portal 引用，涉及 96 个 Poly；搜索阶段已全部按真实几何过滤。
+- 可复用 A* 工作区为 15,168,572 bytes；Dataset + 工作区合计 73,104,576 bytes（约 69.72 MiB），低于 100 MB 导航常驻预算。
 
 ## 4. 生命周期压力测试
 
@@ -72,11 +75,11 @@ mismatches=0
 cancelled=20
 dataset_loads=1
 singleton_reuses=1000
-elapsed_ms=654
+elapsed_ms=17161
 managed_peak_delta=3576
-private_peak_delta=327680
-managed_growth=-15168816
-private_growth=-16027648
+private_peak_delta=2101248
+managed_growth=-15167832
+private_growth=-14307328
 ```
 
 验收结论：通过。1000 次复用期间 Dataset 始终为同一实例，路径无差异，所有取消均生效；热身后的托管堆和 Private Bytes 没有持续单调增长。

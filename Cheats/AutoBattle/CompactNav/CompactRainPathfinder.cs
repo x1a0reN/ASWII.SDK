@@ -28,6 +28,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private readonly int[] _heapPositions;
         private readonly int[] _linkStarts;
         private readonly int[] _linkIndices;
+        private readonly CompactRainCorridorValidator _corridorValidator;
 
         private int _searchStamp;
         private int _heapCount;
@@ -57,6 +58,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _heapPositions = new int[portalCount];
             for (int i = 0; i < _heapPositions.Length; i++) _heapPositions[i] = -1;
             BuildLinkIndex(dataset, out _linkStarts, out _linkIndices);
+            _corridorValidator = new CompactRainCorridorValidator(dataset);
         }
 
         internal CompactRainSearchStatus Status { get { return _status; } }
@@ -71,8 +73,15 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 return (long)(_cost.Length + _expandedCost.Length) * sizeof(float) +
                     (long)(_parent.Length + _parentLink.Length + _seenStamp.Length +
                     _expandedStamp.Length + _heapNodes.Length + _heapPositions.Length +
-                    _linkStarts.Length + _linkIndices.Length) * sizeof(int);
+                    _linkStarts.Length + _linkIndices.Length) * sizeof(int) +
+                    _corridorValidator.WorkspaceBytes;
             }
+        }
+
+        internal bool TryValidateWalkSegment(CompactRainPoint from, CompactRainPoint to,
+            out string detail)
+        {
+            return _corridorValidator.TryValidateWalkSegment(from, to, out detail);
         }
 
         internal CompactRainSearchStatus Begin(CompactRainPoint start, CompactRainPoint goal,
@@ -108,6 +117,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             for (int i = 0; i < startPoly.PortalCount; i++)
             {
                 int portalIndex = _dataset.GetPolyPortalIndex(startPoly.PortalStart + i);
+                if (!_dataset.IsPortalOnPolyBoundary(portalIndex,
+                    _startProjection.PolyIndex)) continue;
                 float cost = CompactRainPoint.Distance(_startProjection.Point,
                     _dataset.GetPortalCenter(portalIndex));
                 Relax(portalIndex, cost, -1, -1);
@@ -179,12 +190,14 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             for (int i = 0; i < portal.PolyCount; i++)
             {
                 int polyIndex = _dataset.GetPortalPolyIndex(portal.PolyStart + i);
+                if (!_dataset.IsPortalOnPolyBoundary(portalIndex, polyIndex)) continue;
                 CompactRainNavPolyRecord poly = _dataset.GetPoly(polyIndex);
                 if ((poly.Flags & CompactRainNavFormat.PolyUnwalkable) != 0) continue;
                 for (int p = 0; p < poly.PortalCount; p++)
                 {
                     int neighbor = _dataset.GetPolyPortalIndex(poly.PortalStart + p);
                     if (neighbor == portalIndex) continue;
+                    if (!_dataset.IsPortalOnPolyBoundary(neighbor, polyIndex)) continue;
                     float nextCost = baseCost + CompactRainPoint.Distance(center,
                         _dataset.GetPortalCenter(neighbor));
                     Relax(neighbor, nextCost, portalIndex, -1);
@@ -217,6 +230,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         private bool PortalTouchesPoly(int portalIndex, int polyIndex)
         {
+            if (!_dataset.IsPortalOnPolyBoundary(portalIndex, polyIndex)) return false;
             CompactRainNavPortalRecord portal = _dataset.GetPortal(portalIndex);
             for (int i = 0; i < portal.PolyCount; i++)
                 if (_dataset.GetPortalPolyIndex(portal.PolyStart + i) == polyIndex) return true;
@@ -227,12 +241,18 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         {
             CompactRainPoint[] points;
             byte[] actions;
-            CompactRainFunnel.BuildPath(_dataset, new int[0], new int[0],
-                _startProjection.Point, _goalProjection.Point, out points, out actions);
+            string corridorDetail;
+            if (!CompactRainFunnel.BuildPath(_dataset, _corridorValidator,
+                new int[0], new int[0], _startProjection.Point, _goalProjection.Point,
+                out points, out actions, out corridorDetail))
+            {
+                Fail("direct_" + corridorDetail);
+                return;
+            }
             _result = CreateResult(points, actions, new int[0], new int[0],
                 CompactRainPoint.Distance(_startProjection.Point, _goalProjection.Point));
             _status = CompactRainSearchStatus.Complete;
-            _detail = "complete direct=1";
+            _detail = "complete direct=1 " + corridorDetail;
         }
 
         private void CompleteFromBestGoal()
@@ -256,12 +276,18 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             }
             CompactRainPoint[] points;
             byte[] actions;
-            CompactRainFunnel.BuildPath(_dataset, portals, links,
-                _startProjection.Point, _goalProjection.Point, out points, out actions);
+            string corridorDetail;
+            if (!CompactRainFunnel.BuildPath(_dataset, _corridorValidator, portals, links,
+                _startProjection.Point, _goalProjection.Point, out points, out actions,
+                out corridorDetail))
+            {
+                Fail(corridorDetail + " expanded=" + _expandedNodes);
+                return;
+            }
             _result = CreateResult(points, actions, portals, links, _bestGoalCost);
             _status = CompactRainSearchStatus.Complete;
             _detail = "complete portals=" + portals.Length + " waypoints=" + points.Length +
-                " expanded=" + _expandedNodes;
+                " expanded=" + _expandedNodes + " " + corridorDetail;
             ResetHeap();
         }
 

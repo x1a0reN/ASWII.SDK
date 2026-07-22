@@ -77,6 +77,7 @@
     <Compile Include="Cheats\AutoBattle\AutoBattleTakeoverManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainCorridorValidator.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavDataset.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavFormat.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainFunnel.cs" />

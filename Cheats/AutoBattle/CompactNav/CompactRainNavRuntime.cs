@@ -132,6 +132,13 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 Math.Max(1.65f, tolerance), out projection);
         }
 
+        internal static bool IsSafeWalkSegment(Vector3 from, Vector3 to, out string detail)
+        {
+            detail = "aswnav=not_ready";
+            if (!IsReady || _query == null) return false;
+            return _query.TryValidateWalkSegment(ToPoint(from), ToPoint(to), out detail);
+        }
+
         internal static int PolyCount
         {
             get { return _dataset == null ? 0 : _dataset.PolyCount; }
@@ -198,7 +205,9 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 CompactRainPathCapabilities compactCapabilities = new CompactRainPathCapabilities(
                     capabilities.AllowJump, capabilities.JumpHeight, capabilities.JumpVelocity,
                     capabilities.RunSpeed, 8f);
-                int queryEpoch = _query.Begin(ToPoint(from), ToPoint(to), compactCapabilities, 1.25f, 2.25f);
+                int queryEpoch = _query.Begin(ToPoint(from), ToPoint(to), compactCapabilities,
+                    CompactRainQuery.DefaultMaximumHorizontalProjection,
+                    CompactRainQuery.DefaultMaximumVerticalProjection);
                 job = new CompactRouteJob(_sceneEpoch, queryEpoch, from, to, capabilities);
                 _job = job;
                 _queryBeginCount++;

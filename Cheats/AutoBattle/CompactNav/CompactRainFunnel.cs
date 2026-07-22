@@ -6,24 +6,22 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 {
     internal static class CompactRainFunnel
     {
-        internal static void BuildPath(CompactRainNavDataset dataset, int[] portals,
-            int[] incomingLinks, CompactRainPoint start, CompactRainPoint goal,
-            out CompactRainPoint[] waypoints, out byte[] actions)
+        private const int MaximumRepairCandidates = 128;
+
+        internal static bool BuildPath(CompactRainNavDataset dataset,
+            CompactRainCorridorValidator validator, int[] portals, int[] incomingLinks,
+            CompactRainPoint start, CompactRainPoint goal,
+            out CompactRainPoint[] waypoints, out byte[] actions, out string detail)
         {
-            if (dataset == null || portals == null || incomingLinks == null ||
+            waypoints = null;
+            actions = null;
+            detail = "corridor=invalid";
+            if (dataset == null || validator == null || portals == null || incomingLinks == null ||
                 portals.Length != incomingLinks.Length)
                 throw new ArgumentNullException("compact funnel input");
             List<CompactRainPoint> points = new List<CompactRainPoint>(Math.Max(4, portals.Length + 2));
             List<byte> pointActions = new List<byte>(Math.Max(4, portals.Length + 2));
-            if (portals.Length == 0)
-            {
-                AppendPoint(points, pointActions, start, 0);
-                AppendPoint(points, pointActions, goal, 0);
-                waypoints = points.ToArray();
-                actions = pointActions.ToArray();
-                return;
-            }
-
+            CompactRainFunnelStats stats = new CompactRainFunnelStats();
             int partitionStart = 0;
             CompactRainPoint partitionStartPoint = start;
             for (int i = 0; i < portals.Length; i++)
@@ -36,187 +34,320 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     throw new InvalidDataException("aswnav_link_corridor=" + linkIndex);
                 CompactRainPoint linkStart = new CompactRainPoint(link.StartX, link.StartY, link.StartZ);
                 CompactRainPoint linkEnd = new CompactRainPoint(link.EndX, link.EndY, link.EndZ);
-                AppendSmoothPartition(dataset, portals, partitionStart, i - 1,
-                    partitionStartPoint, linkStart, points, pointActions);
+                string partitionDetail;
+                if (!AppendSafePartition(dataset, validator, portals, partitionStart, i - 1,
+                    partitionStartPoint, linkStart, points, pointActions, ref stats,
+                    out partitionDetail))
+                {
+                    detail = "corridor=failed partition=" + stats.Partitions + " " + partitionDetail;
+                    return false;
+                }
                 AppendPoint(points, pointActions, linkEnd, link.Kind);
                 partitionStart = i;
                 partitionStartPoint = linkEnd;
             }
-            AppendSmoothPartition(dataset, portals, partitionStart, portals.Length - 1,
-                partitionStartPoint, goal, points, pointActions);
+            string finalDetail;
+            if (!AppendSafePartition(dataset, validator, portals, partitionStart,
+                portals.Length - 1, partitionStartPoint, goal, points, pointActions,
+                ref stats, out finalDetail))
+            {
+                detail = "corridor=failed partition=" + stats.Partitions + " " + finalDetail;
+                return false;
+            }
             waypoints = points.ToArray();
             actions = pointActions.ToArray();
+            detail = "corridor=centerline partitions=" + stats.Partitions +
+                " repairs=" + stats.Repairs + " shortcuts=" + stats.Shortcuts +
+                " checks=" + stats.Checks + " spacing=" +
+                validator.SampleSpacing.ToString("0.00") + " clearanceMax=" +
+                validator.SideClearance.ToString("0.00") + " sideMinLength=" +
+                validator.MinimumSideClearanceLength.ToString("0.00");
+            return true;
         }
 
-        private static void AppendSmoothPartition(CompactRainNavDataset dataset, int[] portals,
+        private static bool AppendSafePartition(CompactRainNavDataset dataset,
+            CompactRainCorridorValidator validator, int[] portals,
             int startIndex, int endIndex, CompactRainPoint start, CompactRainPoint goal,
-            List<CompactRainPoint> output, List<byte> actions)
+            List<CompactRainPoint> output, List<byte> actions, ref CompactRainFunnelStats stats,
+            out string detail)
         {
-            if (endIndex < startIndex)
-            {
-                AppendPoint(output, actions, start, 0);
-                AppendPoint(output, actions, goal, 0);
-                return;
-            }
-            int portalCount = endIndex - startIndex + 1;
-            int[] rawNodes = new int[portalCount + 2];
-            CompactRainPoint[] rawPoints = new CompactRainPoint[portalCount + 2];
-            rawNodes[0] = -1;
-            rawPoints[0] = start;
+            stats.Partitions++;
+            int portalCount = endIndex < startIndex ? 0 : endIndex - startIndex + 1;
+            List<int> rawNodes = new List<int>(portalCount + 2);
+            List<CompactRainPoint> rawPoints = new List<CompactRainPoint>(portalCount + 2);
+            rawNodes.Add(-1);
+            rawPoints.Add(start);
             for (int i = 0; i < portalCount; i++)
             {
                 int portalIndex = portals[startIndex + i];
-                rawNodes[i + 1] = portalIndex;
-                rawPoints[i + 1] = dataset.GetPortalCenter(portalIndex);
+                rawNodes.Add(portalIndex);
+                rawPoints.Add(dataset.GetPortalCenter(portalIndex));
             }
-            rawNodes[rawNodes.Length - 1] = -1;
-            rawPoints[rawPoints.Length - 1] = goal;
+            rawNodes.Add(-1);
+            rawPoints.Add(goal);
 
-            List<int> smoothNodes = new List<int>();
-            List<CompactRainPoint> smoothPoints = new List<CompactRainPoint>();
-            smoothNodes.Add(-1);
-            smoothPoints.Add(start);
-            CompactRainPoint apex = start;
-            bool reset = true;
-            int rightIndex = -1;
-            CompactRainPoint right = new CompactRainPoint();
-            int rightNode = -1;
-            int leftIndex = -1;
-            CompactRainPoint left = new CompactRainPoint();
-            int leftNode = -1;
-
-            for (int i = 0; i < rawNodes.Length; i++)
+            List<CompactRainPoint> safePoints = new List<CompactRainPoint>(rawPoints.Count + 4);
+            safePoints.Add(rawPoints[0]);
+            for (int i = 1; i < rawPoints.Count; i++)
             {
-                int portalIndex = rawNodes[i];
-                if (portalIndex >= 0)
+                CompactRainPoint previous = safePoints[safePoints.Count - 1];
+                CompactRainPoint current = rawPoints[i];
+                string segmentDetail;
+                stats.Checks++;
+                if (validator.TryValidateWalkSegment(previous, current, out segmentDetail))
                 {
-                    CompactRainNavPortalRecord portal = dataset.GetPortal(portalIndex);
-                    CompactRainPoint one = dataset.GetVertex(portal.VertexOne);
-                    CompactRainPoint two = dataset.GetVertex(portal.VertexTwo);
-                    if (IsOnXZ(one, two, apex)) continue;
-                    CompactRainPoint candidateRight;
-                    CompactRainPoint candidateLeft;
-                    if (IsLeftXZ(apex, one, two))
-                    {
-                        candidateRight = two;
-                        candidateLeft = one;
-                    }
-                    else
-                    {
-                        candidateRight = one;
-                        candidateLeft = two;
-                    }
-                    if (reset)
-                    {
-                        reset = false;
-                        rightIndex = i;
-                        right = candidateRight;
-                        rightNode = portalIndex;
-                        leftIndex = i;
-                        left = candidateLeft;
-                        leftNode = portalIndex;
-                    }
-                    else
-                    {
-                        if (IsRightXZ(apex, right, candidateRight))
-                        {
-                            if (IsRightOrOnXZ(apex, left, candidateRight))
-                            {
-                                apex = left;
-                                smoothPoints.Add(left);
-                                smoothNodes.Add(leftNode);
-                                i = leftIndex;
-                                reset = true;
-                            }
-                            else
-                            {
-                                rightIndex = i;
-                                right = candidateRight;
-                                rightNode = portalIndex;
-                            }
-                        }
-                        if (IsLeftXZ(apex, left, candidateLeft))
-                        {
-                            if (IsLeftOrOnXZ(apex, right, candidateLeft))
-                            {
-                                apex = right;
-                                smoothPoints.Add(right);
-                                smoothNodes.Add(rightNode);
-                                i = rightIndex;
-                                reset = true;
-                            }
-                            else
-                            {
-                                leftIndex = i;
-                                left = candidateLeft;
-                                leftNode = portalIndex;
-                            }
-                        }
-                    }
+                    AddDistinct(safePoints, current);
+                    continue;
                 }
-                if (!reset && i == rawNodes.Length - 1)
-                {
-                    if (IsRightXZ(apex, left, rawPoints[i]))
-                    {
-                        apex = left;
-                        smoothPoints.Add(left);
-                        smoothNodes.Add(leftNode);
-                        i = leftIndex;
-                        reset = true;
-                    }
-                    else if (IsLeftXZ(apex, right, rawPoints[i]))
-                    {
-                        apex = right;
-                        smoothPoints.Add(right);
-                        smoothNodes.Add(rightNode);
-                        i = rightIndex;
-                        reset = true;
-                    }
-                }
-            }
-            smoothPoints.Add(goal);
-            smoothNodes.Add(-1);
 
-            for (int i = 1; i < rawNodes.Length && i < smoothNodes.Count; i++)
-            {
-                if (rawNodes[i] < 0 || smoothNodes[i] == rawNodes[i]) continue;
-                CompactRainNavPortalRecord portal = dataset.GetPortal(rawNodes[i]);
-                CompactRainPoint crossing = IntersectPoints2D(smoothPoints[i - 1], smoothPoints[i],
-                    dataset.GetVertex(portal.VertexOne), dataset.GetVertex(portal.VertexTwo));
-                smoothNodes.Insert(i, rawNodes[i]);
-                smoothPoints.Insert(i, crossing);
+                int transitionPoly = FindTransitionPoly(dataset, validator,
+                    rawNodes[i - 1], rawNodes[i], rawPoints[i - 1], current);
+                List<CompactRainPoint> repairs;
+                if (transitionPoly < 0 || !TryFindRepairPath(dataset, validator,
+                    transitionPoly, previous, current, ref stats, out repairs))
+                {
+                    detail = "segment=" + (i - 1) + "->" + i + " poly=" +
+                        transitionPoly + " nodes=" + rawNodes[i - 1] + "->" +
+                        rawNodes[i] + " distance=" +
+                        CompactRainPoint.DistanceXZ(previous, current).ToString("0.00") +
+                        " rawDistance=" + CompactRainPoint.DistanceXZ(rawPoints[i - 1],
+                        current).ToString("0.00") + " " + segmentDetail;
+                    return false;
+                }
+                for (int repairIndex = 0; repairIndex < repairs.Count; repairIndex++)
+                    AddDistinct(safePoints, repairs[repairIndex]);
+                AddDistinct(safePoints, current);
+                stats.Repairs += repairs.Count;
             }
-            for (int i = 0; i < smoothPoints.Count; i++) AppendPoint(output, actions, smoothPoints[i], 0);
+
+            List<CompactRainPoint> simplified = new List<CompactRainPoint>(safePoints.Count);
+            int anchor = 0;
+            simplified.Add(safePoints[0]);
+            while (anchor < safePoints.Count - 1)
+            {
+                int selected = anchor + 1;
+                int furthest = Math.Min(safePoints.Count - 1, anchor + 16);
+                for (int candidate = furthest; candidate > anchor + 1; candidate--)
+                {
+                    string shortcutDetail;
+                    stats.Checks++;
+                    if (!validator.TryValidateWalkSegment(safePoints[anchor],
+                        safePoints[candidate], out shortcutDetail)) continue;
+                    selected = candidate;
+                    break;
+                }
+                if (selected > anchor + 1) stats.Shortcuts += selected - anchor - 1;
+                simplified.Add(safePoints[selected]);
+                anchor = selected;
+            }
+
+            for (int i = 0; i < simplified.Count; i++)
+                AppendPoint(output, actions, simplified[i], 0);
+            detail = "safe points=" + simplified.Count;
+            return true;
         }
 
-        private static CompactRainPoint IntersectPoints2D(CompactRainPoint firstStart,
-            CompactRainPoint firstFinish, CompactRainPoint secondStart, CompactRainPoint secondFinish)
+        private static int FindTransitionPoly(CompactRainNavDataset dataset,
+            CompactRainCorridorValidator validator, int fromNode, int toNode,
+            CompactRainPoint from, CompactRainPoint to)
         {
-            float denominator = (firstStart.X - firstFinish.X) * (secondStart.Z - secondFinish.Z) -
-                (firstStart.Z - firstFinish.Z) * (secondStart.X - secondFinish.X);
-            if (Math.Abs(denominator) < 0.000001f)
-                return ClosestPointOnSegmentXZ(firstFinish, secondStart, secondFinish);
-            float firstCross = firstStart.X * firstFinish.Z - firstStart.Z * firstFinish.X;
-            float secondCross = secondStart.X * secondFinish.Z - secondStart.Z * secondFinish.X;
-            float x = (firstCross * (secondStart.X - secondFinish.X) -
-                secondCross * (firstStart.X - firstFinish.X)) / denominator;
-            float z = (firstCross * (secondStart.Z - secondFinish.Z) -
-                secondCross * (firstStart.Z - firstFinish.Z)) / denominator;
-            return new CompactRainPoint(x, (firstStart.Y + secondFinish.Y) * 0.5f, z);
+            CompactRainProjection fromProjection;
+            CompactRainProjection toProjection;
+            if (!validator.TryProjectEndpoint(from, out fromProjection) ||
+                !validator.TryProjectEndpoint(to, out toProjection)) return -1;
+            int component = dataset.GetPoly(fromProjection.PolyIndex).Component;
+            if (dataset.GetPoly(toProjection.PolyIndex).Component != component) return -1;
+
+            if (fromNode < 0 && toNode < 0)
+                return fromProjection.PolyIndex == toProjection.PolyIndex
+                    ? fromProjection.PolyIndex : -1;
+            if (fromNode < 0)
+                return PortalTouchesPoly(dataset, toNode, fromProjection.PolyIndex)
+                    ? fromProjection.PolyIndex : -1;
+            if (toNode < 0)
+                return PortalTouchesPoly(dataset, fromNode, toProjection.PolyIndex)
+                    ? toProjection.PolyIndex : -1;
+
+            CompactRainNavPortalRecord left = dataset.GetPortal(fromNode);
+            int best = -1;
+            float bestClearance = float.MinValue;
+            for (int i = 0; i < left.PolyCount; i++)
+            {
+                int polyIndex = dataset.GetPortalPolyIndex(left.PolyStart + i);
+                CompactRainNavPolyRecord poly = dataset.GetPoly(polyIndex);
+                if ((poly.Flags & CompactRainNavFormat.PolyUnwalkable) != 0 ||
+                    poly.Component != component ||
+                    !dataset.IsPortalOnPolyBoundary(fromNode, polyIndex) ||
+                    !dataset.IsPortalOnPolyBoundary(toNode, polyIndex))
+                    continue;
+                float clearance = dataset.GetSurface(polyIndex).Clearance;
+                if (clearance <= bestClearance) continue;
+                bestClearance = clearance;
+                best = polyIndex;
+            }
+            return best;
         }
 
-        private static CompactRainPoint ClosestPointOnSegmentXZ(CompactRainPoint point,
-            CompactRainPoint start, CompactRainPoint end)
+        private static bool PortalTouchesPoly(CompactRainNavDataset dataset, int portalIndex,
+            int polyIndex)
         {
-            float x = end.X - start.X;
-            float z = end.Z - start.Z;
-            float length = x * x + z * z;
-            float t = length <= 0.000001f ? 0f :
-                ((point.X - start.X) * x + (point.Z - start.Z) * z) / length;
-            if (t < 0f) t = 0f;
-            else if (t > 1f) t = 1f;
-            return new CompactRainPoint(start.X + x * t,
-                start.Y + (end.Y - start.Y) * t, start.Z + z * t);
+            if (!dataset.IsPortalOnPolyBoundary(portalIndex, polyIndex)) return false;
+            CompactRainNavPortalRecord portal = dataset.GetPortal(portalIndex);
+            for (int i = 0; i < portal.PolyCount; i++)
+                if (dataset.GetPortalPolyIndex(portal.PolyStart + i) == polyIndex) return true;
+            return false;
+        }
+
+        private static bool TryFindRepairPath(CompactRainNavDataset dataset,
+            CompactRainCorridorValidator validator, int polyIndex, CompactRainPoint from,
+            CompactRainPoint to, ref CompactRainFunnelStats stats,
+            out List<CompactRainPoint> repairs)
+        {
+            repairs = new List<CompactRainPoint>();
+            List<CompactRainPoint> candidates = new List<CompactRainPoint>(32);
+            candidates.Add(from);
+            candidates.Add(to);
+            CompactRainNavSurfaceRecord surface = dataset.GetSurface(polyIndex);
+            CompactRainPoint surfacePoint = new CompactRainPoint(surface.PositionX,
+                surface.PositionY, surface.PositionZ);
+            AddUniqueCandidate(candidates, surfacePoint);
+
+            CompactRainPoint center = dataset.GetPolyCenter(polyIndex);
+            AddUniqueCandidate(candidates, center);
+
+            CompactRainNavPolyRecord poly = dataset.GetPoly(polyIndex);
+            int triangleEnd = poly.TriangleStart + poly.TriangleCount;
+            int triangleLimit = Math.Min(poly.TriangleCount / 3,
+                MaximumRepairCandidates - candidates.Count);
+            int[] triangleVertices = new int[triangleLimit * 3];
+            int triangleCount = 0;
+            for (int i = poly.TriangleStart; i + 2 < triangleEnd &&
+                triangleCount < triangleLimit; i += 3, triangleCount++)
+            {
+                int aIndex = dataset.GetTriangleIndex(i);
+                int bIndex = dataset.GetTriangleIndex(i + 1);
+                int cIndex = dataset.GetTriangleIndex(i + 2);
+                triangleVertices[triangleCount * 3] = aIndex;
+                triangleVertices[triangleCount * 3 + 1] = bIndex;
+                triangleVertices[triangleCount * 3 + 2] = cIndex;
+                CompactRainPoint a = dataset.GetVertex(aIndex);
+                CompactRainPoint b = dataset.GetVertex(bIndex);
+                CompactRainPoint c = dataset.GetVertex(cIndex);
+                CompactRainPoint candidate = new CompactRainPoint(
+                    (a.X + b.X + c.X) / 3f, (a.Y + b.Y + c.Y) / 3f,
+                    (a.Z + b.Z + c.Z) / 3f);
+                AddUniqueCandidate(candidates, candidate);
+            }
+            for (int left = 0; left < triangleCount &&
+                candidates.Count < MaximumRepairCandidates; left++)
+            {
+                for (int right = left + 1; right < triangleCount &&
+                    candidates.Count < MaximumRepairCandidates; right++)
+                {
+                    int sharedOne;
+                    int sharedTwo;
+                    if (!TryGetSharedEdge(triangleVertices, left, right,
+                        out sharedOne, out sharedTwo)) continue;
+                    CompactRainPoint one = dataset.GetVertex(sharedOne);
+                    CompactRainPoint two = dataset.GetVertex(sharedTwo);
+                    AddUniqueCandidate(candidates, new CompactRainPoint(
+                        (one.X + two.X) * 0.5f, (one.Y + two.Y) * 0.5f,
+                        (one.Z + two.Z) * 0.5f));
+                }
+            }
+
+            int count = candidates.Count;
+            float[] costs = new float[count];
+            int[] parents = new int[count];
+            bool[] closed = new bool[count];
+            for (int i = 0; i < count; i++)
+            {
+                costs[i] = float.MaxValue;
+                parents[i] = -1;
+            }
+            costs[0] = 0f;
+            for (int expansion = 0; expansion < count; expansion++)
+            {
+                int current = -1;
+                float bestScore = float.MaxValue;
+                for (int i = 0; i < count; i++)
+                {
+                    if (closed[i] || costs[i] == float.MaxValue) continue;
+                    float score = costs[i] + CompactRainPoint.DistanceXZ(candidates[i], to);
+                    if (score >= bestScore) continue;
+                    bestScore = score;
+                    current = i;
+                }
+                if (current < 0) break;
+                if (current == 1)
+                {
+                    int cursor = parents[current];
+                    while (cursor > 0)
+                    {
+                        repairs.Insert(0, candidates[cursor]);
+                        cursor = parents[cursor];
+                    }
+                    return cursor == 0 && repairs.Count > 0;
+                }
+                closed[current] = true;
+                for (int next = 1; next < count; next++)
+                {
+                    if (next == current || closed[next]) continue;
+                    string segmentDetail;
+                    stats.Checks++;
+                    if (!validator.TryValidateWalkSegment(candidates[current],
+                        candidates[next], out segmentDetail)) continue;
+                    float nextCost = costs[current] + CompactRainPoint.DistanceXZ(
+                        candidates[current], candidates[next]);
+                    if (nextCost >= costs[next]) continue;
+                    costs[next] = nextCost;
+                    parents[next] = current;
+                }
+            }
+            return false;
+        }
+
+        private static void AddUniqueCandidate(List<CompactRainPoint> candidates,
+            CompactRainPoint candidate)
+        {
+            if (!Finite(candidate)) return;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (CompactRainPoint.DistanceXZ(candidates[i], candidate) <= 0.001f &&
+                    Math.Abs(candidates[i].Y - candidate.Y) <= 0.002f) return;
+            }
+            candidates.Add(candidate);
+        }
+
+        private static bool TryGetSharedEdge(int[] triangleVertices, int left, int right,
+            out int sharedOne, out int sharedTwo)
+        {
+            sharedOne = -1;
+            sharedTwo = -1;
+            int leftStart = left * 3;
+            int rightStart = right * 3;
+            for (int i = 0; i < 3; i++)
+            {
+                int value = triangleVertices[leftStart + i];
+                bool shared = false;
+                for (int j = 0; j < 3; j++)
+                {
+                    if (triangleVertices[rightStart + j] != value) continue;
+                    shared = true;
+                    break;
+                }
+                if (!shared) continue;
+                if (sharedOne < 0) sharedOne = value;
+                else if (sharedTwo < 0 && value != sharedOne) sharedTwo = value;
+            }
+            return sharedOne >= 0 && sharedTwo >= 0;
+        }
+
+        private static void AddDistinct(List<CompactRainPoint> points, CompactRainPoint point)
+        {
+            if (points.Count > 0 && CompactRainPoint.DistanceXZ(points[points.Count - 1], point) <= 0.001f &&
+                Math.Abs(points[points.Count - 1].Y - point.Y) <= 0.002f) return;
+            points.Add(point);
         }
 
         private static void AppendPoint(List<CompactRainPoint> points, List<byte> actions,
@@ -233,40 +364,18 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             actions.Add(action);
         }
 
-        private static float Area2D(CompactRainPoint a, CompactRainPoint b, CompactRainPoint c)
-        {
-            return (b.X - a.X) * (c.Z - a.Z) - (c.X - a.X) * (b.Z - a.Z);
-        }
-
-        private static bool IsOnXZ(CompactRainPoint a, CompactRainPoint b, CompactRainPoint c)
-        {
-            return Area2D(a, b, c) == 0f;
-        }
-
-        private static bool IsLeftXZ(CompactRainPoint a, CompactRainPoint b, CompactRainPoint c)
-        {
-            return Area2D(a, b, c) > 0f;
-        }
-
-        private static bool IsLeftOrOnXZ(CompactRainPoint a, CompactRainPoint b, CompactRainPoint c)
-        {
-            return Area2D(a, b, c) >= 0f;
-        }
-
-        private static bool IsRightXZ(CompactRainPoint a, CompactRainPoint b, CompactRainPoint c)
-        {
-            return Area2D(a, b, c) < 0f;
-        }
-
-        private static bool IsRightOrOnXZ(CompactRainPoint a, CompactRainPoint b, CompactRainPoint c)
-        {
-            return Area2D(a, b, c) <= 0f;
-        }
-
         private static bool Finite(CompactRainPoint value)
         {
             return CompactRainNavFormat.IsFinite(value.X) && CompactRainNavFormat.IsFinite(value.Y) &&
                 CompactRainNavFormat.IsFinite(value.Z);
+        }
+
+        private struct CompactRainFunnelStats
+        {
+            public int Partitions;
+            public int Repairs;
+            public int Shortcuts;
+            public int Checks;
         }
     }
 }

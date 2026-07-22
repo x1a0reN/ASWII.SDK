@@ -36,12 +36,21 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         internal bool TryProject(CompactRainPoint input, float maximumHorizontalError,
             float maximumVerticalError, out CompactRainProjection projection)
         {
+            int[] stack = new int[64];
+            return TryProject(input, maximumHorizontalError, maximumVerticalError, stack,
+                out projection);
+        }
+
+        internal bool TryProject(CompactRainPoint input, float maximumHorizontalError,
+            float maximumVerticalError, int[] stack, out CompactRainProjection projection)
+        {
             projection = new CompactRainProjection();
             projection.PolyIndex = -1;
             if (!Finite(input.X) || !Finite(input.Y) || !Finite(input.Z) ||
                 maximumHorizontalError < 0f || maximumVerticalError <= 0f) return false;
+            if (stack == null || stack.Length < 64)
+                throw new ArgumentException("aswnav_projection_workspace");
 
-            int[] stack = new int[64];
             int stackCount = 1;
             stack[0] = 0;
             bool foundExact = false;

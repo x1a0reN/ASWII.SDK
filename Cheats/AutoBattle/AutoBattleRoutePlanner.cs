@@ -419,6 +419,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 int walkSegmentCount;
                 bool walkable = CanFollowSegmentDense(previous, point, ignoreRoot,
                     out walkBlockedSegment, out walkSegmentCount);
+                string compactWalkDetail;
+                walkable = walkable && IsCompactWalkSegmentSafe(previous, point,
+                    out compactWalkDetail);
                 float rise = point.y - previous.y;
                 bool jump = i < route.JumpFlags.Count && route.JumpFlags[i];
                 // Derived links may only bridge disconnected RAIN polygons on a staircase.
@@ -462,6 +465,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             int cursor = 0;
             int shortcuts = 0;
             int denseRejects = 0;
+            int aswnavRejects = 0;
             int detourCount = 0;
             int detourExpanded = 0;
             int inferredJumps = 0;
@@ -473,6 +477,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 {
                     if (candidate > cursor && !RainShortcutFollowsRawCorridor(anchor, clean, cursor, candidate,
                         RainShortcutCorridorRadius)) continue;
+                    string compactSegmentDetail;
+                    if (!IsCompactWalkSegmentSafe(anchor, clean[candidate],
+                        out compactSegmentDetail))
+                    {
+                        aswnavRejects++;
+                        continue;
+                    }
                     int blockedSegment;
                     int segmentCount;
                     if (!CanFollowSegmentDense(anchor, clean[candidate], ignoreRoot,
@@ -560,6 +571,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             detail = "opt=rain raw=" + rawCount + " clean=" + clean.Count +
                       " smooth=" + simplified.Count + " corners=" + adjustedCorners +
                       " shortcuts=" + shortcuts +
+                      " aswnavRejects=" + aswnavRejects +
                       " denseRejects=" + denseRejects +
                       " detours=" + detourCount +
                       " detourExpanded=" + detourExpanded +
@@ -615,6 +627,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         !CanFollowSegmentDense(candidate, next, ignoreRoot,
                             out blockedSegment, out segmentCount))
                         continue;
+                    string compactDetail;
+                    if (!IsCompactWalkSegmentSafe(previous, candidate, out compactDetail) ||
+                        !IsCompactWalkSegmentSafe(candidate, next, out compactDetail))
+                        continue;
 
                     float clearance = MeasureWallClearance(candidate, ignoreRoot);
                     if (clearance < NavigationBodyRadius + 0.10f) continue;
@@ -665,6 +681,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             float[] angles = { 48f, -48f, 72f, -72f, 96f, -96f, 132f, -132f, 180f };
             float bestScore = float.MinValue;
             float bestAngle = 0f;
+            int aswnavRejects = 0;
             for (int i = 0; i < angles.Length; i++)
             {
                 Vector3 candidateDirection = Quaternion.Euler(0f, angles[i], 0f) * desiredDirection;
@@ -672,6 +689,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 Vector3 grounded;
                 if (!TrySnapToGroundNear(raw, from.y, 1.35f, out grounded, false)) continue;
                 if (!IsPointOnOwnedRainGraph(grounded, 1.0f)) continue;
+                string compactDetail;
+                if (!IsCompactWalkSegmentSafe(from, grounded, out compactDetail))
+                {
+                    aswnavRejects++;
+                    continue;
+                }
                 if (!CanTraverseWalkableSurface(from, grounded, ignoreRoot)) continue;
                 if (!HasNavigationBodyClearance(from, grounded, ignoreRoot, NavigationBodyRadius)) continue;
                 float clearance = MeasureWallClearance(grounded, ignoreRoot);
@@ -691,7 +714,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (direction.sqrMagnitude < 0.01f) return false;
             detail = "rain_clearance=ok angle=" + bestAngle.ToString("0") +
-                     " score=" + bestScore.ToString("0.00");
+                     " score=" + bestScore.ToString("0.00") +
+                     " aswnavRejects=" + aswnavRejects;
             return true;
         }
 
@@ -912,6 +936,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
         {
             if (!IsFinite(from) || !IsFinite(waypoint)) return false;
+            string compactDetail;
+            if (!jump && !IsCompactWalkSegmentSafe(from, waypoint, out compactDetail))
+                return false;
             return jump
                 ? CanExecuteJump(from, waypoint,
                     capabilities ?? new AutoBattleRouteCapabilities(), ignoreRoot)
@@ -1932,8 +1959,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 {
                     int walkBlockedSegment;
                     int walkSegmentCount;
-                    if (CanFollowSegmentDense(previous, target, ignoreRoot,
-                        out walkBlockedSegment, out walkSegmentCount))
+                    string compactWalkDetail;
+                    if (IsCompactWalkSegmentSafe(previous, target, out compactWalkDetail) &&
+                        CanFollowSegmentDense(previous, target, ignoreRoot,
+                            out walkBlockedSegment, out walkSegmentCount))
                     {
                         previous = target;
                         continue;
@@ -1951,6 +1980,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     continue;
                 }
 
+                string compactSegmentDetail;
+                if (!IsCompactWalkSegmentSafe(previous, target, out compactSegmentDetail))
+                {
+                    detail = "aswnav_unsafe waypoint=" + i + " " + compactSegmentDetail;
+                    return false;
+                }
                 int blockedSegment;
                 int segments;
                 if (!CanFollowSegmentDense(previous, target, ignoreRoot, out blockedSegment, out segments))
@@ -1975,6 +2010,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
             }
             detail = "ok jumps=" + jumps;
             return true;
+        }
+
+        private static bool IsCompactWalkSegmentSafe(Vector3 from, Vector3 to,
+            out string detail)
+        {
+            if (!_compactNavigationRequested)
+            {
+                detail = "aswnav=inactive";
+                return true;
+            }
+            return CompactRainNavRuntime.IsSafeWalkSegment(from, to, out detail);
         }
 
         private static List<Vector3> OptimizeRainPathWithHardLinks(Vector3 from, List<Vector3> points,

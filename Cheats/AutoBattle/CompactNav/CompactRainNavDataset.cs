@@ -118,6 +118,23 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             return new CompactRainPoint(poly.CenterX, poly.CenterY, poly.CenterZ);
         }
 
+        internal bool IsPortalOnPolyBoundary(int portalIndex, int polyIndex)
+        {
+            CompactRainNavPortalRecord portal = _portals[portalIndex];
+            CompactRainNavPolyRecord poly = _polys[polyIndex];
+            if (poly.ContourCount < 2) return false;
+            for (int i = 0; i < poly.ContourCount; i++)
+            {
+                int first = _contourIndices[poly.ContourStart + i];
+                int second = _contourIndices[poly.ContourStart +
+                    ((i + 1) % poly.ContourCount)];
+                if ((portal.VertexOne == first && portal.VertexTwo == second) ||
+                    (portal.VertexOne == second && portal.VertexTwo == first))
+                    return true;
+            }
+            return false;
+        }
+
         private long EstimateResidentBytes()
         {
             long result = 0L;

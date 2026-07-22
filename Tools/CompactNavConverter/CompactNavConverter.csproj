@@ -32,6 +32,9 @@
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs">
       <Link>CompactRainNavConverter.cs</Link>
     </Compile>
+    <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainCorridorValidator.cs">
+      <Link>CompactRainCorridorValidator.cs</Link>
+    </Compile>
     <Compile Include="..\..\Cheats\AutoBattle\CompactNav\CompactRainNavDataset.cs">
       <Link>CompactRainNavDataset.cs</Link>
     </Compile>
