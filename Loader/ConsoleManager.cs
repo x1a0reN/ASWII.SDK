@@ -23,9 +23,6 @@ public class ConsoleManager : MonoBehaviour
     private static readonly bool NetworkAuthEnabled = true;
 
     
-    // 固定单码文件（注意 @ 避免 \x1a 转义）
-    private const string SingleCodePath = @"C:\x1a0reN\config.txt";
-
     public static ConsoleManager Instance
 	{
 		get
@@ -105,18 +102,18 @@ public class ConsoleManager : MonoBehaviour
         }
 
         // 网络验证通过后，再启用具体功能和菜单。
-        if (EyAuthManager.Instance == null)
+        if (VeriGateAuthManager.Instance == null)
         {
-            var go = new GameObject("EyAuthManager");
+            var go = new GameObject("VeriGateAuthManager");
             go.hideFlags = HideFlags.HideAndDontSave;
             DontDestroyOnLoad(go);
-            go.AddComponent<EyAuthManager>();
+            go.AddComponent<VeriGateAuthManager>();
         }
 
-        var mgr = EyAuthManager.Instance;
+        var mgr = VeriGateAuthManager.Instance;
         if (mgr == null)
         {
-            FileLogger.Log("AUTH", "EyAuthManager 初始化失败。");
+            FileLogger.Log("AUTH", "VeriGateAuthManager 初始化失败。");
             return;
         }
 
@@ -128,7 +125,7 @@ public class ConsoleManager : MonoBehaviour
                 return;
             }
 
-            FileLogger.Log("AUTH", "登录成功：SingleCode=" + mgr.SingleCode + " Token=" + mgr.Token);
+            FileLogger.Log("AUTH", "VeriGate 登录成功：SessionID=" + mgr.SessionID + " DeviceID=" + mgr.DeviceID);
             if (!string.IsNullOrEmpty(mgr.StaticExpiredText))
             {
                 FileLogger.Log("AUTH", "到期时间：" + mgr.StaticExpiredText);

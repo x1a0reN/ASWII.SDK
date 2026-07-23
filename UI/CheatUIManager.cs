@@ -113,9 +113,9 @@ namespace ASWDEBUG.UI
             //UIHelper.Button("自动锁血", AutoLockHP.Enabled, AutoLockHP.Toggle);
             UIHelper.Button("超级大陀螺", SpinTop.Enabled, SpinTop.Toggle);
             string expiredText = "未获取";
-            if (EyAuthManager.Instance != null && !string.IsNullOrEmpty(EyAuthManager.Instance.StaticExpiredText))
+            if (VeriGateAuthManager.Instance != null && !string.IsNullOrEmpty(VeriGateAuthManager.Instance.StaticExpiredText))
             {
-                expiredText = EyAuthManager.Instance.StaticExpiredText;
+                expiredText = VeriGateAuthManager.Instance.StaticExpiredText;
             }
             UIHelper.LabelAuto("到期时间: " + expiredText);
 

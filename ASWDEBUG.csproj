@@ -120,10 +120,17 @@
     <Compile Include="UI\SpriteListDrawer.cs" />
     <Compile Include="UI\UIHelper.cs" />
     <Compile Include="UI\CheatUIManager.cs" />
-    <Compile Include="Verify\EyAuthManager.cs" />
-    <Compile Include="Verify\OperateIniFile.cs" />
+    <Compile Include="Verify\NativeSdkLoader.cs" />
+    <Compile Include="Verify\VeriGateAuthManager.cs" />
+    <Compile Include="Verify\VeriGateClient.cs" />
+    <Compile Include="Verify\VeriGateException.cs" />
+    <Compile Include="Verify\VeriGateOptions.cs" />
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <EmbeddedResource Include="Native\verigate_sdk.dll">
+      <LogicalName>ASWDEBUG.Native.verigate_sdk.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup Condition=" '$(Configuration)' != 'Auction' ">
     <PostBuildEvent>copy /Y "$(ProjectDir)bin\$(Configuration)\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>

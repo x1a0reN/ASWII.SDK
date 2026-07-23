@@ -430,8 +430,8 @@ namespace ASWDEBUG.Main
             string raw = string.Empty;
             try
             {
-                if (EyAuthManager.Instance != null && !string.IsNullOrEmpty(EyAuthManager.Instance.SingleCode))
-                    raw += EyAuthManager.Instance.SingleCode;
+                if (VeriGateAuthManager.Instance != null && !string.IsNullOrEmpty(VeriGateAuthManager.Instance.DeviceID))
+                    raw += VeriGateAuthManager.Instance.DeviceID;
             }
             catch { }
 
@@ -455,13 +455,8 @@ namespace ASWDEBUG.Main
         {
             try
             {
-                if (EyAuthManager.Instance != null && !string.IsNullOrEmpty(EyAuthManager.Instance.SingleCode))
-                {
-                    string singleCode = EyAuthManager.Instance.SingleCode.Trim();
-                    if (singleCode.Length == 0) return "U";
-                    char c = char.ToUpperInvariant(singleCode[0]);
-                    if (c == 'D' || c == 'M' || c == 'W' || c == 'L' || c == 'O' || c == 'Z') return c.ToString();
-                }
+                if (VeriGateAuthManager.Instance != null && VeriGateAuthManager.Instance.LoggedIn)
+                    return "D";
             }
             catch { }
 

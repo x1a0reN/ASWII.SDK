@@ -219,7 +219,8 @@ namespace ASWDEBUG.Main
             try
             {
                 DllUsageTelemetry.Stop();
-                EyAuthManager.Instance.TryLogoutIfNeeded(EyAuthManager.Instance.Token, EyAuthManager.Instance.SingleCode);
+                if (VeriGateAuthManager.Instance != null)
+                    VeriGateAuthManager.Instance.TryLogoutIfNeeded();
             }
             catch (Exception e)
             {
