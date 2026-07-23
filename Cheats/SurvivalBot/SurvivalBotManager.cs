@@ -56,6 +56,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private const float AssaultVisionPredictionSeconds = 0.75f;
         private const float AssaultVisionPredictionDistance = 22f;
         private const float AssaultStationaryConfirmSeconds = 0.55f;
+        private const float AssaultOpeningStealthWindowSeconds = 5f;
+        private const float AssaultOpeningStealthRetrySeconds = 0.06f;
+        private const float AssaultImmediateFireDistance = 7f;
         private const float EmergencyVisibleRetaliationDistance = 22f;
         private const float EmergencyVisibleRetentionSeconds = 0.65f;
         private const float CliffFatalDrop = 12f;
@@ -132,6 +135,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _assaultStationarySince;
         private static bool _assaultStationaryConfirmed;
         private static bool _assaultWasHidden;
+        private static bool _assaultOpeningStealthResolved;
+        private static float _assaultOpeningStealthDeadlineAt;
+        private static float _nextAssaultOpeningStealthAttemptAt;
         private static float _nextDirectorTraceAt;
         private static float _safePointLeaseUntil;
         private static int _lastExposureCount;
@@ -1141,6 +1147,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _heavyGallopPending = false;
             _guardHealPending = false;
             ResetOffensiveDirector("role_changed");
+            if (detected == SurvivalRoleKind.Assault &&
+                !_assaultOpeningStealthResolved &&
+                _assaultOpeningStealthDeadlineAt <= 0f)
+            {
+                _assaultOpeningStealthDeadlineAt =
+                    Time.time + AssaultOpeningStealthWindowSeconds;
+            }
             FileLogger.Log("SURVIVAL][ROLE", "detected=" + detected + " previous=" + previous);
         }
 
@@ -1321,6 +1334,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     SetAssaultDirectorState(AssaultDirectorState.HiddenWatch, "stealth_confirmed");
             }
 
+            TickAssaultOpeningStealth(player, playerHidden);
+
             if (!IsEmergencyTargetUsable(_assaultDirectorTarget))
                 ResetAssaultDirector("target_invalid");
 
@@ -1404,6 +1419,42 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     ResetAssaultDirector("threat_departed");
             }
             return false;
+        }
+
+        private static void TickAssaultOpeningStealth(Character player, bool playerHidden)
+        {
+            if (_assaultOpeningStealthResolved || player == null) return;
+            if (_assaultOpeningStealthDeadlineAt <= 0f)
+                _assaultOpeningStealthDeadlineAt =
+                    Time.time + AssaultOpeningStealthWindowSeconds;
+
+            if (playerHidden)
+            {
+                _assaultOpeningStealthResolved = true;
+                FileLogger.Log("SURVIVAL][ROLE", "assault opening stealth resolved=already_hidden");
+                return;
+            }
+
+            if (Time.time > _assaultOpeningStealthDeadlineAt)
+            {
+                _assaultOpeningStealthResolved = true;
+                FileLogger.Log("SURVIVAL][ROLE", "assault opening stealth resolved=timeout skill=" +
+                    SurvivalCombatAdapter.HasSurvivalSkill(player, SkillType.kSkillHidden));
+                return;
+            }
+
+            if (Time.time < _nextAssaultOpeningStealthAttemptAt) return;
+            _nextAssaultOpeningStealthAttemptAt =
+                Time.time + AssaultOpeningStealthRetrySeconds;
+            if (!SurvivalCombatAdapter.IsSurvivalSkillReady(player, SkillType.kSkillHidden))
+                return;
+            if (!SurvivalCombatAdapter.TryUseSurvivalSkill(player, SkillType.kSkillHidden,
+                "assault_round_opening_stealth"))
+                return;
+
+            _assaultOpeningStealthResolved = true;
+            _assaultWasHidden = false;
+            FileLogger.Log("SURVIVAL][ROLE", "assault opening stealth resolved=used");
         }
 
         private static Character SelectAssaultVisionThreat(Character player, out float bestScore)
@@ -1536,11 +1587,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return true;
             }
 
-            bool preAimReady = PreAimPursuitTarget(player, target, camera);
+            bool immediateFire = distance <= AssaultImmediateFireDistance;
+            bool preAimReady = immediateFire || PreAimPursuitTarget(player, target, camera);
             if (!preAimReady)
             {
-                SurvivalCombatAdapter.CancelSurvivalAttack();
-                SurvivalCombatAdapter.CloseSurvivalScope(player);
+                // Keep the prepared aim and current scope stable while the camera converges.
+                AutoBattleInput.ClearFire();
                 if (hidden || !track.FireLine)
                     MoveAttackPursuit(player, target, camera, false);
                 else
@@ -1565,7 +1617,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             else MoveCombatStrafe(player, target);
             SurvivalCombatAdapter.LogCombatState(player, target, strictLine, distance, fired);
             StatusText = "Assault director | hard hunt | distance " + distance.ToString("0.0") +
-                " | hidden " + hidden + " | fired " + fired;
+                " | hidden " + hidden + " | immediate " + immediateFire + " | fired " + fired;
             TraceDirector("hard_hunt", track);
             return true;
         }
@@ -1686,6 +1738,9 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _heavyGallopPending = false;
             _guardHealPending = false;
             _nextDirectorTraceAt = 0f;
+            _assaultOpeningStealthResolved = false;
+            _assaultOpeningStealthDeadlineAt = 0f;
+            _nextAssaultOpeningStealthAttemptAt = 0f;
             ResetOffensiveDirector(reason);
         }
 

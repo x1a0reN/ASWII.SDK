@@ -18,6 +18,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
     {
         private const float CameraPitchOffset = -11.309932f;
         private const float CornerReachDistance = 0.65f;
+        private const float EmergencyCloseWeaponDistance = 7f;
+        private const float EmergencySniperResumeDistance = 9f;
         private static readonly List<Vector3> Path = new List<Vector3>(48);
         private static readonly List<bool> JumpFlags = new List<bool>(48);
         private static int _pathIndex;
@@ -1366,8 +1368,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             if (player == null || player.weaponlist == null || Time.time < _nextWeaponSwitchAt) return;
 
+            bool closeRange = distance <= EmergencyCloseWeaponDistance;
+            if (!closeRange && distance < EmergencySniperResumeDistance &&
+                IsOperationalGun(player.mWeapon))
+            {
+                WeaponType currentType = GetWeaponType(player.mWeapon);
+                if (currentType != WeaponType.kWeaponTypeRPG &&
+                    currentType != WeaponType.kWeaponTypeBow)
+                    return;
+            }
+
             WeaponBase sniper = FindOperationalWeapon(player, WeaponType.kWeaponTypeSniperGun);
-            if (sniper != null)
+            if (!closeRange && sniper != null)
             {
                 if (sniper != player.mWeapon) SwitchWeapon(player, sniper, "emergency_sniper_switch");
                 return;
@@ -1382,12 +1394,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 WeaponType type = GetWeaponType(weapon);
 
                 float score = Mathf.Min(30f, weapon.clip);
-                if (type == WeaponType.kWeaponTypeShotGun) score += distance <= 9f ? 150f : 85f;
+                if (type == WeaponType.kWeaponTypeShotGun) score += closeRange ? 320f : 85f;
                 else if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
-                         type == WeaponType.kWeaponTypeDualWeapon) score += 135f;
-                else if (type == WeaponType.kWeaponTypePistol) score += 75f;
-                else if (type == WeaponType.kWeaponTypeSniperGun) score += 320f;
-                else if (type == WeaponType.kWeaponTypeRPG) score += 95f;
+                         type == WeaponType.kWeaponTypeDualWeapon) score += closeRange ? 260f : 135f;
+                else if (type == WeaponType.kWeaponTypePistol) score += closeRange ? 170f : 75f;
+                else if (type == WeaponType.kWeaponTypeSniperGun) score += closeRange ? 45f : 320f;
+                else if (type == WeaponType.kWeaponTypeRPG) score += closeRange ? -120f : 95f;
                 else if (type == WeaponType.kWeaponTypeBow) score += distance >= 10f ? 35f : -100f;
 
                 if (score <= bestScore) continue;
@@ -1397,7 +1409,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             if (best != null && best != player.mWeapon)
             {
-                SwitchWeapon(player, best, "emergency_weapon_switch");
+                SwitchWeapon(player, best, closeRange
+                    ? "emergency_close_weapon_switch"
+                    : "emergency_weapon_switch");
             }
             else if (player.mWeapon != null && player.mWeapon.clip <= 0 && !player.mWeapon.reloading)
             {

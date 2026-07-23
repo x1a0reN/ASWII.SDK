@@ -224,6 +224,7 @@ function Test-VariantAssembly {
             'TickRoleDirector',
             'TickGuardDirector',
             'TickAssaultDirector',
+            'TickAssaultOpeningStealth',
             'MoveCombatStrafe',
             'IsSafeCombatDirection',
             'TraceCombatMovement',
@@ -247,7 +248,8 @@ function Test-VariantAssembly {
             'DetectSurvivalRole',
             'TryUseSurvivalSkill',
             'PrepareSurvivalTargetSkill',
-            'PreAimSurvivalTarget'
+            'PreAimSurvivalTarget',
+            'AttackEmergency'
         )
         $adapterMethodNames = @($adapterType.Methods | ForEach-Object { $_.Name })
         foreach ($methodName in $requiredAdapterMethods) {
@@ -371,8 +373,15 @@ function Deploy-PrivatePackage {
     )
 
     foreach ($pair in $pairs) {
-        Copy-RequiredFile $pair[0] $pair[1]
         $sourceHash = (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash
+        if (Test-Path -LiteralPath $pair[1] -PathType Leaf) {
+            $existingHash = (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash
+            if ($sourceHash -eq $existingHash) {
+                Write-Host "Deployment unchanged: $($pair[1])"
+                continue
+            }
+        }
+        Copy-RequiredFile $pair[0] $pair[1]
         $targetHash = (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash
         if ($sourceHash -ne $targetHash) {
             throw "Deployment hash mismatch: $($pair[1])"
@@ -425,6 +434,8 @@ $manifest = [ordered]@{
             configurableRoleStrategy = $false
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
+            assaultOpeningStealth = $true
+            closeRangeEmergencyFire = $true
             ignoreIdleKick = $true
             continuousCombatMovement = $true
             incrementalCliffSearch = $true
@@ -445,6 +456,8 @@ $manifest = [ordered]@{
             configurableRoleStrategy = $false
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
+            assaultOpeningStealth = $true
+            closeRangeEmergencyFire = $true
             ignoreIdleKick = $true
             continuousCombatMovement = $true
             incrementalCliffSearch = $true
