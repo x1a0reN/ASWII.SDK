@@ -1208,6 +1208,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _guardArrowTargetLostAt = 0f;
                 if (_guardArrowTarget == null) return false;
                 SetAttackTarget(_guardArrowTarget, "guard_arrow_rain_lock");
+                SurvivalCombatAdapter.CancelSurvivalAttack();
                 FileLogger.Log("SURVIVAL][ROLE", "guard arrow-rain lock uid=" +
                     _guardArrowTarget.uid + " dist=" +
                     XzDistance(player.transform.position, _guardArrowTarget.transform.position).ToString("0.0"));
@@ -1225,7 +1226,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Phase = SurvivalBotPhase.Emergency;
             ClearEmergencyTarget("guard_arrow_rain");
             SurvivalCombatAdapter.SuspendSurvivalNavigation("guard_arrow_rain");
-            SurvivalCombatAdapter.CancelSurvivalAttack();
+            AutoBattleInput.ClearFire();
             SurvivalCombatAdapter.CloseSurvivalScope(player);
             AutoBattleInput.ClearMovement();
             float distance = XzDistance(player.transform.position, _guardArrowTarget.transform.position);
