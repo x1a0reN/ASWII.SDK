@@ -1,6 +1,5 @@
 using System;
 using System.Globalization;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -19,8 +18,8 @@ namespace ASWDEBUG.Verify
 
     internal sealed class VeriGateClient : IDisposable
     {
-        private const string ProcessMutexName = "Local\\ASWDEBUG.VeriGate.Session";
-        private static readonly Mutex ProcessMutex = new Mutex(false, ProcessMutexName);
+        private static readonly Mutex ProcessMutex =
+            new Mutex(false, VeriGateOptions.ProcessMutexName);
         private readonly object _sync = new object();
         private IntPtr _context;
 
@@ -34,34 +33,31 @@ namespace ASWDEBUG.Verify
             if (string.IsNullOrEmpty(directCard) || directCard.Trim().Length != 78)
                 throw new VeriGateException(1);
 
-            NativeSdkLoader.EnsureLoaded();
-            string storageRoot = Path.Combine(
-                Path.Combine(
-                    Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "ASWII"),
-                    "VeriGate"),
-                "State");
-            string config = "{" +
-                "\"origin\":\"" + JsonEscape(VeriGateOptions.Origin) + "\"," +
-                "\"tenant_id\":\"" + VeriGateOptions.TenantId + "\"," +
-                "\"application_id\":\"" + VeriGateOptions.ApplicationId + "\"," +
-                "\"environment_id\":\"" + VeriGateOptions.EnvironmentId + "\"," +
-                "\"storage_root\":\"" + JsonEscape(storageRoot) + "\"," +
-                "\"client_name\":\"" + VeriGateOptions.ClientName + "\"," +
-                "\"timeout_seconds\":20}";
-
-            using (Utf8Slice configSlice = new Utf8Slice(config, false))
-            using (Utf8Slice cardSlice = new Utf8Slice(directCard.Trim(), true))
+            using (EnterProcessLock())
             {
-                IntPtr context;
-                uint result = NativeMethods.vg_sdk_windows_client_new(
-                    configSlice.Value,
-                    cardSlice.Value,
-                    out context);
-                ThrowIfFailed(result);
-                if (context == IntPtr.Zero) throw new VeriGateException(7);
-                return new VeriGateClient(context);
+                NativeSdkLoader.EnsureLoaded();
+                string config = "{" +
+                    "\"origin\":\"" + JsonEscape(VeriGateOptions.Origin) + "\"," +
+                    "\"tenant_id\":\"" + VeriGateOptions.TenantId + "\"," +
+                    "\"application_id\":\"" + VeriGateOptions.ApplicationId + "\"," +
+                    "\"environment_id\":\"" + VeriGateOptions.EnvironmentId + "\"," +
+                    "\"storage_root\":\"" +
+                    JsonEscape(VeriGateCredentialStore.StorageRoot) + "\"," +
+                    "\"client_name\":\"" + VeriGateOptions.ClientName + "\"," +
+                    "\"timeout_seconds\":20}";
+
+                using (Utf8Slice configSlice = new Utf8Slice(config, false))
+                using (Utf8Slice cardSlice = new Utf8Slice(directCard.Trim(), true))
+                {
+                    IntPtr context;
+                    uint result = NativeMethods.vg_sdk_windows_client_new(
+                        configSlice.Value,
+                        cardSlice.Value,
+                        out context);
+                    ThrowIfFailed(result);
+                    if (context == IntPtr.Zero) throw new VeriGateException(7);
+                    return new VeriGateClient(context);
+                }
             }
         }
 

@@ -64,6 +64,7 @@
     <Reference Include="System.Core">
       <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\System.Core.dll</HintPath>
     </Reference>
+    <Reference Include="System.Security" />
     <Reference Include="UnityEngine">
       <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\UnityEngine.dll</HintPath>
     </Reference>
@@ -121,6 +122,7 @@
     <Compile Include="UI\UIHelper.cs" />
     <Compile Include="UI\CheatUIManager.cs" />
     <Compile Include="Verify\NativeSdkLoader.cs" />
+    <Compile Include="Verify\VeriGateCredentialStore.cs" />
     <Compile Include="Verify\VeriGateAuthManager.cs" />
     <Compile Include="Verify\VeriGateClient.cs" />
     <Compile Include="Verify\VeriGateException.cs" />

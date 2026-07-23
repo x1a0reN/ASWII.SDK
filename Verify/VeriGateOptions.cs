@@ -4,9 +4,10 @@ namespace ASWDEBUG.Verify
     {
         internal const string Origin = "https://verigate.43-133-30-226.nip.io";
         internal const string TenantId = "019f8e44-942f-73e2-9ad6-f4bcb615b07f";
-        internal const string ApplicationId = "019f8ea6-2e97-7c82-a0bf-a899bd80570a";
-        internal const string EnvironmentId = "019f8ea6-b7a5-7633-80db-044214370b46";
-        internal const string ClientName = "ASWDEBUG";
+        internal const string ApplicationId = "019f8e5f-805c-7211-9d07-b09d5f109780";
+        internal const string EnvironmentId = "019f8e60-2796-78d8-95fe-d40bc7f3637f";
+        internal const string ProcessMutexName = "Local\\x1a0reN.Launcher.VeriGate.Session";
+        internal const string ClientName = "x1a0reN.Launcher.ASWDEBUG";
         internal const string ClientVersion = "1.0.0";
         internal const string Capability = "base.access";
         internal const string Resource = EnvironmentId;

@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Threading;
 using ASWDEBUG.Logger;
 using UnityEngine;
@@ -72,7 +71,7 @@ namespace ASWDEBUG.Verify
             {
                 try
                 {
-                    string directCard = ReadDirectCard();
+                    string directCard = VeriGateCredentialStore.Load();
                     VeriGateClient client = VeriGateClient.Open(directCard);
                     VeriGateAuthorization authorization;
                     try
@@ -204,26 +203,5 @@ namespace ASWDEBUG.Verify
             lock (_queueLock) _mainQueue.Enqueue(action);
         }
 
-        private static string ReadDirectCard()
-        {
-            string local = Path.Combine(
-                Path.Combine(
-                    Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "ASWII"),
-                    "VeriGate"),
-                "direct-card.txt");
-            string fixedPath = @"C:\x1a0reN\verigate-card.txt";
-            string[] candidates = new string[] { local, fixedPath };
-            for (int i = 0; i < candidates.Length; i++)
-            {
-                if (!File.Exists(candidates[i])) continue;
-                string value = File.ReadAllText(candidates[i]).Trim();
-                if (value.Length == 78) return value;
-            }
-
-            throw new InvalidOperationException(
-                "未找到 VeriGate 直登卡。请将卡密写入 " + fixedPath + "。");
-        }
     }
 }
