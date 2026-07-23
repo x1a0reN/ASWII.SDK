@@ -244,6 +244,8 @@ function Test-VariantAssembly {
             "$Edition is missing FightState anti-idle reset"
         Assert-Condition ($settingsMethodNames -contains 'get_IgnoreIdleKickEnabled') `
             "$Edition is missing anti-idle setting"
+        Assert-Condition ($settingsMethodNames -notcontains 'SetParticipantCaptureSeconds') `
+            "$Edition still exposes participant capture configuration"
         $requiredAdapterMethods = @(
             'DetectSurvivalRole',
             'TryUseSurvivalSkill',
@@ -437,6 +439,8 @@ $manifest = [ordered]@{
             assaultOpeningStealth = $true
             closeRangeEmergencyFire = $true
             visibleThreatFailSafe = $true
+            participantCaptureConfig = $false
+            assaultVisionPredictionMeters = 40
             ignoreIdleKick = $true
             continuousCombatMovement = $true
             incrementalCliffSearch = $true
@@ -460,6 +464,8 @@ $manifest = [ordered]@{
             assaultOpeningStealth = $true
             closeRangeEmergencyFire = $true
             visibleThreatFailSafe = $true
+            participantCaptureConfig = $false
+            assaultVisionPredictionMeters = 40
             ignoreIdleKick = $true
             continuousCombatMovement = $true
             incrementalCliffSearch = $true

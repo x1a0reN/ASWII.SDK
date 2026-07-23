@@ -54,13 +54,14 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private const float AssaultHiddenHuntDistance = 6f;
         private const float AssaultVisibleHuntDistance = 9f;
         private const float AssaultVisionPredictionSeconds = 0.75f;
-        private const float AssaultVisionPredictionDistance = 22f;
+        private const float AssaultVisionPredictionDistance = 40f;
         private const float AssaultStationaryConfirmSeconds = 0.55f;
         private const float AssaultOpeningStealthWindowSeconds = 5f;
         private const float AssaultOpeningStealthRetrySeconds = 0.06f;
         private const float AssaultImmediateFireDistance = 7f;
         private const float EmergencyVisibleRetaliationDistance = 22f;
         private const float EmergencyVisibleRetentionSeconds = 0.65f;
+        private const float ParticipantCaptureSeconds = 5f;
         private const float CliffFatalDrop = 12f;
         private const float CliffProbeDepth = 32f;
         private const double CliffSearchFrameBudgetMilliseconds = 2.5;
@@ -1076,7 +1077,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             UpdateEnemyTracks(player, camera);
             RemainingPlayers = CountRemaining(player);
 
-            if (!_participantLocked && Time.time - _controlStartedAt >= SurvivalBotSettings.ParticipantCaptureSeconds)
+            if (!_participantLocked && Time.time - _controlStartedAt >= ParticipantCaptureSeconds)
             {
                 _participantLocked = true;
                 InitialPlayers = Math.Max(InitialPlayers, ParticipantIds.Count);

@@ -7,7 +7,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private const string KeyPrefix = "ASWDEBUG.SurvivalBot.";
 
         private static readonly float[] MatchTimeoutValues = { 300f, 600f, 900f };
-        private static readonly float[] ParticipantCaptureValues = { 3f, 5f, 8f };
         private static readonly float[] SeparationValues = { 9f, 11f, 13f, 15f, 18f };
         private static readonly float[] EmergencyDistanceValues = { 6f, 8f, 10f, 12f };
         private static readonly float[] SafePointRefreshValues = { 0.8f, 1f, 1.35f, 2f };
@@ -17,7 +16,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static int _enemyEspEnabled;
         private static int _ignoreIdleKickEnabled;
         private static int _matchTimeoutIndex;
-        private static int _participantCaptureIndex;
         private static int _separationIndex;
         private static int _emergencyDistanceIndex;
         private static int _safePointRefreshIndex;
@@ -37,11 +35,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static float MatchTimeoutSeconds
         {
             get { EnsureLoaded(); return MatchTimeoutValues[_matchTimeoutIndex]; }
-        }
-
-        public static float ParticipantCaptureSeconds
-        {
-            get { EnsureLoaded(); return ParticipantCaptureValues[_participantCaptureIndex]; }
         }
 
         public static float DesiredSeparation
@@ -76,7 +69,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _enemyEspEnabled = PlayerPrefs.GetInt(KeyPrefix + "EnemyEspEnabled", 1) == 0 ? 0 : 1;
             _ignoreIdleKickEnabled = PlayerPrefs.GetInt(KeyPrefix + "IgnoreIdleKickEnabled", 1) == 0 ? 0 : 1;
             _matchTimeoutIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "MatchTimeoutIndex", 1), 0, MatchTimeoutValues.Length - 1);
-            _participantCaptureIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "ParticipantCaptureIndex", 1), 0, ParticipantCaptureValues.Length - 1);
             _separationIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "SeparationIndex", 2), 0, SeparationValues.Length - 1);
             _emergencyDistanceIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "EmergencyDistanceIndex", 1), 0, EmergencyDistanceValues.Length - 1);
             _safePointRefreshIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "SafePointRefreshIndex", 2), 0, SafePointRefreshValues.Length - 1);
@@ -101,12 +93,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             EnsureLoaded();
             SaveIfChanged(ref _matchTimeoutIndex, KeyPrefix + "MatchTimeoutIndex", FindNearest(MatchTimeoutValues, value));
-        }
-
-        public static void SetParticipantCaptureSeconds(float value)
-        {
-            EnsureLoaded();
-            SaveIfChanged(ref _participantCaptureIndex, KeyPrefix + "ParticipantCaptureIndex", FindNearest(ParticipantCaptureValues, value));
         }
 
         public static void SetDesiredSeparation(float value)
