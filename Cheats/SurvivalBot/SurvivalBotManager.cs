@@ -126,6 +126,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _heavyShieldPending;
         private static bool _heavyGallopPending;
         private static bool _guardHealPending;
+        private static bool _assaultHiddenPending;
         private static Character _guardArrowTarget;
         private static float _guardArrowTargetLostAt;
         private static Character _assaultDirectorTarget;
@@ -1146,6 +1147,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _heavyShieldPending = false;
             _heavyGallopPending = false;
             _guardHealPending = false;
+            _assaultHiddenPending = false;
             ResetOffensiveDirector("role_changed");
             if (detected == SurvivalRoleKind.Assault &&
                 !_assaultOpeningStealthResolved &&
@@ -1171,24 +1173,39 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 SurvivalCombatAdapter.HasSurvivalSkill(player, SkillType.kSkillGallop);
             _guardHealPending = _currentRole == SurvivalRoleKind.Guard &&
                 SurvivalCombatAdapter.HasSurvivalSkill(player, SkillType.kSkillHeal);
+            _assaultHiddenPending = _currentRole == SurvivalRoleKind.Assault &&
+                SurvivalCombatAdapter.HasSurvivalSkill(player, SkillType.kSkillHidden);
             FileLogger.Log("SURVIVAL][ROLE", "damage response sequence=" + _healthDamageSequence +
                 " role=" + _currentRole + " shield=" + _heavyShieldPending +
-                " speed=" + _heavyGallopPending + " heal=" + _guardHealPending);
+                " speed=" + _heavyGallopPending + " heal=" + _guardHealPending +
+                " hidden=" + _assaultHiddenPending);
         }
 
         private static void TickRoleDamageResponse(Character player)
         {
-            if (!_heavyShieldPending && !_heavyGallopPending && !_guardHealPending) return;
+            if (!_heavyShieldPending && !_heavyGallopPending && !_guardHealPending &&
+                !_assaultHiddenPending)
+                return;
             if (Time.time > _roleDamageResponseUntil)
             {
                 _heavyShieldPending = false;
                 _heavyGallopPending = false;
                 _guardHealPending = false;
+                _assaultHiddenPending = false;
                 return;
             }
             if (Time.time < _nextRoleSkillAttemptAt) return;
             _nextRoleSkillAttemptAt = Time.time + 0.06f;
 
+            if (_assaultHiddenPending &&
+                SurvivalCombatAdapter.IsSurvivalSkillReady(player, SkillType.kSkillHidden) &&
+                SurvivalCombatAdapter.TryUseSurvivalSkill(player, SkillType.kSkillHidden,
+                    "assault_damage_fallback_stealth"))
+            {
+                _assaultHiddenPending = false;
+                _nextRoleSkillAttemptAt = Time.time + 0.08f;
+                return;
+            }
             if (_heavyShieldPending &&
                 SurvivalCombatAdapter.IsSurvivalSkillReady(player, SkillType.kSkillShield) &&
                 SurvivalCombatAdapter.TryUseSurvivalSkill(player, SkillType.kSkillShield,
@@ -1518,7 +1535,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             velocity.y = 0f;
             bool movingToward = velocity.sqrMagnitude > 0.04f && toPlayer.sqrMagnitude > 0.04f &&
                 Vector3.Dot(velocity.normalized, toPlayer.normalized) >= 0.55f;
-            bool soon = (clearNow && facingNow && track.Distance <= 18f) ||
+            bool soon = (clearNow && facingNow &&
+                         track.Distance <= AssaultVisionPredictionDistance) ||
                 (clearFuture && (facingFuture || movingToward) && track.ClosingSpeed >= 0.15f) ||
                 (clearNow && track.Distance <= 10f && track.ClosingSpeed >= 0.35f);
             if (!soon) return false;
@@ -1737,6 +1755,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _heavyShieldPending = false;
             _heavyGallopPending = false;
             _guardHealPending = false;
+            _assaultHiddenPending = false;
             _nextDirectorTraceAt = 0f;
             _assaultOpeningStealthResolved = false;
             _assaultOpeningStealthDeadlineAt = 0f;
@@ -2922,7 +2941,16 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 Character candidate = Enemies[i];
                 if (!IsEmergencyTargetUsable(candidate)) continue;
                 float score = ScoreEmergencyThreat(player, candidate, triggerDistance);
-                if (score < 95f || score <= bestScore) continue;
+                EnemyTrack track = GetEnemyTrack(candidate);
+                float distance = track == null
+                    ? XzDistance(player.transform.position, candidate.transform.position)
+                    : track.Distance;
+                bool activeVisibleThreat = track != null &&
+                    IsActiveVisibleEmergencyThreat(track, track.FireLine,
+                        Time.time - _recentDamageAt <= 1.2f, distance,
+                        GetEmergencyVisibleThreatLimit(triggerDistance));
+                if (activeVisibleThreat) score = Mathf.Max(score, 100f);
+                if ((!activeVisibleThreat && score < 95f) || score <= bestScore) continue;
                 bestScore = score;
                 best = candidate;
             }
@@ -2967,8 +2995,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             if (track == null || track.Hidden || !strictLine || distance > visibleThreatLimit) return false;
             bool closing = track.ClosingSpeed >= 0.8f;
-            return track.FacingPlayer || closing ||
-                (recentlyDamaged && (track.ClosingSpeed >= 0.15f || distance <= 16f));
+            return track.FacingPlayer || closing || recentlyDamaged;
         }
 
         private static Character SelectBestTarget(Character player)

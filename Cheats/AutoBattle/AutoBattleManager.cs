@@ -1373,8 +1373,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 IsOperationalGun(player.mWeapon))
             {
                 WeaponType currentType = GetWeaponType(player.mWeapon);
-                if (currentType != WeaponType.kWeaponTypeRPG &&
-                    currentType != WeaponType.kWeaponTypeBow)
+                if (currentType == WeaponType.kWeaponTypeSniperGun ||
+                    IsEmergencyPrimaryWeaponType(currentType))
                     return;
             }
 
@@ -1392,15 +1392,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 WeaponBase weapon = player.weaponlist[i];
                 if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) continue;
                 WeaponType type = GetWeaponType(weapon);
+                if (type != WeaponType.kWeaponTypeSniperGun &&
+                    !IsEmergencyPrimaryWeaponType(type))
+                    continue;
 
                 float score = Mathf.Min(30f, weapon.clip);
-                if (type == WeaponType.kWeaponTypeShotGun) score += closeRange ? 320f : 85f;
-                else if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
-                         type == WeaponType.kWeaponTypeDualWeapon) score += closeRange ? 260f : 135f;
-                else if (type == WeaponType.kWeaponTypePistol) score += closeRange ? 170f : 75f;
+                if (IsEmergencyPrimaryWeaponType(type)) score += closeRange ? 260f : 135f;
                 else if (type == WeaponType.kWeaponTypeSniperGun) score += closeRange ? 45f : 320f;
-                else if (type == WeaponType.kWeaponTypeRPG) score += closeRange ? -120f : 95f;
-                else if (type == WeaponType.kWeaponTypeBow) score += distance >= 10f ? 35f : -100f;
 
                 if (score <= bestScore) continue;
                 bestScore = score;
@@ -1410,13 +1408,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
             if (best != null && best != player.mWeapon)
             {
                 SwitchWeapon(player, best, closeRange
-                    ? "emergency_close_weapon_switch"
+                    ? "emergency_close_primary_switch"
                     : "emergency_weapon_switch");
             }
             else if (player.mWeapon != null && player.mWeapon.clip <= 0 && !player.mWeapon.reloading)
             {
                 try { player.mWeapon.Reload(); } catch { }
             }
+        }
+
+        private static bool IsEmergencyPrimaryWeaponType(WeaponType type)
+        {
+            return type == WeaponType.kWeaponTypeMachineGun ||
+                type == WeaponType.kWeaponTypeSubMachineGun ||
+                type == WeaponType.kWeaponTypeDualWeapon;
         }
 
         private static void EnsureCombatWeapon(Character player, float distance)
@@ -1432,13 +1437,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 WeaponBase weapon = player.weaponlist[i];
                 if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) continue;
                 WeaponType type = GetWeaponType(weapon);
+                if (type != WeaponType.kWeaponTypeSniperGun &&
+                    !IsEmergencyPrimaryWeaponType(type))
+                    continue;
                 float score = Mathf.Min(30f, weapon.clip);
                 if (type == WeaponType.kWeaponTypeSniperGun) score += distance >= 12f ? 60f : 10f;
-                else if (type == WeaponType.kWeaponTypeMachineGun || type == WeaponType.kWeaponTypeSubMachineGun ||
-                         type == WeaponType.kWeaponTypeDualWeapon) score += 45f;
-                else if (type == WeaponType.kWeaponTypePistol) score += 30f;
-                else if (type == WeaponType.kWeaponTypeShotGun) score += distance < 9f ? 40f : 5f;
-                else if (type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) score -= 30f;
+                else if (IsEmergencyPrimaryWeaponType(type)) score += 45f;
                 if (score > bestScore)
                 {
                     bestScore = score;
@@ -1573,10 +1577,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             if (!IsOperationalGun(weapon) || IsTemporarilyBlocked(weapon)) return false;
             WeaponType type = GetWeaponType(weapon);
-            if (type == WeaponType.kWeaponTypeShotGun && distance > 12f) return false;
             if (type == WeaponType.kWeaponTypeSniperGun && distance < 5f) return false;
-            if (type == WeaponType.kWeaponTypeRPG || type == WeaponType.kWeaponTypeBow) return false;
-            return true;
+            return type == WeaponType.kWeaponTypeSniperGun ||
+                IsEmergencyPrimaryWeaponType(type);
         }
 
         private static WeaponType GetWeaponType(WeaponBase weapon)
