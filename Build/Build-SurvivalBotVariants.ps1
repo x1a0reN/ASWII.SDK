@@ -208,6 +208,9 @@ function Test-VariantAssembly {
         $denseProbeType = $types | Where-Object {
             $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.AutoBattleRoutePlanner/DenseSegmentProbe'
         } | Select-Object -First 1
+        $localDetourResultType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.AutoBattleRoutePlanner/RainLocalDetourResult'
+        } | Select-Object -First 1
         Assert-Condition ($null -ne $managerType) "$Edition is missing SurvivalBotManager"
         Assert-Condition ($null -ne $antiIdleType) "$Edition is missing SurvivalAntiIdle"
         Assert-Condition ($null -ne $adapterType) "$Edition is missing SurvivalCombatAdapter"
@@ -216,6 +219,7 @@ function Test-VariantAssembly {
         Assert-Condition ($null -ne $routePlannerType) "$Edition is missing AutoBattleRoutePlanner"
         Assert-Condition ($null -ne $routeFinalizeType) "$Edition is missing sliced route finalizer"
         Assert-Condition ($null -ne $denseProbeType) "$Edition is missing sliced dense probe"
+        Assert-Condition ($null -ne $localDetourResultType) "$Edition is missing sliced local detour result"
         $requiredManagerMethods = @(
             'TickRoleDirector',
             'TickGuardDirector',
@@ -252,11 +256,15 @@ function Test-VariantAssembly {
         $compactRuntimeMethodNames = @($compactRuntimeType.Methods | ForEach-Object { $_.Name })
         Assert-Condition ($compactRuntimeMethodNames -contains 'CollectNearbyBoundaries') `
             "$Edition is missing compact boundary lookup"
+        Assert-Condition ($compactRuntimeMethodNames -contains 'CancelPendingPath') `
+            "$Edition is missing compact pending-query cleanup"
         $routePlannerMethodNames = @($routePlannerType.Methods | ForEach-Object { $_.Name })
         Assert-Condition ($routePlannerMethodNames -contains 'TickRainRouteFinalize') `
             "$Edition is missing sliced route finalization entry"
+        Assert-Condition ($routePlannerMethodNames -contains 'CancelPendingRoute') `
+            "$Edition is missing route finalization cleanup"
         $routeFinalizeMethodNames = @($routeFinalizeType.Methods | ForEach-Object { $_.Name })
-        foreach ($methodName in @('Tick', 'Optimize', 'Validate', 'Annotate')) {
+        foreach ($methodName in @('Tick', 'Optimize', 'BuildLocalDetour', 'Validate', 'Annotate')) {
             Assert-Condition ($routeFinalizeMethodNames -contains $methodName) `
                 "$Edition is missing sliced finalizer method $methodName"
         }
@@ -422,6 +430,7 @@ $manifest = [ordered]@{
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true
             slicedExactRouteFinalization = $true
+            slicedLocalRainDetour = $true
             huntTargetPreAim = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
@@ -441,6 +450,7 @@ $manifest = [ordered]@{
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true
             slicedExactRouteFinalization = $true
+            slicedLocalRainDetour = $true
             huntTargetPreAim = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true

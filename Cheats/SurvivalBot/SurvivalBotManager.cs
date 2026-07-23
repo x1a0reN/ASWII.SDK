@@ -65,6 +65,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static readonly List<Character> Enemies = new List<Character>(16);
         private static readonly HashSet<int> ParticipantIds = new HashSet<int>();
         private static readonly HashSet<int> ConfirmedDeadParticipantIds = new HashSet<int>();
+        private static readonly HashSet<int> CountedParticipantIds = new HashSet<int>();
         private static readonly Dictionary<int, EnemyTrack> EnemyTracks = new Dictionary<int, EnemyTrack>(16);
         private static readonly List<Vector3> RouteExposurePoints = new List<Vector3>(48);
         private static readonly float[] SafeRadii = { 5f, 9f, 13f };
@@ -658,6 +659,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static void NotifyFinalRank(byte rank)
         {
             LastFinalRank = rank;
+            AutoBattleRoutePlanner.CancelPendingRoute("final_rank");
             FileLogger.Log("SURVIVAL", "final rank=" + rank + " initial=" + InitialPlayers +
                 " topHalf=" + (InitialPlayers > 0 && rank <= InitialPlayers / 2));
         }
@@ -2564,7 +2566,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static int CountRemaining(Character player)
         {
-            HashSet<int> counted = new HashSet<int>();
+            HashSet<int> counted = CountedParticipantIds;
+            counted.Clear();
             int count = 0;
             if (player != null && !player.IsDied && counted.Add(player.uid))
             {

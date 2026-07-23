@@ -338,13 +338,21 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             detail = "aswnav=ok provider=aswnav_0_10 pts=" + result.Count +
                 " portals=" + path.PortalPath.Length + " offmesh=" + (offMesh ? "1" : "0") +
                 " expanded=" + path.ExpandedNodes + " slices=" + job.Slices +
-                " ms=" + job.CpuMilliseconds + " startErr=" +
+                " ms=" + job.CpuMilliseconds + " queryStartDrift=" +
+                DistanceXZ(job.From, from).ToString("0.00") + " startErr=" +
                 path.StartProjection.HorizontalError.ToString("0.00") + "/" +
                 path.StartProjection.VerticalError.ToString("0.00") + " goalErr=" +
                 path.GoalProjection.HorizontalError.ToString("0.00") + "/" +
                 path.GoalProjection.VerticalError.ToString("0.00");
             _job = null;
             return result.Count > 0;
+        }
+
+        internal static bool CancelPendingPath()
+        {
+            bool hadPendingPath = _job != null;
+            CancelJob();
+            return hadPendingPath;
         }
 
         internal static CompactRainRuntimeSnapshot GetSnapshot()
@@ -532,7 +540,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     Math.Abs(JumpHeight - capabilities.JumpHeight) <= 0.01f &&
                     Math.Abs(JumpVelocity - capabilities.JumpVelocity) <= 0.01f &&
                     Math.Abs(RunSpeed - capabilities.RunSpeed) <= 0.01f &&
-                    DistanceXZ(From, from) <= 0.80f && Math.Abs(From.y - from.y) <= 0.80f &&
+                    DistanceXZ(From, from) <= 3.25f && Math.Abs(From.y - from.y) <= 1.50f &&
                     DistanceXZ(To, to) <= 0.65f && Math.Abs(To.y - to.y) <= 0.75f;
             }
         }

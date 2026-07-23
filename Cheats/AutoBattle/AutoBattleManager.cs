@@ -100,6 +100,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         public static void ResetSurvivalRuntime(string reason)
         {
+            AutoBattleRoutePlanner.CancelPendingRoute(reason);
             AutoBattleInput.ClearAll();
             Path.Clear();
             JumpFlags.Clear();
@@ -907,6 +908,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             intent = string.IsNullOrEmpty(intent) ? "suspended" : intent;
             if (string.Equals(_navigationIntent, intent, StringComparison.Ordinal)) return;
+            AutoBattleRoutePlanner.CancelPendingRoute(intent);
             ClearPath();
             _navigationIntent = intent;
             _hasDestination = false;

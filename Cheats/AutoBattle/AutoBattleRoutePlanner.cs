@@ -73,7 +73,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const float RainStartLayerTolerance = 1.65f;
         private const float RainStartAnchorMaxRadius = 5.25f;
         private const double RainFinalizeSliceMilliseconds = 5.0;
-        private const int RainFinalizeStepsPerSlice = 12;
+        private const int RainFinalizeStepsPerSlice = 96;
 
         private static readonly int[] Dx = { 1, -1, 0, 0, 1, 1, -1, -1 };
         private static readonly int[] Dz = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -170,6 +170,20 @@ namespace ASWDEBUG.Cheats.AutoBattle
         internal static void DeactivateNavigationForSceneExit(string reason)
         {
             DeactivateNavigation(reason, true);
+        }
+
+        internal static void CancelPendingRoute(string reason)
+        {
+            bool hadPendingRoute = _physicsSearchJob != null || _rainSearchJob != null ||
+                _rainFinalizeJob != null;
+            _physicsSearchJob = null;
+            _rainSearchJob = null;
+            _rainFinalizeJob = null;
+            if (_compactNavigationRequested)
+                hadPendingRoute = CompactRainNavRuntime.CancelPendingPath() || hadPendingRoute;
+            if (hadPendingRoute)
+                FileLogger.Log("AUTO-BATTLE][ROUTE", "pending_cancel reason=" +
+                    SafeOneLine(reason, 80));
         }
 
         private static void DeactivateNavigation(string reason, bool sceneExit)
@@ -2872,9 +2886,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             bool changed = _navState != state;
             _navState = state;
-            if (changed || Time.realtimeSinceStartup >= _nextNavLogTime)
+            float now = Time.realtimeSinceStartup;
+            if (changed || now >= _nextNavLogTime)
             {
-                _nextNavLogTime = Time.realtimeSinceStartup + 1.0f;
+                float heartbeat = state == AutoBattleNavResourceState.Ready ? 10f :
+                    (state == AutoBattleNavResourceState.Fallback ? 5f : 1f);
+                _nextNavLogTime = now + heartbeat;
                 FileLogger.Log("AUTO-BATTLE][NAVMESH", "state=" + state.ToString().ToLowerInvariant() + " " + detail);
             }
         }
@@ -3759,33 +3776,29 @@ namespace ASWDEBUG.Cheats.AutoBattle
                             continue;
                         }
 
-                        List<Vector3> detour;
-                        int resumeIndex;
-                        int expanded;
-                        string detourDetail;
-                        bool detourBuilt = TryBuildRainLocalDetour(anchor, clean,
-                            cursor, furthest, _ignoreRoot, out detour,
-                            out resumeIndex, out expanded, out detourDetail);
-                        yield return 0;
-                        if (!detourBuilt)
+                        RainLocalDetourResult detourResult = new RainLocalDetourResult();
+                        foreach (int step in BuildLocalDetour(anchor, clean, cursor,
+                            furthest, detourResult)) yield return step;
+                        if (!detourResult.Success)
                         {
                             _optimizerPartial = simplified.Count > 0;
                             _optimizationDetailBase = "opt=rain_blocked raw=" + rawCount +
                                 " clean=" + clean.Count + " at=" + cursor +
                                 " prefix=" + simplified.Count + " partial=" +
                                 (_optimizerPartial ? "1" : "0") +
-                                " denseRejects=" + denseRejects + " " + detourDetail;
+                                " denseRejects=" + denseRejects + " " + detourResult.Detail;
                             DumpRainPathFailure(_from, clean, null, simplified, null,
                                 _ignoreRoot, cursor, furthest, -1,
                                 _optimizationDetailBase);
                             _optimized = simplified;
                             yield break;
                         }
-                        for (int i = 0; i < detour.Count; i++) simplified.Add(detour[i]);
+                        for (int i = 0; i < detourResult.Detour.Count; i++)
+                            simplified.Add(detourResult.Detour[i]);
                         detourCount++;
-                        detourExpanded += expanded;
-                        anchor = clean[resumeIndex];
-                        cursor = resumeIndex + 1;
+                        detourExpanded += detourResult.Expanded;
+                        anchor = clean[detourResult.ResumeIndex];
+                        cursor = detourResult.ResumeIndex + 1;
                         continue;
                     }
                     if (selected > cursor) shortcuts += selected - cursor;
@@ -3910,6 +3923,229 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         result.Found = true;
                     }
                 }
+            }
+
+            private IEnumerable<int> BuildLocalDetour(Vector3 from, List<Vector3> path,
+                int first, int last, RainLocalDetourResult result)
+            {
+                result.Detour = new List<Vector3>();
+                result.ResumeIndex = -1;
+                result.Expanded = 0;
+                result.Detail = "rainDetour=none";
+                result.Success = false;
+                if (path == null || first < 0 || first >= path.Count || last < first)
+                    yield break;
+                last = Mathf.Min(last, path.Count - 1);
+
+                List<GridNode> open = new List<GridNode>(256);
+                Dictionary<GridKey, GridNode> nodes = new Dictionary<GridKey, GridNode>();
+                GridNode start = new GridNode();
+                start.X = 0;
+                start.Z = 0;
+                start.Layer = HeightLayer(from.y);
+                start.Key = new GridKey(0, 0, start.Layer);
+                start.Pos = from;
+                start.G = 0f;
+                start.H = RainDetourHeuristic(from, path, first, last);
+                open.Add(start);
+                nodes[start.Key] = start;
+
+                GridNode connected = null;
+                int reconnectRejectFollow = 0;
+                int rejectBounds = 0;
+                int rejectGround = 0;
+                int rejectGraph = 0;
+                int rejectStanding = 0;
+                int rejectFollow = 0;
+                int rejectClearance = 0;
+                int rejectKnown = 0;
+                float minimumY = from.y;
+                float maximumY = from.y;
+                while (open.Count > 0 && result.Expanded < RainDetourMaxExpanded)
+                {
+                    int bestIndex = PopBestIndex(open);
+                    GridNode current = open[bestIndex];
+                    open.RemoveAt(bestIndex);
+                    if (current.Closed)
+                    {
+                        yield return 0;
+                        continue;
+                    }
+                    current.Closed = true;
+                    result.Expanded++;
+                    if ((result.Expanded & 7) == 0 || result.Expanded == 1)
+                        _progress = "detour=" + result.Expanded + "/" + RainDetourMaxExpanded +
+                                    " open=" + open.Count + " nodes=" + nodes.Count;
+                    yield return 0;
+
+                    if (current != start)
+                    {
+                        for (int candidate = last; candidate >= first; candidate--)
+                        {
+                            DenseSegmentProbe reconnect = new DenseSegmentProbe(current.Pos,
+                                path[candidate], _ignoreRoot);
+                            while (!reconnect.Complete)
+                            {
+                                reconnect.Step();
+                                yield return 0;
+                            }
+                            if (!reconnect.Success)
+                            {
+                                reconnectRejectFollow++;
+                                continue;
+                            }
+                            connected = current;
+                            result.ResumeIndex = candidate;
+                            break;
+                        }
+                        if (connected != null) break;
+                    }
+
+                    for (int direction = 0; direction < Dx.Length; direction++)
+                    {
+                        int nx = current.X + Dx[direction];
+                        int nz = current.Z + Dz[direction];
+                        if (Mathf.Abs(nx) > RainDetourRadiusCells ||
+                            Mathf.Abs(nz) > RainDetourRadiusCells)
+                        {
+                            rejectBounds++;
+                            continue;
+                        }
+
+                        Vector3 raw = new Vector3(from.x + nx * RainDetourCellSize,
+                            current.Pos.y, from.z + nz * RainDetourCellSize);
+                        Vector3 grounded;
+                        bool snapped = TrySnapToGroundNear(raw, current.Pos.y, 1.20f,
+                            out grounded, false);
+                        yield return 0;
+                        if (!snapped)
+                        {
+                            rejectGround++;
+                            continue;
+                        }
+                        minimumY = Mathf.Min(minimumY, grounded.y);
+                        maximumY = Mathf.Max(maximumY, grounded.y);
+                        bool onGraph = IsPointOnOwnedRainGraph(grounded, 0.72f);
+                        yield return 0;
+                        if (!onGraph)
+                        {
+                            rejectGraph++;
+                            continue;
+                        }
+                        bool standing = HasStandingSpace(grounded, _ignoreRoot);
+                        yield return 0;
+                        if (!standing)
+                        {
+                            rejectStanding++;
+                            continue;
+                        }
+                        DenseSegmentProbe follow = new DenseSegmentProbe(current.Pos,
+                            grounded, _ignoreRoot);
+                        while (!follow.Complete)
+                        {
+                            follow.Step();
+                            yield return 0;
+                        }
+                        if (!follow.Success)
+                        {
+                            rejectFollow++;
+                            continue;
+                        }
+                        float clearance = MeasureWallClearance(grounded, _ignoreRoot);
+                        yield return 0;
+                        if (clearance < NavigationBodyRadius + 0.06f)
+                        {
+                            rejectClearance++;
+                            continue;
+                        }
+
+                        GridKey key = new GridKey(nx, nz, HeightLayer(grounded.y));
+                        float stepCost = XZDistance(current.Pos, grounded) +
+                                         Mathf.Abs(grounded.y - current.Pos.y) * 0.65f +
+                                         Mathf.Max(0f, 0.90f - clearance) * 0.8f;
+                        float tentative = current.G + stepCost;
+                        GridNode node;
+                        if (nodes.TryGetValue(key, out node))
+                        {
+                            if (node.Closed || tentative >= node.G - 0.02f)
+                            {
+                                rejectKnown++;
+                                continue;
+                            }
+                            node.G = tentative;
+                            node.H = RainDetourHeuristic(grounded, path, first, last);
+                            node.Pos = grounded;
+                            node.Parent = current;
+                            open.Add(node);
+                            continue;
+                        }
+
+                        node = new GridNode();
+                        node.X = nx;
+                        node.Z = nz;
+                        node.Layer = key.Layer;
+                        node.Key = key;
+                        node.Pos = grounded;
+                        node.G = tentative;
+                        node.H = RainDetourHeuristic(grounded, path, first, last);
+                        node.Parent = current;
+                        nodes[key] = node;
+                        open.Add(node);
+                    }
+                }
+
+                if (connected == null || result.ResumeIndex < first)
+                {
+                    string termination = open.Count == 0 ? "open_exhausted" : "max_expanded";
+                    result.Detail = "rainDetour=failed term=" + termination +
+                        " expanded=" + result.Expanded + " nodes=" + nodes.Count +
+                        " reconnectReject=" + reconnectRejectFollow +
+                        " rejectBounds=" + rejectBounds + " rejectGround=" + rejectGround +
+                        " rejectGraph=" + rejectGraph + " rejectStanding=" + rejectStanding +
+                        " rejectFollow=" + rejectFollow + " rejectClearance=" + rejectClearance +
+                        " rejectKnown=" + rejectKnown +
+                        " y=" + minimumY.ToString("0.00") + ".." + maximumY.ToString("0.00");
+                    yield break;
+                }
+
+                List<Vector3> rawDetour = new List<Vector3>();
+                GridNode cursor = connected;
+                while (cursor != null && cursor != start)
+                {
+                    rawDetour.Add(cursor.Pos);
+                    cursor = cursor.Parent;
+                }
+                rawDetour.Reverse();
+                rawDetour.Add(path[result.ResumeIndex]);
+
+                Vector3 anchor = from;
+                int rawIndex = 0;
+                while (rawIndex < rawDetour.Count)
+                {
+                    int chosen = rawIndex;
+                    for (int candidate = rawDetour.Count - 1; candidate > rawIndex; candidate--)
+                    {
+                        DenseSegmentProbe shortcut = new DenseSegmentProbe(anchor,
+                            rawDetour[candidate], _ignoreRoot);
+                        while (!shortcut.Complete)
+                        {
+                            shortcut.Step();
+                            yield return 0;
+                        }
+                        if (!shortcut.Success) continue;
+                        chosen = candidate;
+                        break;
+                    }
+                    result.Detour.Add(rawDetour[chosen]);
+                    anchor = rawDetour[chosen];
+                    rawIndex = chosen + 1;
+                    yield return 0;
+                }
+
+                result.Detail = "rainDetour=ok expanded=" + result.Expanded +
+                    " nodes=" + nodes.Count + " points=" + result.Detour.Count +
+                    " resume=" + result.ResumeIndex;
+                result.Success = result.Detour.Count > 0;
             }
 
             private IEnumerable<int> Validate()
@@ -4192,6 +4428,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     Complete = true;
                 }
             }
+        }
+
+        private sealed class RainLocalDetourResult
+        {
+            public List<Vector3> Detour;
+            public int ResumeIndex;
+            public int Expanded;
+            public string Detail;
+            public bool Success;
         }
 
         private sealed class RainCornerExpansionResult
