@@ -12,8 +12,8 @@ namespace Doorstop
     /// 关键约束：Doorstop.Start() 在 Mono ReloadAssembly 期间被调用，
     /// 此时不能创建 GameObject 或调用大部分 Unity API。
     /// 
-    /// 策略：用 Harmony patch GameApp.Awake()，在游戏自身初始化时注入。
-    /// GameApp.Awake() 一定在 Unity 主线程、引擎就绪后执行。
+    /// 策略：用 Harmony patch GameApp.Update()，在下一帧 Unity 主线程中注入。
+    /// 这样同时兼容进程启动早期的 Doorstop 加载和游戏已经运行后的 Mono 注入。
     /// </summary>
     public static class Entrypoint
     {
@@ -64,13 +64,12 @@ namespace Doorstop
         }
 
         /// <summary>
-        /// 用 Harmony patch GameApp.Awake()，在其执行时启动我们的代码。
+        /// 用 Harmony patch GameApp.Update()，在下一帧启动我们的代码。
         /// Harmony patch 操作本身不需要 Unity 主线程，是安全的。
         /// </summary>
         private static void PatchGameEntry(Assembly asmAC)
         {
             if (_patched) return;
-            _patched = true;
 
             try
             {
@@ -88,19 +87,24 @@ namespace Doorstop
                     return;
                 }
 
-                MethodInfo awakeMethod = gameAppType.GetMethod("Awake",
+                MethodInfo entryMethod = gameAppType.GetMethod("Update",
                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
-                if (awakeMethod == null)
+                if (entryMethod == null)
                 {
-                    // 尝试 Start
-                    awakeMethod = gameAppType.GetMethod("Start",
+                    entryMethod = gameAppType.GetMethod("Awake",
                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 }
 
-                if (awakeMethod == null)
+                if (entryMethod == null)
                 {
-                    LogInfo("No Awake/Start method found on " + gameAppType.Name);
+                    entryMethod = gameAppType.GetMethod("Start",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+
+                if (entryMethod == null)
+                {
+                    LogInfo("No Update/Awake/Start method found on " + gameAppType.Name);
                     return;
                 }
 
@@ -108,8 +112,9 @@ namespace Doorstop
                 var postfix = typeof(Entrypoint).GetMethod("GameEntryPostfix",
                     BindingFlags.Static | BindingFlags.NonPublic);
 
-                harmony.Patch(awakeMethod, null, new HarmonyMethod(postfix));
-                LogInfo("Patched " + gameAppType.Name + "." + awakeMethod.Name + " successfully");
+                harmony.Patch(entryMethod, null, new HarmonyMethod(postfix));
+                _patched = true;
+                LogInfo("Patched " + gameAppType.Name + "." + entryMethod.Name + " successfully");
             }
             catch (Exception ex)
             {
@@ -118,7 +123,7 @@ namespace Doorstop
         }
 
         /// <summary>
-        /// Harmony Postfix：在 GameApp.Awake() 执行后触发。
+        /// Harmony Postfix：在 GameApp.Update()/Awake()/Start() 执行后触发。
         /// 此时在 Unity 主线程，引擎已就绪，可以安全创建 GameObject。
         /// </summary>
         private static void GameEntryPostfix()
