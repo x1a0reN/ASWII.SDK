@@ -56,6 +56,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private const float AssaultVisionPredictionSeconds = 0.75f;
         private const float AssaultVisionPredictionDistance = 22f;
         private const float AssaultStationaryConfirmSeconds = 0.55f;
+        private const float EmergencyVisibleRetaliationDistance = 22f;
+        private const float EmergencyVisibleRetentionSeconds = 0.65f;
         private const float CliffFatalDrop = 12f;
         private const float CliffProbeDepth = 32f;
         private const double CliffSearchFrameBudgetMilliseconds = 2.5;
@@ -1716,7 +1718,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 _emergencyTargetVisibleAt = acquiredTrack != null && acquiredTrack.Visible ? Time.time : 0f;
                 FileLogger.Log("SURVIVAL", "emergency counterattack start uid=" + _emergencyTarget.uid +
                     " dist=" + XzDistance(player.transform.position, _emergencyTarget.transform.position).ToString("0.0") +
-                    " threat=" + contenderScore.ToString("0") + " hidden=" + IsTargetHidden(_emergencyTarget));
+                    " threat=" + contenderScore.ToString("0") + " hidden=" + IsTargetHidden(_emergencyTarget) +
+                    " line=" + (acquiredTrack != null && acquiredTrack.FireLine) +
+                    " facing=" + (acquiredTrack != null && acquiredTrack.FacingPlayer) +
+                    " closing=" + (acquiredTrack == null ? "-" : acquiredTrack.ClosingSpeed.ToString("0.0")) +
+                    " recentDamage=" + (Time.time - _recentDamageAt <= 1.2f));
             }
 
             float distance = XzDistance(player.transform.position, _emergencyTarget.transform.position);
@@ -1726,12 +1732,24 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (strictLine) _emergencyTargetVisibleAt = Time.time;
             bool closing = track != null && track.ClosingSpeed >= 0.8f;
             bool recentlyDamaged = Time.time - _recentDamageAt <= 1.2f;
-            float releaseDistance = hidden ? 6.8f : triggerDistance + 4f;
+            float visibleThreatLimit = GetEmergencyVisibleThreatLimit(triggerDistance);
+            bool activeVisibleThreat = IsActiveVisibleEmergencyThreat(track, strictLine,
+                recentlyDamaged, distance, visibleThreatLimit);
+            bool retainedVisibleThreat = !hidden && distance <= visibleThreatLimit &&
+                Time.time - _emergencyTargetVisibleAt <= EmergencyVisibleRetentionSeconds &&
+                track != null && (track.FacingPlayer || closing || recentlyDamaged);
+            float releaseDistance = hidden ? 6.8f :
+                (activeVisibleThreat || retainedVisibleThreat ? visibleThreatLimit : triggerDistance + 4f);
             bool holdThreat = distance <= 4.5f || (hidden && distance <= 6f) ||
                 (distance <= releaseDistance &&
                  (strictLine || Time.time - _emergencyTargetVisibleAt <= 0.8f || closing || recentlyDamaged));
             if (!holdThreat)
             {
+                FileLogger.Log("SURVIVAL", "emergency threat release uid=" + _emergencyTarget.uid +
+                    " dist=" + distance.ToString("0.0") + " limit=" + releaseDistance.ToString("0.0") +
+                    " line=" + strictLine + " facing=" + (track != null && track.FacingPlayer) +
+                    " closing=" + (track == null ? "-" : track.ClosingSpeed.ToString("0.0")) +
+                    " recentDamage=" + recentlyDamaged);
                 ClearEmergencyTarget("threat_released");
                 return false;
             }
@@ -2862,6 +2880,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 : track.Distance;
             bool hidden = track == null ? IsTargetHidden(candidate) : track.Hidden;
             if (hidden && distance > 6f) return 0f;
+            if (!hidden && distance > GetEmergencyVisibleThreatLimit(triggerDistance)) return 0f;
 
             float score = 0f;
             if (distance <= 3f) score += 210f;
@@ -2878,6 +2897,20 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (Time.time - _recentDamageAt <= 1.2f && (track == null || track.FireLine)) score += 20f;
             if (hidden) score += 60f;
             return score;
+        }
+
+        private static float GetEmergencyVisibleThreatLimit(float triggerDistance)
+        {
+            return Mathf.Max(EmergencyVisibleRetaliationDistance, triggerDistance + 6f);
+        }
+
+        private static bool IsActiveVisibleEmergencyThreat(EnemyTrack track, bool strictLine,
+            bool recentlyDamaged, float distance, float visibleThreatLimit)
+        {
+            if (track == null || track.Hidden || !strictLine || distance > visibleThreatLimit) return false;
+            bool closing = track.ClosingSpeed >= 0.8f;
+            return track.FacingPlayer || closing ||
+                (recentlyDamaged && (track.ClosingSpeed >= 0.15f || distance <= 16f));
         }
 
         private static Character SelectBestTarget(Character player)

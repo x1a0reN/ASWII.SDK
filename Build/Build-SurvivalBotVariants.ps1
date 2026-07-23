@@ -224,6 +224,7 @@ function Test-VariantAssembly {
             'IsSafeCombatDirection',
             'TraceCombatMovement',
             'PreAimPursuitTarget',
+            'IsActiveVisibleEmergencyThreat',
             'TickFindCliff',
             'MoveWhileSearchingCliff',
             'ShouldRejectExposedHideRoute',
