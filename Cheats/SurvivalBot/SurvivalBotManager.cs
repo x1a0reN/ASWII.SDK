@@ -58,7 +58,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private const float AssaultStationaryConfirmSeconds = 0.55f;
         private const float AssaultOpeningStealthWindowSeconds = 5f;
         private const float AssaultOpeningStealthRetrySeconds = 0.06f;
+        private const float AssaultStealthActivationGraceSeconds = 0.35f;
         private const float AssaultImmediateFireDistance = 7f;
+        private const float AssaultStealthRetreatSeparation = 20f;
+        private const float AssaultStealthRetreatPreferredSeparation = 23f;
+        private const float AssaultStealthRetreatPlanningDistance = 28f;
         private const float EmergencyVisibleRetaliationDistance = 22f;
         private const float EmergencyVisibleRetentionSeconds = 0.65f;
         private const float ParticipantCaptureSeconds = 5f;
@@ -73,6 +77,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static readonly Dictionary<int, EnemyTrack> EnemyTracks = new Dictionary<int, EnemyTrack>(16);
         private static readonly List<Vector3> RouteExposurePoints = new List<Vector3>(48);
         private static readonly float[] SafeRadii = { 5f, 9f, 13f };
+        private static readonly float[] StealthRetreatRadii = { 10f, 17f, 24f };
         private static readonly float[] CombatDirectionOffsets =
             { 0f, 18f, -18f, 36f, -36f, 58f, -58f, 82f, -82f, 112f, -112f, 145f, -145f, 180f };
 
@@ -118,6 +123,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _recentDamageAt;
         private static int _healthDamageSequence;
         private static int _handledHealthDamageSequence;
+        private static int _incomingDamageSequence;
+        private static int _avoidanceHandledDamageSequence;
         private static int _lastPlayerHp;
         private static int _lastPlayerShield;
         private static SurvivalRoleKind _currentRole;
@@ -137,10 +144,15 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _assaultStationarySince;
         private static bool _assaultStationaryConfirmed;
         private static bool _assaultWasHidden;
+        private static bool _avoidanceWasHidden;
+        private static bool _avoidanceAttackCommitted;
+        private static bool _stealthRetreatActive;
+        private static bool _stealthRetreatDestinationSafe;
         private static bool _assaultOpeningStealthResolved;
         private static float _assaultOpeningStealthDeadlineAt;
         private static float _nextAssaultOpeningStealthAttemptAt;
         private static float _nextDirectorTraceAt;
+        private static float _nextStealthRetreatTraceAt;
         private static float _safePointLeaseUntil;
         private static int _lastExposureCount;
         private static float _nextHideRouteAuditAt;
@@ -798,6 +810,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _emergencyReleasedUntil = 0f;
             _nextEnemyTrackAt = 0f;
             _recentDamageAt = 0f;
+            _incomingDamageSequence = 0;
+            _avoidanceHandledDamageSequence = 0;
+            _avoidanceWasHidden = false;
+            _avoidanceAttackCommitted = false;
+            _stealthRetreatActive = false;
+            _stealthRetreatDestinationSafe = false;
+            _nextStealthRetreatTraceAt = 0f;
             _lastPlayerHp = player == null ? 0 : player.hp;
             try { _lastPlayerShield = player == null ? 0 : player.shield; }
             catch { _lastPlayerShield = 0; }
@@ -1088,15 +1107,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             int initial = Math.Max(InitialPlayers, ParticipantIds.Count);
             int threshold = Math.Max(1, initial / 2);
             bool rankSecured = _participantLocked && RemainingPlayers <= threshold;
+            bool avoidancePhase = !_taskCompleted &&
+                (!_participantLocked || RemainingPlayers > threshold + 1);
 
             if (_taskCompleted && rankSecured)
             {
-                TickRoleDirector(player, camera, true);
+                TickRoleDirector(player, camera, true, false);
                 TickSuicide(app, player, camera);
                 return;
             }
 
-            if (TickRoleDirector(player, camera, _taskCompleted)) return;
+            if (TickRoleDirector(player, camera, _taskCompleted, avoidancePhase)) return;
 
             if (TickEmergencyCounterattack(player, camera, _taskCompleted)) return;
 
@@ -1124,16 +1145,28 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
         }
 
-        private static bool TickRoleDirector(Character player, Camera camera, bool objectiveComplete)
+        private static bool TickRoleDirector(Character player, Camera camera, bool objectiveComplete,
+            bool avoidancePhase)
         {
             UpdateCurrentRole(player);
-            ArmRoleDamageResponse(player);
-            TickRoleDamageResponse(player);
+            bool assaultAvoidanceDamage = avoidancePhase &&
+                _currentRole == SurvivalRoleKind.Assault &&
+                _incomingDamageSequence != _avoidanceHandledDamageSequence;
+            if (assaultAvoidanceDamage)
+            {
+                _handledHealthDamageSequence = _healthDamageSequence;
+                _assaultHiddenPending = false;
+            }
+            else
+            {
+                ArmRoleDamageResponse(player);
+                TickRoleDamageResponse(player);
+            }
 
             if (_currentRole == SurvivalRoleKind.Guard)
                 return TickGuardDirector(player, camera, objectiveComplete);
             if (_currentRole == SurvivalRoleKind.Assault)
-                return TickAssaultDirector(player, camera, objectiveComplete);
+                return TickAssaultDirector(player, camera, objectiveComplete, avoidancePhase);
             return false;
         }
 
@@ -1343,7 +1376,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 SurvivalCombatAdapter.SurvivalHasEmergencyFireLine(player, target, camera);
         }
 
-        private static bool TickAssaultDirector(Character player, Camera camera, bool objectiveComplete)
+        private static bool TickAssaultDirector(Character player, Camera camera, bool objectiveComplete,
+            bool avoidancePhase)
         {
             bool playerHidden = IsTargetHidden(player);
             if (playerHidden)
@@ -1353,6 +1387,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     SetAssaultDirectorState(AssaultDirectorState.HiddenWatch, "stealth_confirmed");
             }
 
+            if (avoidancePhase)
+                return TickAssaultAvoidanceDirector(player, camera, playerHidden);
             TickAssaultOpeningStealth(player, playerHidden);
 
             if (!IsEmergencyTargetUsable(_assaultDirectorTarget))
@@ -1440,6 +1476,93 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return false;
         }
 
+        private static bool TickAssaultAvoidanceDirector(Character player, Camera camera,
+            bool playerHidden)
+        {
+            if (_incomingDamageSequence != _avoidanceHandledDamageSequence)
+            {
+                _avoidanceHandledDamageSequence = _incomingDamageSequence;
+                CommitAvoidanceAttack("incoming_damage");
+            }
+
+            bool stealthEnded = _avoidanceWasHidden && !playerHidden;
+            _avoidanceWasHidden = playerHidden;
+            if (stealthEnded &&
+                !SurvivalCombatAdapter.IsSurvivalSkillReady(player, SkillType.kSkillHidden))
+                CommitAvoidanceAttack("stealth_ended_cooldown");
+
+            if (_avoidanceAttackCommitted)
+            {
+                TickAttack(player, camera, false);
+                return true;
+            }
+
+            TickAssaultOpeningStealth(player, playerHidden);
+            if (!playerHidden)
+            {
+                _stealthRetreatActive = false;
+                _stealthRetreatDestinationSafe = false;
+                if (_assaultDirectorState == AssaultDirectorState.PreStealth &&
+                    Time.time - _assaultDirectorStateStartedAt <=
+                    AssaultStealthActivationGraceSeconds)
+                {
+                    Phase = SurvivalBotPhase.Hide;
+                    SurvivalCombatAdapter.CancelSurvivalAttack();
+                    SurvivalCombatAdapter.CloseSurvivalScope(player);
+                    AutoBattleInput.ClearMovement();
+                    StatusText = "Stealth avoidance | waiting for stealth confirmation";
+                    return true;
+                }
+                float visionScore;
+                Character visionThreat = SelectAssaultVisionThreat(player, out visionScore);
+                if (visionThreat != null &&
+                    SurvivalCombatAdapter.IsSurvivalSkillReady(player, SkillType.kSkillHidden) &&
+                    SurvivalCombatAdapter.TryUseSurvivalSkill(player, SkillType.kSkillHidden,
+                        "assault_avoidance_preemptive_stealth"))
+                {
+                    _assaultWasHidden = false;
+                    SetAssaultDirectorTarget(visionThreat, "avoidance_predicted_vision");
+                    SetAssaultDirectorState(AssaultDirectorState.PreStealth,
+                        "avoidance_predicted_vision_" + visionScore.ToString("0"));
+                    Phase = SurvivalBotPhase.Hide;
+                    SurvivalCombatAdapter.CancelSurvivalAttack();
+                    SurvivalCombatAdapter.CloseSurvivalScope(player);
+                    AutoBattleInput.ClearMovement();
+                    StatusText = "Stealth avoidance | activating before enemy vision";
+                    return true;
+                }
+                return false;
+            }
+
+            Character approachThreat = SelectAssaultStealthRetreatThreat(player);
+            if (approachThreat != null) _stealthRetreatActive = true;
+            else if (_stealthRetreatActive)
+                approachThreat = SelectNearestLivingOpponent(player);
+            if (approachThreat == null)
+            {
+                _stealthRetreatActive = false;
+                return false;
+            }
+            SetAssaultDirectorTarget(approachThreat, "stealth_retreat");
+            SetAssaultDirectorState(AssaultDirectorState.HiddenWatch, "stealth_retreat");
+            TickAssaultStealthRetreat(player, camera, approachThreat);
+            return true;
+        }
+
+        private static void CommitAvoidanceAttack(string reason)
+        {
+            if (_avoidanceAttackCommitted) return;
+            _avoidanceAttackCommitted = true;
+            _assaultHiddenPending = false;
+            _stealthRetreatActive = false;
+            _hasSafePoint = false;
+            _stealthRetreatDestinationSafe = false;
+            ClearEmergencyTarget("avoidance_attack_commit");
+            SurvivalCombatAdapter.SuspendSurvivalNavigation("avoidance_attack_commit");
+            FileLogger.Log("SURVIVAL][ROLE", "assault avoidance attack committed reason=" + reason +
+                " damageSequence=" + _incomingDamageSequence);
+        }
+
         private static void TickAssaultOpeningStealth(Character player, bool playerHidden)
         {
             if (_assaultOpeningStealthResolved || player == null) return;
@@ -1473,6 +1596,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             _assaultOpeningStealthResolved = true;
             _assaultWasHidden = false;
+            SetAssaultDirectorState(AssaultDirectorState.PreStealth,
+                "round_opening_stealth");
             FileLogger.Log("SURVIVAL][ROLE", "assault opening stealth resolved=used");
         }
 
@@ -1514,6 +1639,137 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 best = target;
             }
             return best;
+        }
+
+        private static Character SelectAssaultStealthRetreatThreat(Character player)
+        {
+            Character best = null;
+            float bestDistance = float.MaxValue;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character target = Enemies[i];
+                if (!IsLivingOpponent(target)) continue;
+                EnemyTrack track = GetEnemyTrack(target);
+                float distance = track == null
+                    ? XzDistance(player.transform.position, target.transform.position)
+                    : track.Distance;
+                float closingSpeed = track == null ? 0f : Mathf.Max(0f, track.ClosingSpeed);
+                float predictedDistance = distance - closingSpeed * 2f;
+                bool approaching = distance <= AssaultStealthRetreatPlanningDistance &&
+                    (distance < AssaultStealthRetreatPreferredSeparation ||
+                     closingSpeed >= 0.15f ||
+                     predictedDistance < AssaultStealthRetreatPreferredSeparation);
+                if (!approaching || distance >= bestDistance) continue;
+                bestDistance = distance;
+                best = target;
+            }
+            return best;
+        }
+
+        private static Character SelectNearestLivingOpponent(Character player)
+        {
+            if (player == null) return null;
+            Character best = null;
+            float bestDistance = float.MaxValue;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character target = Enemies[i];
+                if (!IsLivingOpponent(target)) continue;
+                float distance = XzDistance(player.transform.position, target.transform.position);
+                if (distance >= bestDistance) continue;
+                bestDistance = distance;
+                best = target;
+            }
+            return best;
+        }
+
+        private static void TickAssaultStealthRetreat(Character player, Camera camera,
+            Character approachThreat)
+        {
+            bool enteringRetreat = Phase != SurvivalBotPhase.Hide;
+            Phase = SurvivalBotPhase.Hide;
+            ClearEmergencyTarget("assault_stealth_retreat");
+            SurvivalCombatAdapter.CancelSurvivalAttack();
+            SurvivalCombatAdapter.CloseSurvivalScope(player);
+            if (enteringRetreat)
+            {
+                _hasSafePoint = false;
+                _stealthRetreatDestinationSafe = false;
+                _nextSafePointAt = 0f;
+            }
+
+            Vector3 origin = player.transform.position;
+            float currentSeparation = MinimumLivingEnemyDistance(origin);
+            float destinationSeparation = _hasSafePoint
+                ? MinimumLivingEnemyDistance(_safePoint)
+                : 0f;
+            bool arrived = _hasSafePoint && XzDistance(origin, _safePoint) < 1.1f;
+            bool destinationInvalid = _hasSafePoint &&
+                (_stealthRetreatDestinationSafe &&
+                 destinationSeparation < AssaultStealthRetreatSeparation);
+            bool routeFailed = IsRouteFailure("stealth_retreat");
+            bool needSafePoint = !_hasSafePoint || routeFailed ||
+                (!_stealthRetreatDestinationSafe && Time.time >= _nextSafePointAt) ||
+                (destinationInvalid && Time.time >= _nextSafePointAt) ||
+                (arrived && currentSeparation < AssaultStealthRetreatPreferredSeparation &&
+                 Time.time >= _nextSafePointAt);
+            if (needSafePoint)
+            {
+                _safePoint = SelectStealthRetreatPoint(player,
+                    out _stealthRetreatDestinationSafe, out destinationSeparation);
+                _hasSafePoint = true;
+                _nextSafePointAt = Time.time +
+                    (_stealthRetreatDestinationSafe ? 0.45f : 0.65f);
+                _safePointLeaseUntil = Time.time + 1.2f;
+                arrived = XzDistance(origin, _safePoint) < 1.1f;
+            }
+
+            bool separationSecured = currentSeparation >=
+                AssaultStealthRetreatPreferredSeparation;
+            Vector3 move = arrived && separationSecured
+                ? Vector3.zero
+                : SurvivalCombatAdapter.NavigateSurvival(player, _safePoint, true,
+                    "stealth_retreat");
+            if (move.sqrMagnitude > 0.01f && ShouldRejectStealthRetreatRoute(player))
+            {
+                MarkCandidateFailed(_safePoint);
+                _hasSafePoint = false;
+                _stealthRetreatDestinationSafe = false;
+                _nextSafePointAt = 0f;
+                SurvivalCombatAdapter.SuspendSurvivalNavigation(
+                    "stealth_retreat_separation_reject");
+                AutoBattleInput.ClearMovement();
+                StatusText = "Stealth retreat | route rejected | separation floor 20.0m";
+                return;
+            }
+            if (move.sqrMagnitude <= 0.01f && IsRouteFailure("stealth_retreat"))
+            {
+                MarkCandidateFailed(_safePoint);
+                _hasSafePoint = false;
+                _stealthRetreatDestinationSafe = false;
+                _nextSafePointAt = 0f;
+            }
+
+            if (move.sqrMagnitude > 0.01f) AutoBattleInput.SetMoveWorld(player, move, false);
+            else AutoBattleInput.ClearMovement();
+            if (camera != null && move.sqrMagnitude > 0.01f)
+                SurvivalCombatAdapter.LookSurvival(player, camera,
+                    player.transform.position + move * 8f + Vector3.up);
+
+            if (Time.time >= _nextStealthRetreatTraceAt)
+            {
+                _nextStealthRetreatTraceAt = Time.time + 0.8f;
+                FileLogger.Log("SURVIVAL][ROLE", "stealth retreat threat=" +
+                    (approachThreat == null ? 0 : approachThreat.uid) +
+                    " currentMin=" + currentSeparation.ToString("0.0") +
+                    " destinationMin=" + destinationSeparation.ToString("0.0") +
+                    " hardSafe=" + _stealthRetreatDestinationSafe +
+                    " arrived=" + arrived + " path=" + SurvivalCombatAdapter.LastPath);
+            }
+            StatusText = "Stealth retreat | all-enemy minimum " +
+                currentSeparation.ToString("0.0") + "m / 20.0m | destination " +
+                destinationSeparation.ToString("0.0") + "m | path " +
+                SurvivalCombatAdapter.LastPath;
         }
 
         private static bool IsAboutToGainVision(Character player, Character target,
@@ -1752,6 +2008,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _nextRoleDetectAt = 0f;
             _healthDamageSequence = 0;
             _handledHealthDamageSequence = 0;
+            _incomingDamageSequence = 0;
+            _avoidanceHandledDamageSequence = 0;
             _roleDamageResponseUntil = 0f;
             _nextRoleSkillAttemptAt = 0f;
             _heavyShieldPending = false;
@@ -1762,6 +2020,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _assaultOpeningStealthResolved = false;
             _assaultOpeningStealthDeadlineAt = 0f;
             _nextAssaultOpeningStealthAttemptAt = 0f;
+            _avoidanceWasHidden = false;
+            _avoidanceAttackCommitted = false;
+            _stealthRetreatActive = false;
+            _stealthRetreatDestinationSafe = false;
+            _nextStealthRetreatTraceAt = 0f;
             ResetOffensiveDirector(reason);
         }
 
@@ -2676,6 +2939,116 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return count;
         }
 
+        private static Vector3 SelectStealthRetreatPoint(Character player,
+            out bool meetsMinimumSeparation, out float selectedSeparation)
+        {
+            Vector3 origin = player.transform.position;
+            float originSeparation = MinimumLivingEnemyDistance(origin);
+            Vector3 bestPreferred = origin;
+            float bestPreferredScore = float.MaxValue;
+            bool hasPreferred = false;
+            Vector3 bestHard = origin;
+            float bestHardScore = float.MaxValue;
+            bool hasHard = false;
+            Vector3 bestFallback = origin;
+            float bestFallbackScore = -originSeparation * 500f;
+            selectedSeparation = originSeparation;
+
+            if (originSeparation >= AssaultStealthRetreatPreferredSeparation)
+            {
+                hasPreferred = true;
+                bestPreferredScore = ScoreStealthRetreatPoint(origin, player, origin,
+                    0f, originSeparation);
+            }
+            else if (originSeparation >= AssaultStealthRetreatSeparation)
+            {
+                hasHard = true;
+                bestHardScore = ScoreStealthRetreatPoint(origin, player, origin,
+                    0f, originSeparation);
+            }
+
+            int index = 0;
+            for (int r = 0; r < StealthRetreatRadii.Length; r++)
+            {
+                for (int i = 0; i < 24; i++)
+                {
+                    float angle = (360f / 24f) * i + r * 7.5f;
+                    Vector3 direction = Quaternion.AngleAxis(angle, Vector3.up) *
+                        Vector3.forward;
+                    Vector3 ground;
+                    if (!TryProjectGround(origin + direction * StealthRetreatRadii[r],
+                        origin.y, 3f, out ground))
+                        continue;
+                    if (IsFailedCandidate(ground)) continue;
+                    float routePenalty = AutoBattleRoutePlanner.CandidatePenalty(origin,
+                        ground, player.transform.root);
+                    if (routePenalty >= 120f) continue;
+
+                    float separation = MinimumLivingEnemyDistance(ground);
+                    float routeExposure = routePenalty <= 0.1f
+                        ? ScoreRouteExposure(origin, ground, player)
+                        : 420f;
+                    float score = ScoreStealthRetreatPoint(ground, player, origin,
+                        routePenalty + routeExposure, separation) + index * 0.01f;
+                    index++;
+                    if (separation >= AssaultStealthRetreatPreferredSeparation)
+                    {
+                        if (!hasPreferred || score < bestPreferredScore)
+                        {
+                            hasPreferred = true;
+                            bestPreferredScore = score;
+                            bestPreferred = ground;
+                            selectedSeparation = separation;
+                        }
+                        continue;
+                    }
+                    if (separation >= AssaultStealthRetreatSeparation)
+                    {
+                        if (!hasHard || score < bestHardScore)
+                        {
+                            hasHard = true;
+                            bestHardScore = score;
+                            bestHard = ground;
+                            if (!hasPreferred) selectedSeparation = separation;
+                        }
+                        continue;
+                    }
+
+                    float fallbackScore = -separation * 500f + routeExposure +
+                        routePenalty * 5f + XzDistance(origin, ground);
+                    if (fallbackScore >= bestFallbackScore) continue;
+                    bestFallbackScore = fallbackScore;
+                    bestFallback = ground;
+                    if (!hasPreferred && !hasHard) selectedSeparation = separation;
+                }
+            }
+
+            meetsMinimumSeparation = hasPreferred || hasHard;
+            return hasPreferred ? bestPreferred : (hasHard ? bestHard : bestFallback);
+        }
+
+        private static float ScoreStealthRetreatPoint(Vector3 point, Character player,
+            Vector3 origin, float routePenalty, float separation)
+        {
+            float preferredPenalty = Mathf.Max(0f,
+                AssaultStealthRetreatPreferredSeparation - separation) * 160f;
+            return ScoreSafetyPoint(point, player, origin, routePenalty) +
+                preferredPenalty - Mathf.Min(separation, 40f) * 35f;
+        }
+
+        private static float MinimumLivingEnemyDistance(Vector3 point)
+        {
+            float minimum = 999f;
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                Character enemy = Enemies[i];
+                if (!IsLivingOpponent(enemy)) continue;
+                float distance = XzDistance(point, enemy.transform.position);
+                if (distance < minimum) minimum = distance;
+            }
+            return minimum;
+        }
+
         private static Vector3 SelectSafetyPoint(Character player)
         {
             Vector3 origin = player.transform.position;
@@ -2775,6 +3148,56 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return true;
         }
 
+        private static bool ShouldRejectStealthRetreatRoute(Character player)
+        {
+            if (player == null || Time.time < _nextHideRouteAuditAt) return false;
+            _nextHideRouteAuditAt = Time.time + 0.12f;
+            RouteExposurePoints.Clear();
+            if (!SurvivalCombatAdapter.CopyActiveRoute(RouteExposurePoints) ||
+                RouteExposurePoints.Count == 0)
+                return false;
+
+            float currentSeparation = MinimumLivingEnemyDistance(player.transform.position);
+            float routeFloor = currentSeparation >= AssaultStealthRetreatSeparation
+                ? AssaultStealthRetreatSeparation
+                : Mathf.Max(0f, currentSeparation - 0.35f);
+            bool protectCurrentCover =
+                CountPotentialSightLines(player.transform.position, player) == 0;
+            int exposedSamples = 0;
+            Vector3 previous = player.transform.position;
+            int sampleBudget = 20;
+            for (int i = 0; i < RouteExposurePoints.Count && sampleBudget > 0; i++)
+            {
+                Vector3 next = RouteExposurePoints[i];
+                float distance = XzDistance(previous, next);
+                int samples = Mathf.Clamp(Mathf.CeilToInt(distance / 1.5f), 1,
+                    sampleBudget);
+                for (int s = 1; s <= samples && sampleBudget > 0; s++, sampleBudget--)
+                {
+                    Vector3 point = Vector3.Lerp(previous, next, (float)s / samples);
+                    float separation = MinimumLivingEnemyDistance(point);
+                    if (separation + 0.05f < routeFloor)
+                    {
+                        FileLogger.Log("SURVIVAL][ROLE", "stealth retreat route rejected sampleMin=" +
+                            separation.ToString("0.0") + " floor=" + routeFloor.ToString("0.0") +
+                            " currentMin=" + currentSeparation.ToString("0.0") +
+                            " destination=" + FormatVec(_safePoint));
+                        return true;
+                    }
+                    if (protectCurrentCover)
+                        exposedSamples += CountPotentialSightLines(point, player);
+                }
+                previous = next;
+            }
+            if (exposedSamples > 0)
+            {
+                FileLogger.Log("SURVIVAL][ROLE", "stealth retreat route rejected sightSamples=" +
+                    exposedSamples + " destination=" + FormatVec(_safePoint));
+                return true;
+            }
+            return false;
+        }
+
         private static int CountPotentialSightLines(Vector3 point, Character player)
         {
             int count = 0;
@@ -2869,8 +3292,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             int shield = 0;
             try { shield = player.shield; } catch { }
             bool hpDropped = _lastPlayerHp > 0 && hp < _lastPlayerHp;
-            if (hpDropped || shield < _lastPlayerShield)
+            bool shieldDropped = _lastPlayerShield > 0 && shield < _lastPlayerShield;
+            if (hpDropped || shieldDropped)
+            {
                 _recentDamageAt = Time.time;
+                _incomingDamageSequence++;
+            }
             if (hpDropped) _healthDamageSequence++;
             _lastPlayerHp = hp;
             _lastPlayerShield = shield;

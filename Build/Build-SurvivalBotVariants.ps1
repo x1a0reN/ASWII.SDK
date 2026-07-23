@@ -225,6 +225,11 @@ function Test-VariantAssembly {
             'TickGuardDirector',
             'TickAssaultDirector',
             'TickAssaultOpeningStealth',
+            'TickAssaultAvoidanceDirector',
+            'TickAssaultStealthRetreat',
+            'SelectStealthRetreatPoint',
+            'ShouldRejectStealthRetreatRoute',
+            'CommitAvoidanceAttack',
             'MoveCombatStrafe',
             'IsSafeCombatDirection',
             'TraceCombatMovement',
@@ -239,6 +244,26 @@ function Test-VariantAssembly {
         foreach ($methodName in $requiredManagerMethods) {
             Assert-Condition ($managerMethodNames -contains $methodName) "$Edition is missing director method $methodName"
         }
+        foreach ($literal in @(
+            'incoming_damage',
+            'stealth_ended_cooldown',
+            'Stealth retreat | route rejected | separation floor 20.0m'
+        )) {
+            Assert-Condition ($stringLiterals -contains $literal) `
+                "$Edition is missing stealth-retreat policy literal $literal"
+        }
+        $retreatMinimumField = $managerType.Fields | Where-Object {
+            $_.Name -eq 'AssaultStealthRetreatSeparation'
+        } | Select-Object -First 1
+        $retreatPreferredField = $managerType.Fields | Where-Object {
+            $_.Name -eq 'AssaultStealthRetreatPreferredSeparation'
+        } | Select-Object -First 1
+        Assert-Condition ($null -ne $retreatMinimumField -and
+            [single]$retreatMinimumField.Constant -eq 20.0) `
+            "$Edition does not enforce the 20m stealth-retreat minimum"
+        Assert-Condition ($null -ne $retreatPreferredField -and
+            [single]$retreatPreferredField.Constant -eq 23.0) `
+            "$Edition does not preserve the 23m stealth-retreat buffer"
         $antiIdleMethodNames = @($antiIdleType.Methods | ForEach-Object { $_.Name })
         Assert-Condition ($antiIdleMethodNames -contains 'OnFightStateUpdate') `
             "$Edition is missing FightState anti-idle reset"
@@ -437,6 +462,9 @@ $manifest = [ordered]@{
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
             assaultOpeningStealth = $true
+            assaultStealthRetreatMinimumMeters = 20
+            assaultStealthRetreatPreferredMeters = 23
+            assaultDamageOrCooldownAttackTransition = $true
             closeRangeEmergencyFire = $true
             visibleThreatFailSafe = $true
             participantCaptureConfig = $false
@@ -462,6 +490,9 @@ $manifest = [ordered]@{
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
             assaultOpeningStealth = $true
+            assaultStealthRetreatMinimumMeters = 20
+            assaultStealthRetreatPreferredMeters = 23
+            assaultDamageOrCooldownAttackTransition = $true
             closeRangeEmergencyFire = $true
             visibleThreatFailSafe = $true
             participantCaptureConfig = $false
