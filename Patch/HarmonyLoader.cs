@@ -25,6 +25,7 @@ namespace ASWDEBUG.Patch
             NetworkRouteManager.Initialize();
             PatchInput(harmony);
             PatchGameHooks(harmony);
+            SurvivalDetectionBypass.Install(harmony);
             _installed = true;
             FileLogger.Log("PATCH", "SurvivalBot hooks installed.");
             return true;
