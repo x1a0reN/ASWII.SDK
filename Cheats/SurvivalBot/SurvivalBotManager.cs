@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Reflection;
 using ASWDEBUG.Cheats.AutoBattle;
 using ASWDEBUG.Cheats.AutoBattle.CompactNav;
@@ -40,6 +41,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             HardHunt
         }
 
+        private enum CliffSearchStatus
+        {
+            Pending,
+            Found,
+            Exhausted
+        }
+
         private const float GuardShockWaveDistance = 5f;
         private const float GuardArrowRainMinDistance = 6.7f;
         private const float GuardArrowRainMaxDistance = 8.8f;
@@ -50,6 +58,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private const float AssaultStationaryConfirmSeconds = 0.55f;
         private const float CliffFatalDrop = 12f;
         private const float CliffProbeDepth = 32f;
+        private const double CliffSearchFrameBudgetMilliseconds = 2.5;
+        private const int CliffSearchCandidatesPerFrame = 3;
         private static readonly List<Character> Enemies = new List<Character>(16);
         private static readonly HashSet<int> ParticipantIds = new HashSet<int>();
         private static readonly HashSet<int> ConfirmedDeadParticipantIds = new HashSet<int>();
@@ -160,6 +170,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static bool _hasCliff;
         private static bool _cliffJumpLogged;
         private static bool _serverSuicideRequested;
+        private static CliffSearchJob _cliffSearchJob;
         private static Character _attackTarget;
         private static Character _searchTarget;
         private static float _searchTargetLockedAt;
@@ -319,6 +330,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _hasSafePoint = false;
             _hasAttackPoint = false;
             _hasCliff = false;
+            _cliffSearchJob = null;
+            _suicideStartedAt = 0f;
             ResetRoleDirector("level_exit");
             ResetAttackSearchRuntime();
             ClearFailedCandidates();
@@ -545,6 +558,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             CancelActiveSession();
             _roundActive = false;
             _controlStarted = false;
+            _cliffSearchJob = null;
+            _suicideStartedAt = 0f;
             _awaitingReward = false;
             _cardManager = null;
             _emergencyTarget = null;
@@ -752,6 +767,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _hasSafePoint = false;
             _hasAttackPoint = false;
             _hasCliff = false;
+            _cliffSearchJob = null;
+            _suicideStartedAt = 0f;
             _attackTarget = null;
             _searchTarget = null;
             _searchTargetLockedAt = 0f;
@@ -800,6 +817,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 " rank=" + LastFinalRank);
             _roundActive = false;
             _controlStarted = false;
+            _cliffSearchJob = null;
+            _suicideStartedAt = 0f;
             _pendingGmUid = 0;
             _pendingGmTeam = 0;
             _pendingGmGeneration = 0;
@@ -1059,7 +1078,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             if (_taskCompleted && rankSecured)
             {
-                ClearEmergencyTarget("objective_complete");
+                TickRoleDirector(player, camera, true);
                 TickSuicide(app, player, camera);
                 return;
             }
@@ -1947,12 +1966,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static void TickSuicide(GameApp app, Character player, Camera camera)
         {
-            if (Phase != SurvivalBotPhase.Suicide)
+            if (_suicideStartedAt <= 0f)
             {
-                Phase = SurvivalBotPhase.Suicide;
                 _suicideStartedAt = Time.time;
                 _nextCliffScanAt = 0f;
                 _hasCliff = false;
+                _cliffSearchJob = null;
                 _lastCliffDistance = float.MaxValue;
                 _lastCliffProgressAt = Time.time;
                 _nextCliffTraceAt = 0f;
@@ -1967,6 +1986,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 FileLogger.Log("SURVIVAL", "suicide phase started; cliff preferred fallback=" +
                     SurvivalBotSettings.SuicideFallbackSeconds.ToString("0") + "s");
             }
+            Phase = SurvivalBotPhase.Suicide;
 
             if (_serverSuicideRequested)
             {
@@ -1975,14 +1995,15 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            if (!_hasCliff && Time.time >= _nextCliffScanAt)
+            if (!_hasCliff && (_cliffSearchJob != null || Time.time >= _nextCliffScanAt))
             {
-                _nextCliffScanAt = Time.time + 2f;
                 string cliffDetail;
-                _hasCliff = TryFindCliff(player, out _cliffEdge, out _cliffOutward,
-                    out cliffDetail);
-                if (_hasCliff)
+                CliffSearchStatus searchStatus = TickFindCliff(player, out _cliffEdge,
+                    out _cliffOutward, out cliffDetail);
+                if (searchStatus == CliffSearchStatus.Found)
                 {
+                    _hasCliff = true;
+                    _nextCliffScanAt = Time.time + 2f;
                     _lastCliffDistance = XzDistance(player.transform.position, _cliffEdge);
                     _lastCliffProgressAt = Time.time;
                     _cliffJumpLogged = false;
@@ -1990,11 +2011,15 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                         " outward=" + FormatVec(_cliffOutward) + " dist=" + _lastCliffDistance.ToString("0.0") +
                         " " + cliffDetail);
                 }
-                else if (Time.time >= _nextCliffTraceAt)
+                else if (searchStatus == CliffSearchStatus.Exhausted)
                 {
-                    _nextCliffTraceAt = Time.time + 4f;
-                    FileLogger.Log("SURVIVAL", "no verified cliff; waiting for server-suicide fallback " +
-                        cliffDetail);
+                    _nextCliffScanAt = Time.time + 2f;
+                    if (Time.time >= _nextCliffTraceAt)
+                    {
+                        _nextCliffTraceAt = Time.time + 4f;
+                        FileLogger.Log("SURVIVAL", "no verified cliff; waiting for server-suicide fallback " +
+                            cliffDetail);
+                    }
                 }
             }
 
@@ -2123,7 +2148,31 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            StatusText = "任务完成，搜索悬崖";
+            if (TickEmergencyCounterattack(player, camera, true)) return;
+            MoveWhileSearchingCliff(player, camera);
+        }
+
+        private static void MoveWhileSearchingCliff(Character player, Camera camera)
+        {
+            Character threat = SelectNearestDirectorTarget(player, 26f);
+            int checkedCount = _cliffSearchJob == null ? 0 : _cliffSearchJob.Cursor;
+            int totalCount = _cliffSearchJob == null ? 0 : _cliffSearchJob.CandidateCount;
+            if (threat == null)
+            {
+                AutoBattleInput.ClearMovement();
+                StatusText = "任务完成，搜索悬崖 | " + checkedCount + "/" + totalCount;
+                return;
+            }
+
+            SurvivalCombatAdapter.CancelSurvivalAttack();
+            SurvivalCombatAdapter.CloseSurvivalScope(player);
+            float distance = XzDistance(player.transform.position, threat.transform.position);
+            MoveEmergency(player, threat, distance);
+            if (camera != null)
+                SurvivalCombatAdapter.LookSurvival(player, camera,
+                    threat.transform.position + Vector3.up * 0.82f);
+            StatusText = "任务完成，搜索悬崖并规避敌人 | " + checkedCount + "/" +
+                totalCount + " | 威胁 " + distance.ToString("0.0") + "m";
         }
 
         private static void HandleGmExit(GameApp app)
@@ -3301,39 +3350,54 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             return target != null && target.transform != null && !target.IsDied && !target.Is_Viewer;
         }
 
-        private static bool TryFindCliff(Character player, out Vector3 edge, out Vector3 outward,
-            out string detail)
+        private static CliffSearchStatus TickFindCliff(Character player, out Vector3 edge,
+            out Vector3 outward, out string detail)
         {
             edge = Vector3.zero;
             outward = Vector3.zero;
-            detail = "source=rain_boundary unavailable";
-            if (player == null || player.transform == null) return false;
+            detail = "source=boundary unavailable";
+            if (player == null || player.transform == null)
+                return CliffSearchStatus.Exhausted;
 
-            Vector3 origin = player.transform.position;
-            int candidateCount = RuntimeRainNavDerivedData.CollectNearbyBoundaries(origin, 60f, 96,
-                CliffBoundaryCandidates);
-            if (candidateCount <= 0)
+            if (_cliffSearchJob == null)
             {
-                detail = "source=rain_boundary candidates=0";
-                return false;
+                Vector3 origin = player.transform.position;
+                string source = "aswnav_boundary";
+                int candidateCount = CompactRainNavRuntime.CollectNearbyBoundaries(origin, 60f,
+                    96, CliffBoundaryCandidates);
+                if (candidateCount <= 0)
+                {
+                    source = "runtime_rain_boundary";
+                    candidateCount = RuntimeRainNavDerivedData.CollectNearbyBoundaries(origin,
+                        60f, 96, CliffBoundaryCandidates);
+                }
+                _cliffSearchJob = new CliffSearchJob(origin, source, candidateCount);
+                if (candidateCount <= 0)
+                {
+                    detail = "source=" + source + " candidates=0";
+                    _cliffSearchJob = null;
+                    return CliffSearchStatus.Exhausted;
+                }
             }
 
-            int failed = 0;
-            int approachRejected = 0;
-            int dropRejected = 0;
-            string lastReject = "none";
-            float bestScore = float.MinValue;
-            float bestDrop = 0f;
-            float bestWidth = 0f;
-            int bestChecked = 0;
-            Vector3 bestEdge = Vector3.zero;
-            Vector3 bestOutward = Vector3.zero;
-            for (int i = 0; i < CliffBoundaryCandidates.Count; i++)
+            CliffSearchJob job = _cliffSearchJob;
+            Stopwatch frameTimer = Stopwatch.StartNew();
+            int processedThisFrame = 0;
+            bool completed = false;
+            while (job.Cursor < job.CandidateCount &&
+                processedThisFrame < CliffSearchCandidatesPerFrame)
             {
-                RuntimeRainBoundarySample sample = CliffBoundaryCandidates[i];
+                int index = job.Cursor++;
+                processedThisFrame++;
+                RuntimeRainBoundarySample sample = CliffBoundaryCandidates[index];
                 Vector3 direction = sample.Outward;
                 direction.y = 0f;
-                if (direction.sqrMagnitude < 0.01f) continue;
+                if (direction.sqrMagnitude < 0.01f)
+                {
+                    if (frameTimer.Elapsed.TotalMilliseconds >=
+                        CliffSearchFrameBudgetMilliseconds) break;
+                    continue;
+                }
                 direction.Normalize();
 
                 Vector3 approach;
@@ -3341,63 +3405,87 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     sample.Position.y, 1.4f, player.transform.root, out approach) ||
                     IsFailedCliffCandidate(approach))
                 {
-                    failed++;
-                    continue;
+                    job.Failed++;
                 }
-                if (!AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(approach, 1.0f) ||
-                    !AutoBattleRoutePlanner.HasSupportedStandingPoint(approach, player.transform.root) ||
+                else if (!AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(approach, 1.0f) ||
+                    !AutoBattleRoutePlanner.HasSupportedStandingPoint(approach,
+                        player.transform.root) ||
                     !AutoBattleRoutePlanner.CanFollowRouteSegment(approach,
                         sample.Position - direction * 0.08f, player.transform.root))
                 {
-                    approachRejected++;
-                    continue;
+                    job.ApproachRejected++;
                 }
-
-                float drop;
-                string validation;
-                if (!TryValidateCliffApproach(approach, direction, player.transform.root,
-                    out drop, out validation))
+                else
                 {
-                    dropRejected++;
-                    lastReject = validation;
-                    continue;
+                    float drop;
+                    string validation;
+                    if (!TryValidateCliffApproach(approach, direction, player.transform.root,
+                        out drop, out validation))
+                    {
+                        job.DropRejected++;
+                        job.LastReject = validation;
+                    }
+                    else
+                    {
+                        float travelDistance = XzDistance(job.Origin, approach);
+                        float score = drop * 20f + Mathf.Min(6f, sample.Width) * 2f -
+                            travelDistance * 0.12f;
+                        if (score > job.BestScore)
+                        {
+                            job.BestScore = score;
+                            job.BestDrop = drop;
+                            job.BestWidth = sample.Width;
+                            job.BestChecked = index + 1;
+                            job.BestEdge = approach;
+                            job.BestOutward = direction;
+                        }
+
+                        // Preserve the original certainty-first early exits exactly.
+                        if (drop >= CliffProbeDepth - 0.1f ||
+                            (index >= 47 && job.BestScore > float.MinValue))
+                            completed = true;
+                    }
                 }
 
-                float travelDistance = XzDistance(origin, approach);
-                float score = drop * 20f + Mathf.Min(6f, sample.Width) * 2f - travelDistance * 0.12f;
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    bestDrop = drop;
-                    bestWidth = sample.Width;
-                    bestChecked = i + 1;
-                    bestEdge = approach;
-                    bestOutward = direction;
-                }
-
-                // A full-depth result means every launch-lane probe continues into the void.
-                // Nothing found later can improve the lethal certainty of this candidate.
-                if (drop >= CliffProbeDepth - 0.1f) break;
-                if (i >= 47 && bestScore > float.MinValue) break;
+                if (completed || frameTimer.Elapsed.TotalMilliseconds >=
+                    CliffSearchFrameBudgetMilliseconds) break;
             }
+            frameTimer.Stop();
+            job.Frames++;
+            job.CpuMilliseconds += frameTimer.Elapsed.TotalMilliseconds;
+            if (job.Cursor >= job.CandidateCount) completed = true;
 
-            if (bestScore > float.MinValue)
+            if (!completed)
             {
-                edge = bestEdge;
-                outward = bestOutward;
-                detail = "source=rain_boundary candidates=" + candidateCount +
-                    " checked=" + bestChecked + " failed=" + failed +
-                    " approachReject=" + approachRejected + " dropReject=" + dropRejected +
-                    " width=" + bestWidth.ToString("0.0") +
-                    " verifiedMinDrop=" + bestDrop.ToString("0.0") +
-                    " lethal=" + (bestDrop >= CliffFatalDrop);
-                return true;
+                detail = "source=" + job.Source + " candidates=" + job.CandidateCount +
+                    " progress=" + job.Cursor + "/" + job.CandidateCount +
+                    " frames=" + job.Frames + " cpuMs=" +
+                    job.CpuMilliseconds.ToString("0.0");
+                return CliffSearchStatus.Pending;
             }
 
-            detail = "source=rain_boundary candidates=" + candidateCount +
-                " failed=" + failed + " approachReject=" + approachRejected +
-                " dropReject=" + dropRejected + " last=" + lastReject;
-            return false;
+            _cliffSearchJob = null;
+            if (job.BestScore > float.MinValue)
+            {
+                edge = job.BestEdge;
+                outward = job.BestOutward;
+                detail = "source=" + job.Source + " candidates=" + job.CandidateCount +
+                    " checked=" + job.BestChecked + " scanned=" + job.Cursor +
+                    " failed=" + job.Failed + " approachReject=" + job.ApproachRejected +
+                    " dropReject=" + job.DropRejected + " width=" +
+                    job.BestWidth.ToString("0.0") + " verifiedMinDrop=" +
+                    job.BestDrop.ToString("0.0") + " lethal=" +
+                    (job.BestDrop >= CliffFatalDrop) + " frames=" + job.Frames +
+                    " cpuMs=" + job.CpuMilliseconds.ToString("0.0");
+                return CliffSearchStatus.Found;
+            }
+
+            detail = "source=" + job.Source + " candidates=" + job.CandidateCount +
+                " scanned=" + job.Cursor + " failed=" + job.Failed +
+                " approachReject=" + job.ApproachRejected + " dropReject=" +
+                job.DropRejected + " last=" + job.LastReject + " frames=" +
+                job.Frames + " cpuMs=" + job.CpuMilliseconds.ToString("0.0");
+            return CliffSearchStatus.Exhausted;
         }
 
         private static bool TryValidateCliffApproach(Vector3 approach, Vector3 outward,
@@ -3799,6 +3887,33 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return field == null ? 0 : (int)field.GetValue(instance);
             }
             catch { return 0; }
+        }
+
+        private sealed class CliffSearchJob
+        {
+            public readonly Vector3 Origin;
+            public readonly string Source;
+            public readonly int CandidateCount;
+            public int Cursor;
+            public int Failed;
+            public int ApproachRejected;
+            public int DropRejected;
+            public string LastReject = "none";
+            public float BestScore = float.MinValue;
+            public float BestDrop;
+            public float BestWidth;
+            public int BestChecked;
+            public Vector3 BestEdge;
+            public Vector3 BestOutward;
+            public int Frames;
+            public double CpuMilliseconds;
+
+            public CliffSearchJob(Vector3 origin, string source, int candidateCount)
+            {
+                Origin = origin;
+                Source = source;
+                CandidateCount = candidateCount;
+            }
         }
 
         private sealed class EnemyTrack

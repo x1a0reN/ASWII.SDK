@@ -193,9 +193,13 @@ function Test-VariantAssembly {
         $roleType = $types | Where-Object {
             $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.SurvivalRoleKind'
         } | Select-Object -First 1
+        $compactRuntimeType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.CompactNav.CompactRainNavRuntime'
+        } | Select-Object -First 1
         Assert-Condition ($null -ne $managerType) "$Edition is missing SurvivalBotManager"
         Assert-Condition ($null -ne $adapterType) "$Edition is missing SurvivalCombatAdapter"
         Assert-Condition ($null -ne $roleType) "$Edition is missing SurvivalRoleKind"
+        Assert-Condition ($null -ne $compactRuntimeType) "$Edition is missing CompactRainNavRuntime"
         $requiredManagerMethods = @(
             'TickRoleDirector',
             'TickGuardDirector',
@@ -203,6 +207,8 @@ function Test-VariantAssembly {
             'MoveCombatStrafe',
             'IsSafeCombatDirection',
             'TraceCombatMovement',
+            'TickFindCliff',
+            'MoveWhileSearchingCliff',
             'ShouldRejectExposedHideRoute',
             'TryValidateCliffApproach'
         )
@@ -219,6 +225,9 @@ function Test-VariantAssembly {
         foreach ($methodName in $requiredAdapterMethods) {
             Assert-Condition ($adapterMethodNames -contains $methodName) "$Edition is missing adapter method $methodName"
         }
+        $compactRuntimeMethodNames = @($compactRuntimeType.Methods | ForEach-Object { $_.Name })
+        Assert-Condition ($compactRuntimeMethodNames -contains 'CollectNearbyBoundaries') `
+            "$Edition is missing compact boundary lookup"
 
         if ($Edition -eq 'ReleaseA') {
             $forbiddenManagerMethods = @(
@@ -377,6 +386,8 @@ $manifest = [ordered]@{
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
             continuousCombatMovement = $true
+            incrementalCliffSearch = $true
+            compactBoundaryCliffSource = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }
@@ -391,6 +402,8 @@ $manifest = [ordered]@{
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
             continuousCombatMovement = $true
+            incrementalCliffSearch = $true
+            compactBoundaryCliffSource = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }

@@ -1,4 +1,5 @@
 using ASWDEBUG.Logger;
+using ASWDEBUG.Cheats.AutoBattle;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -12,6 +13,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private const string SupportedMap = "level33";
         private const int ExpansionsPerSlice = 4096;
         private const double MillisecondsPerSlice = 8.0;
+        private const float BoundaryBucketSize = 4.5f;
 
         private static CompactRainNavDataset _dataset;
         private static CompactRainNavLoadResult _loadResult;
@@ -28,6 +30,11 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private static int _queryCancelCount;
         private static long _lastManagedBytes;
         private static long _lastPrivateBytes;
+        private static Dictionary<long, List<int>> _boundaryBuckets;
+        private static int[] _boundarySelectionIndices = new int[0];
+        private static float[] _boundarySelectionScores = new float[0];
+        private static readonly List<RuntimeRainBoundarySample> BoundarySamplePool =
+            new List<RuntimeRainBoundarySample>(96);
 
         internal static bool Requested { get { return _requested; } }
         internal static bool IsReady { get { return _requested && !_failed && _dataset != null && _query != null; } }
@@ -53,6 +60,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _failed = false;
             if (_dataset != null && _query != null)
             {
+                EnsureBoundaryIndex();
                 _detail = "ready source=process_resident scene=" + _sceneEpoch;
                 FileLogger.Log("AUTO-BATTLE][ASWNAV", "scene_begin map=" + normalized +
                     " scene=" + _sceneEpoch + " source=process_resident resident=" + _dataset.ResidentBytes +
@@ -84,6 +92,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _dataset = loaded;
             _loadResult = result;
             _query = new CompactRainQuery(_dataset);
+            EnsureBoundaryIndex();
             _detail = "ready source=disk sha=" + result.FileSha256 + " loadMs=" +
                 result.ElapsedMilliseconds + " resident=" + _dataset.ResidentBytes +
                 " workspace=" + _query.WorkspaceBytes;
@@ -180,6 +189,75 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 if (_dataset.GetPortal(portalIndex).PolyCount > 1) sharedPortalCount++;
             }
             return true;
+        }
+
+        internal static int CollectNearbyBoundaries(Vector3 from, float maxDistance, int maxCount,
+            List<RuntimeRainBoundarySample> output)
+        {
+            if (output == null) return 0;
+            output.Clear();
+            if (!IsReady || _dataset == null || maxDistance <= 0f || maxCount <= 0)
+                return 0;
+            EnsureBoundaryIndex();
+            if (_boundaryBuckets == null || _boundaryBuckets.Count == 0) return 0;
+
+            EnsureBoundarySelectionCapacity(maxCount);
+            int selectedCount = 0;
+            int bx = Mathf.FloorToInt(from.x / BoundaryBucketSize);
+            int bz = Mathf.FloorToInt(from.z / BoundaryBucketSize);
+            int radius = Mathf.Clamp(Mathf.CeilToInt(maxDistance / BoundaryBucketSize), 1, 18);
+            float maximumDistanceSquared = maxDistance * maxDistance;
+            for (int dz = -radius; dz <= radius; dz++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    List<int> candidates;
+                    if (!_boundaryBuckets.TryGetValue(BoundarySpatialKey(bx + dx, bz + dz),
+                        out candidates)) continue;
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        int boundaryIndex = candidates[i];
+                        CompactRainNavBoundaryRecord boundary = _dataset.GetBoundary(boundaryIndex);
+                        if (boundary.Width < 0.35f) continue;
+                        float offsetX = from.x - boundary.PositionX;
+                        float offsetZ = from.z - boundary.PositionZ;
+                        float horizontalSquared = offsetX * offsetX + offsetZ * offsetZ;
+                        if (horizontalSquared > maximumDistanceSquared) continue;
+                        float score = Mathf.Sqrt(horizontalSquared) +
+                            Mathf.Abs(boundary.PositionY - from.y) * 1.8f;
+                        int insertAt = FindBoundaryInsertIndex(score, selectedCount);
+                        if (insertAt >= maxCount) continue;
+                        int shiftEnd = Mathf.Min(selectedCount, maxCount - 1);
+                        for (int shift = shiftEnd; shift > insertAt; shift--)
+                        {
+                            _boundarySelectionIndices[shift] = _boundarySelectionIndices[shift - 1];
+                            _boundarySelectionScores[shift] = _boundarySelectionScores[shift - 1];
+                        }
+                        _boundarySelectionIndices[insertAt] = boundaryIndex;
+                        _boundarySelectionScores[insertAt] = score;
+                        if (selectedCount < maxCount) selectedCount++;
+                    }
+                }
+            }
+
+            while (BoundarySamplePool.Count < selectedCount)
+                BoundarySamplePool.Add(new RuntimeRainBoundarySample());
+            for (int i = 0; i < selectedCount; i++)
+            {
+                CompactRainNavBoundaryRecord boundary =
+                    _dataset.GetBoundary(_boundarySelectionIndices[i]);
+                RuntimeRainBoundarySample sample = BoundarySamplePool[i];
+                sample.NodeIndex = boundary.PortalIndex;
+                sample.Position = new Vector3(boundary.PositionX, boundary.PositionY,
+                    boundary.PositionZ);
+                sample.Outward = new Vector3(boundary.OutwardX, boundary.OutwardY,
+                    boundary.OutwardZ);
+                sample.Component = boundary.Component;
+                sample.Width = boundary.Width;
+                sample.PolyIndex = -1;
+                output.Add(sample);
+            }
+            return output.Count;
         }
 
         internal static bool TryBuildPath(Vector3 from, Vector3 to,
@@ -314,6 +392,58 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             string directory = Path.Combine(Path.Combine(Application.persistentDataPath,
                 "ASWDEBUG"), "NavMeshCache");
             return Path.Combine(directory, "level33.aswnav");
+        }
+
+        private static void EnsureBoundaryIndex()
+        {
+            if (_dataset == null || _boundaryBuckets != null) return;
+            Stopwatch timer = Stopwatch.StartNew();
+            Dictionary<long, List<int>> buckets = new Dictionary<long, List<int>>();
+            for (int i = 0; i < _dataset.BoundaryCount; i++)
+            {
+                CompactRainNavBoundaryRecord boundary = _dataset.GetBoundary(i);
+                int x = Mathf.FloorToInt(boundary.PositionX / BoundaryBucketSize);
+                int z = Mathf.FloorToInt(boundary.PositionZ / BoundaryBucketSize);
+                long key = BoundarySpatialKey(x, z);
+                List<int> indices;
+                if (!buckets.TryGetValue(key, out indices))
+                {
+                    indices = new List<int>(8);
+                    buckets.Add(key, indices);
+                }
+                indices.Add(i);
+            }
+            _boundaryBuckets = buckets;
+            timer.Stop();
+            FileLogger.Log("AUTO-BATTLE][ASWNAV", "boundary_index_ready boundaries=" +
+                _dataset.BoundaryCount + " buckets=" + buckets.Count + " ms=" +
+                timer.ElapsedMilliseconds);
+        }
+
+        private static void EnsureBoundarySelectionCapacity(int count)
+        {
+            if (_boundarySelectionIndices.Length >= count) return;
+            int capacity = Math.Max(96, count);
+            _boundarySelectionIndices = new int[capacity];
+            _boundarySelectionScores = new float[capacity];
+        }
+
+        private static int FindBoundaryInsertIndex(float score, int count)
+        {
+            int low = 0;
+            int high = count;
+            while (low < high)
+            {
+                int middle = low + ((high - low) >> 1);
+                if (_boundarySelectionScores[middle] <= score) low = middle + 1;
+                else high = middle;
+            }
+            return low;
+        }
+
+        private static long BoundarySpatialKey(int x, int z)
+        {
+            return ((long)x << 32) ^ (uint)z;
         }
 
         private static void CancelJob()
