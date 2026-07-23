@@ -55,7 +55,6 @@ namespace ASWDEBUG.Verify
         private void OnDestroy()
         {
             StopHeartbeat();
-            TryLogoutIfNeeded();
             lock (_clientLock)
             {
                 if (_client != null)
@@ -136,16 +135,6 @@ namespace ASWDEBUG.Verify
             }
             _heartbeatInFlight = false;
             _heartbeatFailures = 0;
-        }
-
-        public void TryLogoutIfNeeded()
-        {
-            lock (_clientLock)
-            {
-                if (_client == null) return;
-                try { _client.Logout(); } catch { }
-            }
-            LoggedIn = false;
         }
 
         private IEnumerator HeartbeatLoop(float interval)

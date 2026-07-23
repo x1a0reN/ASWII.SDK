@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace ASWDEBUG.Verify
 {
@@ -18,6 +19,8 @@ namespace ASWDEBUG.Verify
 
     internal sealed class VeriGateClient : IDisposable
     {
+        private const string ProcessMutexName = "Local\\ASWDEBUG.VeriGate.Session";
+        private static readonly Mutex ProcessMutex = new Mutex(false, ProcessMutexName);
         private readonly object _sync = new object();
         private IntPtr _context;
 
@@ -65,6 +68,7 @@ namespace ASWDEBUG.Verify
         internal VeriGateAuthorization Authorize()
         {
             lock (_sync)
+            using (EnterProcessLock())
             {
                 EnsureNotDisposed();
                 string activation = CallJson(NativeMethods.vg_sdk_client_activate);
@@ -96,6 +100,7 @@ namespace ASWDEBUG.Verify
         internal VeriGateAuthorization Heartbeat()
         {
             lock (_sync)
+            using (EnterProcessLock())
             {
                 EnsureNotDisposed();
                 try
@@ -111,15 +116,6 @@ namespace ASWDEBUG.Verify
             }
         }
 
-        internal void Logout()
-        {
-            lock (_sync)
-            {
-                EnsureNotDisposed();
-                ThrowIfFailed(NativeMethods.vg_sdk_client_logout(_context));
-            }
-        }
-
         public void Dispose()
         {
             lock (_sync)
@@ -128,6 +124,22 @@ namespace ASWDEBUG.Verify
                 NativeMethods.vg_sdk_client_free(_context);
                 _context = IntPtr.Zero;
             }
+        }
+
+        private static IDisposable EnterProcessLock()
+        {
+            bool acquired = false;
+            try
+            {
+                acquired = ProcessMutex.WaitOne(30000, false);
+            }
+            catch (AbandonedMutexException)
+            {
+                acquired = true;
+            }
+            if (!acquired)
+                throw new InvalidOperationException("等待同机网络验证会话超时。");
+            return new ProcessLock();
         }
 
         private VeriGateAuthorization VerifyCore()
@@ -305,6 +317,18 @@ namespace ASWDEBUG.Verify
             }
         }
 
+        private sealed class ProcessLock : IDisposable
+        {
+            private bool _released;
+
+            public void Dispose()
+            {
+                if (_released) return;
+                ProcessMutex.ReleaseMutex();
+                _released = true;
+            }
+        }
+
         private static class NativeMethods
         {
             private const string Library = "verigate_sdk.dll";
@@ -338,9 +362,6 @@ namespace ASWDEBUG.Verify
                 IntPtr context,
                 NativeSlice requestJson,
                 out NativeBuffer output);
-
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern uint vg_sdk_client_logout(IntPtr context);
 
             [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
             internal static extern void vg_sdk_buffer_free(NativeBuffer buffer);

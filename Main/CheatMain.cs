@@ -219,12 +219,10 @@ namespace ASWDEBUG.Main
             try
             {
                 DllUsageTelemetry.Stop();
-                if (VeriGateAuthManager.Instance != null)
-                    VeriGateAuthManager.Instance.TryLogoutIfNeeded();
             }
             catch (Exception e)
             {
-                FileLogger.Log("CHEAT", "OnDestroy logout skipped: " + e.Message);
+                FileLogger.Log("CHEAT", "OnDestroy telemetry stop failed: " + e.Message);
             }
             //FileLogger.Log("CHEAT", "OnDestroy");
         }
