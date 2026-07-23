@@ -136,7 +136,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             CompactRainNavLoadResult load;
             CompactRainNavDataset dataset = CompactRainNavLoader.Load(path, out load);
             CompactRainPathCapabilities capabilities = new CompactRainPathCapabilities();
-            capabilities.AllowJump = true;
+            capabilities.AllowJump = false;
             capabilities.JumpHeight = 2.4f;
             capabilities.JumpVelocity = 8.0f;
             capabilities.RunSpeed = 8.5f;
@@ -150,7 +150,15 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 if (componentSizes[i] > componentSizes[largestComponent]) largestComponent = i;
             int startPoly = -1;
             for (int i = 0; i < dataset.PolyCount; i++)
-                if (dataset.GetPoly(i).Component == largestComponent) { startPoly = i; break; }
+            {
+                if (dataset.GetPoly(i).Component != largestComponent) continue;
+                CompactRainPoint candidate = TriangleCentroid(dataset, i);
+                string safetyDetail;
+                if (!query.TryValidateWalkSegment(candidate, candidate,
+                    out safetyDetail)) continue;
+                startPoly = i;
+                break;
+            }
             if (startPoly < 0) throw new InvalidOperationException("pathtest_no_start_poly");
             CompactRainPoint start = TriangleCentroid(dataset, startPoly);
             int goalPoly = -1;
@@ -159,6 +167,9 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             {
                 if (dataset.GetPoly(i).Component != largestComponent) continue;
                 CompactRainPoint candidate = TriangleCentroid(dataset, i);
+                string safetyDetail;
+                if (!query.TryValidateWalkSegment(candidate, candidate,
+                    out safetyDetail)) continue;
                 float distance = CompactRainPoint.DistanceXZ(start, candidate);
                 if (distance < 80f || distance > 180f) continue;
                 float score = Math.Abs(distance - 120f);
@@ -185,35 +196,11 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 first == null ? 0 : first.Waypoints.Length,
                 first == null ? 0 : first.ActionCount);
 
-            bool offMeshOk = false;
-            string offMeshDetail = "no_candidate";
-            CompactRainPathResult offMeshResult = null;
-            for (int i = 0; i < dataset.LinkCount && !offMeshOk; i++)
-            {
-                CompactRainNavLinkRecord link = dataset.GetLink(i);
-                if (link.RequiredJumpHeight > capabilities.JumpHeight + 0.05f ||
-                    link.RequiredRunSpeed > capabilities.RunSpeed + 0.05f) continue;
-                CompactRainNavPortalRecord from = dataset.GetPortal(link.FromPortal);
-                CompactRainNavPortalRecord to = dataset.GetPortal(link.ToPortal);
-                if (from.PolyCount <= 0 || to.PolyCount <= 0) continue;
-                int fromPoly = dataset.GetPortalPolyIndex(from.PolyStart);
-                int toPoly = dataset.GetPortalPolyIndex(to.PolyStart);
-                CompactRainPathResult candidateResult;
-                string candidateDetail;
-                bool candidateOk = query.TryFindPath(TriangleCentroid(dataset, fromPoly),
-                    TriangleCentroid(dataset, toPoly), capabilities, 4096, 1000000,
-                    out candidateResult, out candidateDetail);
-                if (!candidateOk || candidateResult == null || candidateResult.ActionCount <= 0) continue;
-                offMeshOk = true;
-                offMeshDetail = "link=" + i + " " + candidateDetail;
-                offMeshResult = candidateResult;
-            }
-            Console.WriteLine("offmesh_path ok={0} detail={1} portals={2} waypoints={3} actions={4}",
-                offMeshOk, offMeshDetail, offMeshResult == null ? 0 : offMeshResult.PortalPath.Length,
-                offMeshResult == null ? 0 : offMeshResult.Waypoints.Length,
-                offMeshResult == null ? 0 : offMeshResult.ActionCount);
+            bool noBoundaryLinks = firstOk && first != null && first.ActionCount == 0;
+            Console.WriteLine("boundary_links_disabled={0} actions={1}",
+                noBoundaryLinks, first == null ? 0 : first.ActionCount);
             Console.WriteLine("path_workspace_bytes={0}", query.WorkspaceBytes);
-            return deterministic && offMeshOk ? 0 : 4;
+            return deterministic && noBoundaryLinks ? 0 : 4;
         }
 
         private static CompactRainPoint TriangleCentroid(CompactRainNavDataset dataset, int polyIndex)
@@ -297,12 +284,27 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 int goalAt = (componentPolys.Count / 2 + corpus * 15401) % componentPolys.Count;
                 CompactRainPoint start = TriangleCentroid(dataset, componentPolys[startAt]);
                 CompactRainPoint goal = TriangleCentroid(dataset, componentPolys[goalAt]);
-                for (int seek = 0; seek < 64; seek++)
+                string pointDetail;
+                for (int seek = 0; seek < 2048 &&
+                    !query.TryValidateWalkSegment(start, start, out pointDetail); seek++)
+                {
+                    startAt = (startAt + 997) % componentPolys.Count;
+                    start = TriangleCentroid(dataset, componentPolys[startAt]);
+                }
+                bool goalSafe = false;
+                for (int seek = 0; seek < 2048; seek++)
                 {
                     float distance = CompactRainPoint.DistanceXZ(start, goal);
-                    if (distance >= 18f && distance <= 180f) break;
+                    goalSafe = distance >= 18f && distance <= 180f &&
+                        query.TryValidateWalkSegment(goal, goal, out pointDetail);
+                    if (goalSafe) break;
                     goalAt = (goalAt + 997) % componentPolys.Count;
                     goal = TriangleCentroid(dataset, componentPolys[goalAt]);
+                }
+                if (!goalSafe)
+                {
+                    unreachable++;
+                    continue;
                 }
 
                 CompactRainPathResult result;
@@ -500,11 +502,11 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             float[] vertices =
             {
                 0f, 0f, 0f,
-                3f, 0f, 0f,
-                3f, 0f, 1f,
-                1f, 0f, 1f,
-                1f, 0f, 3f,
-                0f, 0f, 3f
+                5f, 0f, 0f,
+                5f, 0f, 2.4f,
+                2.4f, 0f, 2.4f,
+                2.4f, 0f, 5f,
+                0f, 0f, 5f
             };
             int[] triangles =
             {
@@ -514,10 +516,10 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 3, 4, 5
             };
             CompactRainNavDataset dataset = CreateSyntheticDataset(vertices, triangles,
-                new CompactRainPoint(0.5f, 0f, 0.5f), 1.5f, 1.5f, 3f, 3f);
+                new CompactRainPoint(1.2f, 0f, 1.2f), 2.5f, 2.5f, 5f, 5f);
             CompactRainQuery query = new CompactRainQuery(dataset);
-            CompactRainPoint start = new CompactRainPoint(0.5f, 0f, 2.5f);
-            CompactRainPoint goal = new CompactRainPoint(2.5f, 0f, 0.5f);
+            CompactRainPoint start = new CompactRainPoint(1.2f, 0f, 4f);
+            CompactRainPoint goal = new CompactRainPoint(4f, 0f, 1.2f);
             string directDetail;
             bool directUnsafe = !query.TryValidateWalkSegment(start, goal, out directDetail);
             CompactRainPathResult result;
@@ -538,13 +540,13 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             float[] vertices =
             {
                 0f, 0f, 0f,
-                1f, 0f, 0f,
-                1f, 0f, 1f,
-                0f, 0f, 1f,
                 2f, 0f, 0f,
+                2f, 0f, 2f,
+                0f, 0f, 2f,
                 3f, 0f, 0f,
-                3f, 0f, 1f,
-                2f, 0f, 1f
+                5f, 0f, 0f,
+                5f, 0f, 2f,
+                3f, 0f, 2f
             };
             int[] triangles =
             {
@@ -554,10 +556,10 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 4, 6, 7
             };
             CompactRainNavDataset dataset = CreateSyntheticDataset(vertices, triangles,
-                new CompactRainPoint(0.5f, 0f, 0.5f), 1.5f, 0.5f, 3f, 1f);
+                new CompactRainPoint(1f, 0f, 1f), 2.5f, 1f, 5f, 2f);
             CompactRainQuery query = new CompactRainQuery(dataset);
-            CompactRainPoint start = new CompactRainPoint(0.5f, 0f, 0.5f);
-            CompactRainPoint goal = new CompactRainPoint(2.5f, 0f, 0.5f);
+            CompactRainPoint start = new CompactRainPoint(1f, 0f, 1f);
+            CompactRainPoint goal = new CompactRainPoint(4f, 0f, 1f);
             string directDetail;
             bool directUnsafe = !query.TryValidateWalkSegment(start, goal, out directDetail);
             CompactRainPathResult result;
@@ -596,15 +598,11 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             bool directUnsafe = !query.TryValidateWalkSegment(start, goal, out directDetail);
             CompactRainPathResult result;
             string pathDetail;
-            bool found = query.TryFindPath(start, goal, new CompactRainPathCapabilities(),
+            bool rejected = !query.TryFindPath(start, goal, new CompactRainPathCapabilities(),
                 128, 4096, out result, out pathDetail);
-            int segments;
-            string segmentDetail;
-            bool safe = found && result != null && result.Waypoints.Length >= 3 &&
-                ValidateWalkSegments(query, result, out segments, out segmentDetail);
-            Console.WriteLine("synthetic_short_corner direct_unsafe={0} repaired={1} waypoints={2} detail={3}",
-                directUnsafe, safe, result == null ? 0 : result.Waypoints.Length, pathDetail);
-            return directUnsafe && safe;
+            Console.WriteLine("synthetic_short_corner direct_unsafe={0} narrow_rejected={1} detail={2}",
+                directUnsafe, rejected, pathDetail);
+            return directUnsafe && rejected;
         }
 
         private static bool RunSyntheticCliffMarginRegression()
@@ -626,15 +624,11 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             bool directUnsafe = !query.TryValidateWalkSegment(start, goal, out directDetail);
             CompactRainPathResult result;
             string pathDetail;
-            bool found = query.TryFindPath(start, goal, new CompactRainPathCapabilities(),
+            bool rejected = !query.TryFindPath(start, goal, new CompactRainPathCapabilities(),
                 128, 4096, out result, out pathDetail);
-            int segments;
-            string segmentDetail;
-            bool centered = found && result != null && result.Waypoints.Length >= 3 &&
-                ValidateWalkSegments(query, result, out segments, out segmentDetail);
-            Console.WriteLine("synthetic_cliff_margin direct_unsafe={0} centered={1} waypoints={2} detail={3}",
-                directUnsafe, centered, result == null ? 0 : result.Waypoints.Length, pathDetail);
-            return directUnsafe && centered;
+            Console.WriteLine("synthetic_cliff_margin direct_unsafe={0} edge_goal_rejected={1} detail={2}",
+                directUnsafe, rejected, pathDetail);
+            return directUnsafe && rejected;
         }
 
         private static bool RunSyntheticTopologyRegression()
@@ -711,7 +705,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             surface.PositionX = x;
             surface.PositionZ = z;
             surface.Component = 0;
-            surface.Clearance = 0.50f;
+            surface.Clearance = 2.0f;
             return surface;
         }
 
@@ -744,7 +738,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             surface.PositionY = surfacePoint.Y;
             surface.PositionZ = surfacePoint.Z;
             surface.Component = 0;
-            surface.Clearance = 0.50f;
+            surface.Clearance = 2.0f;
             return new CompactRainNavDataset(header, vertices,
                 new CompactRainNavPolyRecord[] { poly },
                 new CompactRainNavPortalRecord[0], new int[0], triangles,
@@ -788,6 +782,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             CompactRainQuery query = new CompactRainQuery(dataset);
             CompactRainPathCapabilities capabilities = new CompactRainPathCapabilities(true,
                 2.4f, 8.0f, 8.5f, 8.0f);
+            capabilities.AllowJump = false;
             int[] componentSizes = new int[dataset.ComponentCount];
             for (int i = 0; i < dataset.PolyCount; i++) componentSizes[dataset.GetPoly(i).Component]++;
             int component = 0;
@@ -802,11 +797,18 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 if (dataset.GetPoly(i).Component != component) continue;
                 if (startPoly < 0)
                 {
+                    string safetyDetail;
+                    CompactRainPoint candidateStart = TriangleCentroid(dataset, i);
+                    if (!query.TryValidateWalkSegment(candidateStart, candidateStart,
+                        out safetyDetail)) continue;
                     startPoly = i;
-                    start = TriangleCentroid(dataset, i);
+                    start = candidateStart;
                     continue;
                 }
                 CompactRainPoint candidate = TriangleCentroid(dataset, i);
+                string candidateSafety;
+                if (!query.TryValidateWalkSegment(candidate, candidate,
+                    out candidateSafety)) continue;
                 float distance = CompactRainPoint.DistanceXZ(start, candidate);
                 if (distance < 80f || distance > 180f) continue;
                 float score = Math.Abs(distance - 120f);

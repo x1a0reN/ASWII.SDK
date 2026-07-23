@@ -33,6 +33,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static float _nextWeaponSwitchAt;
         private static float _nextScopeAt;
         private static float _nextCombatTraceAt;
+        private static float _nextEdgeGuardTraceAt;
         private static Vector3 _lastPathProgressPosition;
         private static float _lastPathProgressAt;
         private static float _lastActualPathProgressAt;
@@ -117,6 +118,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _nextWeaponSwitchAt = 0f;
             _nextScopeAt = 0f;
             _nextCombatTraceAt = 0f;
+            _nextEdgeGuardTraceAt = 0f;
             _lastPathProgressPosition = Vector3.zero;
             _lastPathProgressAt = 0f;
             _lastActualPathProgressAt = 0f;
@@ -431,7 +433,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 _wallRecoveryDirection.sqrMagnitude > 0.01f)
             {
                 LastPath = "wall_clearance#" + _wallRecoveryCount;
-                return _wallRecoveryDirection;
+                return GuardFollowerMovement(player, _wallRecoveryDirection, distance, false);
             }
             if (jump && distance <= 4.3f &&
                 Time.time - _lastPathProgressAt >= 0.90f &&
@@ -461,15 +463,17 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     _wallRecoveryDirection = Vector3.zero;
                     _wallRecoveryUntil = 0f;
                     LastPath = "path " + (_pathIndex + 1) + "/" + Path.Count + " probe_bypass";
-                    return direction;
+                    return GuardFollowerMovement(player, direction, distance, false);
                 }
-                if (Time.time < _obstacleJumpForwardUntil) return direction;
+                if (Time.time < _obstacleJumpForwardUntil)
+                    return GuardFollowerMovement(player, direction, distance, false);
                 if (Time.time - _lastPathProgressAt < 0.90f)
                 {
                     LastPath = "wall_walk_grace " + (_pathIndex + 1) + "/" + Path.Count;
-                    return direction;
+                    return GuardFollowerMovement(player, direction, distance, false);
                 }
-                if (Time.time >= _nextJumpAt && AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
+                if (CreateCapabilities(player).AllowJump &&
+                    Time.time >= _nextJumpAt && AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
                     playerPosition, direction, player.transform.root))
                 {
                     AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
@@ -477,7 +481,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     _nextJumpAt = Time.time + 0.5f;
                     _obstacleJumpForwardUntil = Time.time + 0.34f;
                     LastPath = "wall_jump_obstacle";
-                    return direction;
+                    return GuardFollowerMovement(player, direction, distance, false);
                 }
                 if (Time.time < _nextWallRecoveryAt) return Vector3.zero;
 
@@ -493,7 +497,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     LastPath = "wall_clearance#" + _wallRecoveryCount;
                     FileLogger.Log("AUTO-BATTLE][ROUTE", "provider=survival_follow recovery=rain_clearance corner=" +
                         (_pathIndex + 1) + "/" + Path.Count + " " + recoveryDetail);
-                    return recoveryDirection;
+                    return GuardFollowerMovement(player, recoveryDirection, distance, false);
                 }
 
                 string wallDetail = AutoBattleRoutePlanner.DescribeRouteSegment(
@@ -550,14 +554,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     _recoverySideSign = -_recoverySideSign;
                     _recoverySideUntil = Time.time + 0.7f;
                 }
-                if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
+                if (CreateCapabilities(player).AllowJump &&
+                    AutoBattleRoutePlanner.ShouldJumpForwardObstacle(
                     playerPosition, forward, player.transform.root))
                 {
                     AutoBattleInput.PressAction(ActionType.kActionJump, 0.11f);
                     AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
                     _obstacleJumpForwardUntil = Time.time + 0.34f;
                     LastPath = "stuck_jump_obstacle#" + _stuckRecoveryCount;
-                    return forward;
+                    return GuardFollowerMovement(player, forward, distance, false);
                 }
 
                 Vector3 recoveryDirection;
@@ -569,7 +574,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     _wallRecoveryUntil = Time.time + 0.55f;
                     _nextWallRecoveryAt = _wallRecoveryUntil;
                     LastPath = "stuck_clearance#" + _stuckRecoveryCount;
-                    return recoveryDirection;
+                    return GuardFollowerMovement(player, recoveryDirection, distance, false);
                 }
 
                 AutoBattleRoutePlanner.DumpFollowerPathFailure(playerPosition,
@@ -584,7 +589,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
             LastPath = (_pathSearchPending ? "path_pending_follow " : "path ") +
                 (_pathIndex + 1) + "/" + Path.Count + (jump ? " jump" : string.Empty);
-            return ApplyLocalAvoidance(player, direction);
+            return GuardFollowerMovement(player, direction, distance, true);
         }
 
         public static Vector3 NavigatePursuit(Character player, Vector3 liveTargetPosition)
@@ -620,6 +625,36 @@ namespace ASWDEBUG.Cheats.AutoBattle
             Vector3 result = desired + correction * 1.25f;
             result.y = 0f;
             return result.sqrMagnitude < 0.01f ? desired : result.normalized;
+        }
+
+        private static Vector3 GuardFollowerMovement(Character player, Vector3 desired,
+            float lookAheadDistance, bool applyLocalAvoidance)
+        {
+            if (player == null || player.transform == null ||
+                desired.sqrMagnitude < 0.01f) return Vector3.zero;
+            if (applyLocalAvoidance) desired = ApplyLocalAvoidance(player, desired);
+            Vector3 safeDirection;
+            string detail;
+            if (AutoBattleRoutePlanner.TryKeepFollowerDirectionSafe(
+                player.transform.position, desired, lookAheadDistance,
+                player.transform.root,
+                out safeDirection, out detail))
+                return safeDirection;
+
+            AutoBattleRoutePlanner.DumpFollowerPathFailure(player.transform.position,
+                Path, JumpFlags, _pathIndex, player.transform.root,
+                "edge_guard " + detail);
+            ClearPath();
+            _nextRepath = Time.time + 0.18f;
+            LastPath = "edge_guard_repath";
+            if (Time.time >= _nextEdgeGuardTraceAt)
+            {
+                _nextEdgeGuardTraceAt = Time.time + 1.5f;
+                FileLogger.Log("AUTO-BATTLE][ROUTE",
+                    "provider=survival_follow result=stopped reason=edge_guard " +
+                    detail);
+            }
+            return Vector3.zero;
         }
 
         private static Vector3 TryPendingLocalAdvance(Character player, Vector3 destination)
@@ -1064,7 +1099,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             AutoBattleRouteCapabilities capabilities = new AutoBattleRouteCapabilities
             {
-                RequireRainPath = true
+                RequireRainPath = true,
+                AllowJump = false
             };
             try
             {

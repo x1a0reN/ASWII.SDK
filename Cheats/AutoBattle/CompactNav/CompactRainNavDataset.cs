@@ -16,6 +16,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private readonly CompactRainNavBoundaryRecord[] _boundaries;
         private readonly CompactRainNavSurfaceRecord[] _surfaces;
         private readonly CompactRainSpatialIndex _spatialIndex;
+        private readonly CompactRainBoundaryIndex _boundaryIndex;
         private readonly long _residentBytes;
 
         internal CompactRainNavDataset(CompactRainNavHeader header, float[] vertices,
@@ -40,7 +41,9 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _boundaries = boundaries;
             _surfaces = surfaces;
             _spatialIndex = new CompactRainSpatialIndex(this);
-            _residentBytes = EstimateResidentBytes() + _spatialIndex.EstimatedBytes;
+            _boundaryIndex = new CompactRainBoundaryIndex(this);
+            _residentBytes = EstimateResidentBytes() + _spatialIndex.EstimatedBytes +
+                _boundaryIndex.EstimatedBytes;
         }
 
         internal CompactRainNavHeader Header { get { return _header; } }
@@ -54,6 +57,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         internal int SafeSpawnCount { get { return _header.SafeSpawnCount; } }
         internal long ResidentBytes { get { return _residentBytes; } }
         internal CompactRainSpatialIndex SpatialIndex { get { return _spatialIndex; } }
+        internal CompactRainBoundaryIndex BoundaryIndex { get { return _boundaryIndex; } }
 
         internal CompactRainNavPolyRecord GetPoly(int index)
         {

@@ -165,6 +165,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static readonly float[] FailedCliffCandidateUntil = new float[12];
         private static readonly float[] CliffProbeDistances = { 0.9f, 1.6f, 2.4f, 3.3f, 4.2f };
         private static readonly float[] CliffProbeSideOffsets = { -0.45f, 0f, 0.45f };
+        private const float CliffApproachStandOff = 1.15f;
         private static readonly List<RuntimeRainBoundarySample> CliffBoundaryCandidates =
             new List<RuntimeRainBoundarySample>(96);
         private static int _failedCandidateCursor;
@@ -3552,7 +3553,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 direction.Normalize();
 
                 Vector3 approach;
-                if (!TryProjectStaticGround(sample.Position - direction * 0.72f,
+                if (!TryProjectStaticGround(sample.Position - direction * CliffApproachStandOff,
                     sample.Position.y, 1.4f, player.transform.root, out approach) ||
                     IsFailedCliffCandidate(approach))
                 {
@@ -3648,7 +3649,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (outward.sqrMagnitude < 0.01f) return false;
             outward.Normalize();
 
-            Vector3 lip = approach + outward * 0.72f;
+            Vector3 lip = approach + outward * CliffApproachStandOff;
             if (!AutoBattleRoutePlanner.CanFollowRouteSegment(approach,
                 lip - outward * 0.08f, ignoreRoot))
             {

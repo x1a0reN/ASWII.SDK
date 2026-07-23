@@ -10,13 +10,14 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private readonly CompactRainNavDataset _dataset;
         private readonly int[] _projectionStack = new int[ProjectionStackSize];
         private readonly float _sampleSpacing;
-        private readonly float _sideClearance;
-        private readonly float _endpointTaperDistance;
+        private readonly float _minimumBoundaryClearance;
+        private readonly float _preferredBoundaryClearance;
+        private readonly float _recoveryDistance;
         private readonly float _endpointHorizontalTolerance;
         private readonly float _endpointVerticalTolerance;
         private readonly float _sampleHorizontalTolerance;
         private readonly float _sampleVerticalTolerance;
-        private readonly float _sideVerticalTolerance;
+        private readonly float _boundaryVerticalTolerance;
 
         internal CompactRainCorridorValidator(CompactRainNavDataset dataset)
         {
@@ -24,13 +25,14 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _dataset = dataset;
             CompactRainNavHeader header = dataset.Header;
             _sampleSpacing = Clamp(header.CellSize, 0.08f, 0.12f);
-            _sideClearance = Clamp(header.AgentRadius * 0.40f, 0.16f, 0.22f);
-            _endpointTaperDistance = Math.Max(0.65f, header.AgentRadius + _sideClearance);
+            _minimumBoundaryClearance = Clamp(header.AgentRadius + 0.35f, 0.80f, 1.0f);
+            _preferredBoundaryClearance = _minimumBoundaryClearance + 0.55f;
+            _recoveryDistance = Math.Max(1.20f, _minimumBoundaryClearance * 1.5f);
             _endpointHorizontalTolerance = Clamp(header.AgentRadius, 0.30f, 0.55f);
             _endpointVerticalTolerance = Math.Max(2.25f, header.WalkableHeight + 0.35f);
             _sampleHorizontalTolerance = Clamp(header.CellSize * 0.65f, 0.04f, 0.08f);
             _sampleVerticalTolerance = Math.Max(1.0f, header.StepHeight + 0.25f);
-            _sideVerticalTolerance = Math.Max(0.55f, header.StepHeight * 0.80f);
+            _boundaryVerticalTolerance = Math.Max(0.90f, header.StepHeight + 0.15f);
         }
 
         internal long WorkspaceBytes
@@ -40,7 +42,17 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         internal float SideClearance
         {
-            get { return _sideClearance; }
+            get { return _minimumBoundaryClearance; }
+        }
+
+        internal float MinimumBoundaryClearance
+        {
+            get { return _minimumBoundaryClearance; }
+        }
+
+        internal float PreferredBoundaryClearance
+        {
+            get { return _preferredBoundaryClearance; }
         }
 
         internal float SampleSpacing
@@ -50,7 +62,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         internal float MinimumSideClearanceLength
         {
-            get { return _endpointTaperDistance * 2f; }
+            get { return _recoveryDistance; }
         }
 
         internal bool TryProjectEndpoint(CompactRainPoint point, out CompactRainProjection projection)
@@ -61,6 +73,12 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         internal bool TryValidateWalkSegment(CompactRainPoint from, CompactRainPoint to,
             out string detail)
+        {
+            return TryValidateWalkSegment(from, to, false, out detail);
+        }
+
+        internal bool TryValidateWalkSegment(CompactRainPoint from, CompactRainPoint to,
+            bool allowUnsafeStart, out string detail)
         {
             CompactRainProjection startProjection;
             if (!TryProjectEndpoint(from, out startProjection))
@@ -76,11 +94,17 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             CompactRainPoint start = startProjection.Point;
             CompactRainPoint end = endProjection.Point;
             float distance = CompactRainPoint.DistanceXZ(start, end);
+            float startClearance = MeasureProjectionClearance(startProjection);
             if (distance <= 0.02f)
             {
                 if (Math.Abs(start.Y - end.Y) > _sampleVerticalTolerance)
                     return Fail("vertical_endpoint", out detail);
-                detail = "safe samples=1 clearanceMax=" + _sideClearance.ToString("0.00");
+                if (!allowUnsafeStart &&
+                    (startClearance + 0.015f < _minimumBoundaryClearance ||
+                    !IsProjectionSafe(startProjection, _minimumBoundaryClearance)))
+                    return Fail("point_clearance=" + startClearance.ToString("0.000") +
+                        "/" + _minimumBoundaryClearance.ToString("0.000"), out detail);
+                detail = "safe";
                 return true;
             }
 
@@ -89,11 +113,6 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             if (sampleCount > MaximumSamples)
                 return Fail("sample_limit=" + sampleCount, out detail);
 
-            float directionX = (end.X - start.X) / distance;
-            float directionZ = (end.Z - start.Z) / distance;
-            float sideX = -directionZ;
-            float sideZ = directionX;
-            bool validateSideClearance = distance > _endpointTaperDistance * 2f;
             float previousHeight = start.Y;
             for (int i = 0; i <= sampleCount; i++)
             {
@@ -109,70 +128,88 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     _dataset.Header.StepHeight + 0.25f)
                     return Fail("height_step=" + i + "/" + sampleCount, out detail);
                 previousHeight = center.Point.Y;
-                if (!validateSideClearance) continue;
-
                 float travelled = distance * t;
-                float remaining = distance - travelled;
-                float taper = Math.Min(1f, Math.Min(travelled, remaining) /
-                    _endpointTaperDistance);
-                float localClearance = Math.Min(_sideClearance,
-                    _dataset.GetSurface(center.PolyIndex).Clearance * 0.50f);
-                float clearance = localClearance * taper;
-                if (clearance < 0.04f) continue;
-
-                CompactRainPoint left = new CompactRainPoint(
-                    expected.X + sideX * clearance, center.Point.Y,
-                    expected.Z + sideZ * clearance);
-                CompactRainPoint right = new CompactRainPoint(
-                    expected.X - sideX * clearance, center.Point.Y,
-                    expected.Z - sideZ * clearance);
-                bool leftSafe = TryValidateSide(left, center.Point.Y, component);
-                bool rightSafe = TryValidateSide(right, center.Point.Y, component);
-                if (leftSafe && rightSafe) continue;
-                float leftClearance = leftSafe ? clearance : MeasureSideClearance(expected,
-                    center.Point.Y, sideX, sideZ, clearance, component);
-                float rightClearance = rightSafe ? clearance : MeasureSideClearance(expected,
-                    center.Point.Y, -sideX, -sideZ, clearance, component);
-                float maximumClearance = Math.Max(leftClearance, rightClearance);
-                float minimumClearance = Math.Min(leftClearance, rightClearance);
-                if (minimumClearance < 0.04f || maximumClearance <= 0f ||
-                    minimumClearance / maximumClearance < 0.70f)
-                    return Fail("side_balance=" + i + "/" + sampleCount +
-                        " left=" + leftClearance.ToString("0.000") +
-                        " right=" + rightClearance.ToString("0.000") +
-                        " requested=" + clearance.ToString("0.000"), out detail);
+                float requiredClearance = _minimumBoundaryClearance;
+                if (allowUnsafeStart && i < sampleCount && travelled < _recoveryDistance)
+                    requiredClearance *= travelled / _recoveryDistance;
+                float observedClearance = MeasureProjectionClearance(center);
+                if (requiredClearance <= 0.04f) continue;
+                if (observedClearance + 0.015f < requiredClearance ||
+                    !IsProjectionSafe(center, requiredClearance))
+                    return Fail("boundary_clearance=" + i + "/" + sampleCount +
+                        " observed=" + observedClearance.ToString("0.000") +
+                        " required=" + requiredClearance.ToString("0.000") +
+                        " recovery=" + (allowUnsafeStart ? "1" : "0"), out detail);
             }
 
-            detail = "safe samples=" + (sampleCount + 1) + " clearanceMax=" +
-                _sideClearance.ToString("0.00") + " sideMinLength=" +
-                MinimumSideClearanceLength.ToString("0.00");
+            detail = "safe";
             return true;
         }
 
-        private bool TryValidateSide(CompactRainPoint point, float centerHeight, int component)
+        internal bool TryMeasurePointClearance(CompactRainPoint point,
+            out CompactRainProjection projection, out float clearance)
         {
-            CompactRainProjection projection;
-            if (!_dataset.SpatialIndex.TryProject(point, _sampleHorizontalTolerance,
-                _sampleVerticalTolerance, _projectionStack, out projection) || !projection.ExactXZ)
+            clearance = 0f;
+            if (!TryProjectEndpoint(point, out projection) || !projection.ExactXZ)
                 return false;
-            return _dataset.GetPoly(projection.PolyIndex).Component == component &&
-                Math.Abs(projection.Point.Y - centerHeight) <= _sideVerticalTolerance;
+            clearance = MeasureProjectionClearance(projection);
+            return true;
         }
 
-        private float MeasureSideClearance(CompactRainPoint center, float centerHeight,
-            float sideX, float sideZ, float maximum, int component)
+        internal bool IsPointSafe(CompactRainPoint point, out float clearance,
+            out string detail)
         {
-            float minimum = 0f;
-            float maximumCandidate = maximum;
-            for (int i = 0; i < 7; i++)
+            CompactRainProjection projection;
+            if (!TryMeasurePointClearance(point, out projection, out clearance))
+                return Fail("point_projection", out detail);
+            if (clearance + 0.015f < _minimumBoundaryClearance ||
+                !IsProjectionSafe(projection, _minimumBoundaryClearance))
             {
-                float candidate = (minimum + maximumCandidate) * 0.5f;
-                CompactRainPoint point = new CompactRainPoint(center.X + sideX * candidate,
-                    centerHeight, center.Z + sideZ * candidate);
-                if (TryValidateSide(point, centerHeight, component)) minimum = candidate;
-                else maximumCandidate = candidate;
+                return Fail("point_clearance=" + clearance.ToString("0.000") +
+                    "/" + _minimumBoundaryClearance.ToString("0.000"), out detail);
             }
-            return minimum;
+            detail = "safe point_clearance=" + clearance.ToString("0.000") +
+                " required=" + _minimumBoundaryClearance.ToString("0.000");
+            return true;
+        }
+
+        internal float MeasureBoundaryClearance(CompactRainPoint point, int component)
+        {
+            return _dataset.BoundaryIndex.MeasureClearance(point, component,
+                _preferredBoundaryClearance, _boundaryVerticalTolerance);
+        }
+
+        private float MeasureProjectionClearance(CompactRainProjection projection)
+        {
+            int component = _dataset.GetPoly(projection.PolyIndex).Component;
+            if (_dataset.BoundaryIndex.HasBoundaries)
+                return MeasureBoundaryClearance(projection.Point, component);
+            return Math.Min(_preferredBoundaryClearance,
+                _dataset.GetSurface(projection.PolyIndex).Clearance);
+        }
+
+        private bool IsProjectionSafe(CompactRainProjection projection, float clearance)
+        {
+            if (_dataset.BoundaryIndex.HasBoundaries) return true;
+            if (clearance <= 0.04f) return true;
+            int component = _dataset.GetPoly(projection.PolyIndex).Component;
+            for (int i = 0; i < 8; i++)
+            {
+                double angle = i * Math.PI * 0.25;
+                CompactRainPoint sample = new CompactRainPoint(
+                    projection.Point.X + (float)Math.Cos(angle) * clearance,
+                    projection.Point.Y,
+                    projection.Point.Z + (float)Math.Sin(angle) * clearance);
+                CompactRainProjection radial;
+                if (!_dataset.SpatialIndex.TryProject(sample, _sampleHorizontalTolerance,
+                    _sampleVerticalTolerance, _projectionStack, out radial) ||
+                    !radial.ExactXZ ||
+                    _dataset.GetPoly(radial.PolyIndex).Component != component ||
+                    Math.Abs(radial.Point.Y - projection.Point.Y) >
+                    _boundaryVerticalTolerance)
+                    return false;
+            }
+            return true;
         }
 
         private static CompactRainPoint Lerp(CompactRainPoint from, CompactRainPoint to, float t)

@@ -13,7 +13,6 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private const string SupportedMap = "level33";
         private const int ExpansionsPerSlice = 4096;
         private const double MillisecondsPerSlice = 8.0;
-        private const float BoundaryBucketSize = 4.5f;
 
         private static CompactRainNavDataset _dataset;
         private static CompactRainNavLoadResult _loadResult;
@@ -30,9 +29,10 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private static int _queryCancelCount;
         private static long _lastManagedBytes;
         private static long _lastPrivateBytes;
-        private static Dictionary<long, List<int>> _boundaryBuckets;
         private static int[] _boundarySelectionIndices = new int[0];
         private static float[] _boundarySelectionScores = new float[0];
+        private static readonly List<int> BoundaryCandidateIndices =
+            new List<int>(256);
         private static readonly List<RuntimeRainBoundarySample> BoundarySamplePool =
             new List<RuntimeRainBoundarySample>(96);
 
@@ -60,7 +60,6 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _failed = false;
             if (_dataset != null && _query != null)
             {
-                EnsureBoundaryIndex();
                 _detail = "ready source=process_resident scene=" + _sceneEpoch;
                 FileLogger.Log("AUTO-BATTLE][ASWNAV", "scene_begin map=" + normalized +
                     " scene=" + _sceneEpoch + " source=process_resident resident=" + _dataset.ResidentBytes +
@@ -92,7 +91,6 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _dataset = loaded;
             _loadResult = result;
             _query = new CompactRainQuery(_dataset);
-            EnsureBoundaryIndex();
             _detail = "ready source=disk sha=" + result.FileSha256 + " loadMs=" +
                 result.ElapsedMilliseconds + " resident=" + _dataset.ResidentBytes +
                 " workspace=" + _query.WorkspaceBytes;
@@ -148,6 +146,36 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             return _query.TryValidateWalkSegment(ToPoint(from), ToPoint(to), out detail);
         }
 
+        internal static bool IsSafeWalkSegment(Vector3 from, Vector3 to,
+            bool allowUnsafeStart, out string detail)
+        {
+            detail = "aswnav=not_ready";
+            if (!IsReady || _query == null) return false;
+            return _query.TryValidateWalkSegment(ToPoint(from), ToPoint(to),
+                allowUnsafeStart, out detail);
+        }
+
+        internal static bool TryGetSafetyClearance(Vector3 point, out float clearance,
+            out float required, out string detail)
+        {
+            clearance = 0f;
+            required = 0f;
+            detail = "aswnav=not_ready";
+            if (!IsReady || _query == null) return false;
+            return _query.TryMeasurePointClearance(ToPoint(point), out clearance,
+                out required, out detail);
+        }
+
+        internal static bool TryGetSafetyClearance(Vector3 point, out float clearance,
+            out float required)
+        {
+            clearance = 0f;
+            required = 0f;
+            if (!IsReady || _query == null) return false;
+            return _query.TryMeasurePointClearance(ToPoint(point), out clearance,
+                out required);
+        }
+
         internal static int PolyCount
         {
             get { return _dataset == null ? 0 : _dataset.PolyCount; }
@@ -198,46 +226,30 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             output.Clear();
             if (!IsReady || _dataset == null || maxDistance <= 0f || maxCount <= 0)
                 return 0;
-            EnsureBoundaryIndex();
-            if (_boundaryBuckets == null || _boundaryBuckets.Count == 0) return 0;
-
             EnsureBoundarySelectionCapacity(maxCount);
             int selectedCount = 0;
-            int bx = Mathf.FloorToInt(from.x / BoundaryBucketSize);
-            int bz = Mathf.FloorToInt(from.z / BoundaryBucketSize);
-            int radius = Mathf.Clamp(Mathf.CeilToInt(maxDistance / BoundaryBucketSize), 1, 18);
-            float maximumDistanceSquared = maxDistance * maxDistance;
-            for (int dz = -radius; dz <= radius; dz++)
+            _dataset.BoundaryIndex.CollectNearby(ToPoint(from), -1, maxDistance,
+                2.25f, BoundaryCandidateIndices);
+            for (int candidate = 0; candidate < BoundaryCandidateIndices.Count; candidate++)
             {
-                for (int dx = -radius; dx <= radius; dx++)
+                int boundaryIndex = BoundaryCandidateIndices[candidate];
+                CompactRainNavBoundaryRecord boundary = _dataset.GetBoundary(boundaryIndex);
+                if (boundary.Width < 0.35f) continue;
+                float offsetX = from.x - boundary.PositionX;
+                float offsetZ = from.z - boundary.PositionZ;
+                float score = Mathf.Sqrt(offsetX * offsetX + offsetZ * offsetZ) +
+                    Mathf.Abs(boundary.PositionY - from.y) * 1.8f;
+                int insertAt = FindBoundaryInsertIndex(score, selectedCount);
+                if (insertAt >= maxCount) continue;
+                int shiftEnd = Mathf.Min(selectedCount, maxCount - 1);
+                for (int shift = shiftEnd; shift > insertAt; shift--)
                 {
-                    List<int> candidates;
-                    if (!_boundaryBuckets.TryGetValue(BoundarySpatialKey(bx + dx, bz + dz),
-                        out candidates)) continue;
-                    for (int i = 0; i < candidates.Count; i++)
-                    {
-                        int boundaryIndex = candidates[i];
-                        CompactRainNavBoundaryRecord boundary = _dataset.GetBoundary(boundaryIndex);
-                        if (boundary.Width < 0.35f) continue;
-                        float offsetX = from.x - boundary.PositionX;
-                        float offsetZ = from.z - boundary.PositionZ;
-                        float horizontalSquared = offsetX * offsetX + offsetZ * offsetZ;
-                        if (horizontalSquared > maximumDistanceSquared) continue;
-                        float score = Mathf.Sqrt(horizontalSquared) +
-                            Mathf.Abs(boundary.PositionY - from.y) * 1.8f;
-                        int insertAt = FindBoundaryInsertIndex(score, selectedCount);
-                        if (insertAt >= maxCount) continue;
-                        int shiftEnd = Mathf.Min(selectedCount, maxCount - 1);
-                        for (int shift = shiftEnd; shift > insertAt; shift--)
-                        {
-                            _boundarySelectionIndices[shift] = _boundarySelectionIndices[shift - 1];
-                            _boundarySelectionScores[shift] = _boundarySelectionScores[shift - 1];
-                        }
-                        _boundarySelectionIndices[insertAt] = boundaryIndex;
-                        _boundarySelectionScores[insertAt] = score;
-                        if (selectedCount < maxCount) selectedCount++;
-                    }
+                    _boundarySelectionIndices[shift] = _boundarySelectionIndices[shift - 1];
+                    _boundarySelectionScores[shift] = _boundarySelectionScores[shift - 1];
                 }
+                _boundarySelectionIndices[insertAt] = boundaryIndex;
+                _boundarySelectionScores[insertAt] = score;
+                if (selectedCount < maxCount) selectedCount++;
             }
 
             while (BoundarySamplePool.Count < selectedCount)
@@ -283,6 +295,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 CompactRainPathCapabilities compactCapabilities = new CompactRainPathCapabilities(
                     capabilities.AllowJump, capabilities.JumpHeight, capabilities.JumpVelocity,
                     capabilities.RunSpeed, 8f);
+                compactCapabilities.AllowUnsafeStart = true;
                 int queryEpoch = _query.Begin(ToPoint(from), ToPoint(to), compactCapabilities,
                     CompactRainQuery.DefaultMaximumHorizontalProjection,
                     CompactRainQuery.DefaultMaximumVerticalProjection);
@@ -402,32 +415,6 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             return Path.Combine(directory, "level33.aswnav");
         }
 
-        private static void EnsureBoundaryIndex()
-        {
-            if (_dataset == null || _boundaryBuckets != null) return;
-            Stopwatch timer = Stopwatch.StartNew();
-            Dictionary<long, List<int>> buckets = new Dictionary<long, List<int>>();
-            for (int i = 0; i < _dataset.BoundaryCount; i++)
-            {
-                CompactRainNavBoundaryRecord boundary = _dataset.GetBoundary(i);
-                int x = Mathf.FloorToInt(boundary.PositionX / BoundaryBucketSize);
-                int z = Mathf.FloorToInt(boundary.PositionZ / BoundaryBucketSize);
-                long key = BoundarySpatialKey(x, z);
-                List<int> indices;
-                if (!buckets.TryGetValue(key, out indices))
-                {
-                    indices = new List<int>(8);
-                    buckets.Add(key, indices);
-                }
-                indices.Add(i);
-            }
-            _boundaryBuckets = buckets;
-            timer.Stop();
-            FileLogger.Log("AUTO-BATTLE][ASWNAV", "boundary_index_ready boundaries=" +
-                _dataset.BoundaryCount + " buckets=" + buckets.Count + " ms=" +
-                timer.ElapsedMilliseconds);
-        }
-
         private static void EnsureBoundarySelectionCapacity(int count)
         {
             if (_boundarySelectionIndices.Length >= count) return;
@@ -447,11 +434,6 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 else high = middle;
             }
             return low;
-        }
-
-        private static long BoundarySpatialKey(int x, int z)
-        {
-            return ((long)x << 32) ^ (uint)z;
         }
 
         private static void CancelJob()

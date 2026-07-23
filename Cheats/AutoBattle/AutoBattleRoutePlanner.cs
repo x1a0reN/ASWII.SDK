@@ -83,6 +83,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static readonly float[] NavigationProbeHeights = { 0.38f, 0.92f, 1.42f };
         private static readonly float[] NavigationProbeOffsetScales = { -1f, 0f, 1f };
         private static readonly float[] JumpProbeSideOffsets = { -0.42f, 0f, 0.42f };
+        private static readonly float[] FollowerSafetyAngles =
+            { 0f, 18f, -18f, 36f, -36f, 58f, -58f, 82f, -82f, 180f };
 
         private static int _groundMask = int.MinValue;
         private static int _blockMask = int.MinValue;
@@ -138,9 +140,15 @@ namespace ASWDEBUG.Cheats.AutoBattle
 
         internal static bool IsSafeRainNavigationAnchor(Vector3 point, Transform ignoreRoot)
         {
-            return IsPointOnOwnedRainGraph(point, 0.85f) &&
-                   HasStandingSpace(point, ignoreRoot) &&
-                   MeasureWallClearance(point, ignoreRoot) >= NavigationBodyRadius + 0.12f;
+            if (!IsPointOnOwnedRainGraph(point, 0.85f) ||
+                !HasStandingSpace(point, ignoreRoot) ||
+                MeasureWallClearance(point, ignoreRoot) < NavigationBodyRadius + 0.12f)
+                return false;
+            if (!_compactNavigationRequested) return true;
+            float clearance;
+            float required;
+            return CompactRainNavRuntime.TryGetSafetyClearance(point, out clearance,
+                out required) && clearance + 0.015f >= required;
         }
 
         internal static void TickNavigation(Level level, Character player, bool navigationActive)
@@ -790,6 +798,78 @@ namespace ASWDEBUG.Cheats.AutoBattle
             return true;
         }
 
+        public static bool TryKeepFollowerDirectionSafe(Vector3 from,
+            Vector3 desiredDirection, float lookAheadDistance, Transform ignoreRoot,
+            out Vector3 direction, out string detail)
+        {
+            direction = Vector3.zero;
+            detail = "edge_guard=inactive";
+            desiredDirection.y = 0f;
+            if (desiredDirection.sqrMagnitude < 0.01f) return false;
+            desiredDirection.Normalize();
+            if (!_compactNavigationRequested)
+            {
+                direction = desiredDirection;
+                return true;
+            }
+
+            lookAheadDistance = Mathf.Clamp(lookAheadDistance, 0.20f, 1.15f);
+            float bestScore = float.MinValue;
+            string lastReject = "none";
+            for (int i = 0; i < FollowerSafetyAngles.Length; i++)
+            {
+                Vector3 candidateDirection = Quaternion.Euler(0f,
+                    FollowerSafetyAngles[i], 0f) *
+                    desiredDirection;
+                candidateDirection.y = 0f;
+                if (candidateDirection.sqrMagnitude < 0.01f) continue;
+                candidateDirection.Normalize();
+                Vector3 raw = from + candidateDirection * lookAheadDistance;
+                Vector3 grounded;
+                int projectedPoly;
+                int projectedComponent;
+                if (!CompactRainNavRuntime.TryProjectInfo(raw, 0.55f, 1.10f,
+                    out grounded, out projectedPoly, out projectedComponent))
+                {
+                    lastReject = "ground";
+                    continue;
+                }
+                string compactDetail;
+                if (!IsCompactWalkSegmentSafe(from, grounded, out compactDetail))
+                {
+                    lastReject = compactDetail;
+                    continue;
+                }
+                if (!HasStandingSpace(grounded, ignoreRoot))
+                {
+                    lastReject = "body_clearance";
+                    continue;
+                }
+                float clearance;
+                float required;
+                if (!CompactRainNavRuntime.TryGetSafetyClearance(grounded,
+                    out clearance, out required))
+                {
+                    lastReject = "point_projection";
+                    continue;
+                }
+                float alignment = Vector3.Dot(candidateDirection, desiredDirection);
+                float score = alignment * 2.5f + Mathf.Min(clearance, 2f) * 1.8f;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                direction = candidateDirection;
+                if (i == 0 && clearance >= required + 0.25f) break;
+            }
+
+            if (direction.sqrMagnitude < 0.01f)
+            {
+                detail = "edge_guard=blocked last=" + SafeOneLine(lastReject, 120);
+                return false;
+            }
+            detail = "edge_guard=ok";
+            return true;
+        }
+
         private static bool IsContinuousWalkableRamp(Vector3 from, Vector3 to, Transform ignoreRoot)
         {
             float horizontal = XZDistance(from, to);
@@ -1011,12 +1091,18 @@ namespace ASWDEBUG.Cheats.AutoBattle
             int segmentCount;
             bool dense = CanFollowSegmentDense(from, to, ignoreRoot,
                 out blockedSegment, out segmentCount);
+            float edgeClearance = -1f;
+            float edgeRequired = -1f;
+            CompactRainNavRuntime.TryGetSafetyClearance(to, out edgeClearance,
+                out edgeRequired);
             return "dense=" + (dense ? "1" : "0") +
                    " blocked=" + blockedSegment + "/" + segmentCount +
                    " shortBlock=" + (HasForwardBlockToWaypoint(from, to, ignoreRoot) ? "1" : "0") +
                    " graphTo=" + (IsPointOnOwnedRainGraph(to, 0.72f) ? "1" : "0") +
                    " standingTo=" + (HasStandingSpace(to, ignoreRoot) ? "1" : "0") +
-                   " clearanceTo=" + MeasureWallClearance(to, ignoreRoot).ToString("0.00");
+                   " wallClearanceTo=" + MeasureWallClearance(to, ignoreRoot).ToString("0.00") +
+                   " edgeClearanceTo=" + edgeClearance.ToString("0.00") +
+                   "/" + edgeRequired.ToString("0.00");
         }
 
         public static bool CanAdvanceToWaypoint(Vector3 from, Vector3 waypoint, bool jump,
@@ -2126,12 +2212,33 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static bool IsCompactWalkSegmentSafe(Vector3 from, Vector3 to,
             out string detail)
         {
+            if (XZDistance(from, to) <= 0.08f &&
+                Mathf.Abs(from.y - to.y) <= 0.18f)
+            {
+                detail = "aswnav=same_point";
+                return true;
+            }
             if (!_compactNavigationRequested)
             {
                 detail = "aswnav=inactive";
                 return true;
             }
-            return CompactRainNavRuntime.IsSafeWalkSegment(from, to, out detail);
+            if (CompactRainNavRuntime.IsSafeWalkSegment(from, to, out detail))
+                return true;
+            float fromClearance;
+            float fromRequired;
+            float toClearance;
+            float toRequired;
+            if (!CompactRainNavRuntime.TryGetSafetyClearance(from,
+                    out fromClearance, out fromRequired) ||
+                !CompactRainNavRuntime.TryGetSafetyClearance(to,
+                    out toClearance, out toRequired) ||
+                fromClearance + 0.015f >= fromRequired ||
+                toClearance + 0.015f < toRequired ||
+                toClearance < fromClearance + 0.10f)
+                return false;
+            return CompactRainNavRuntime.IsSafeWalkSegment(from, to, true,
+                out detail);
         }
 
         private static List<Vector3> OptimizeRainPathWithHardLinks(Vector3 from, List<Vector3> points,

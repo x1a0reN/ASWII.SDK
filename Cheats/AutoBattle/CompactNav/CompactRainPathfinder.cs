@@ -28,13 +28,17 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         private readonly int[] _heapPositions;
         private readonly int[] _linkStarts;
         private readonly int[] _linkIndices;
+        private readonly sbyte[] _portalSafety;
+        private readonly float[] _portalClearance;
         private readonly CompactRainCorridorValidator _corridorValidator;
 
         private int _searchStamp;
         private int _heapCount;
+        private int _startPoly;
         private int _goalPoly;
         private int _bestGoalPortal;
         private float _bestGoalCost;
+        private float _goalClearance;
         private CompactRainProjection _startProjection;
         private CompactRainProjection _goalProjection;
         private CompactRainPathCapabilities _capabilities;
@@ -56,6 +60,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _expandedStamp = new int[portalCount];
             _heapNodes = new int[portalCount];
             _heapPositions = new int[portalCount];
+            _portalSafety = new sbyte[portalCount];
+            _portalClearance = new float[portalCount];
             for (int i = 0; i < _heapPositions.Length; i++) _heapPositions[i] = -1;
             BuildLinkIndex(dataset, out _linkStarts, out _linkIndices);
             _corridorValidator = new CompactRainCorridorValidator(dataset);
@@ -74,6 +80,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     (long)(_parent.Length + _parentLink.Length + _seenStamp.Length +
                     _expandedStamp.Length + _heapNodes.Length + _heapPositions.Length +
                     _linkStarts.Length + _linkIndices.Length) * sizeof(int) +
+                    (long)_portalSafety.Length * sizeof(sbyte) +
+                    (long)_portalClearance.Length * sizeof(float) +
                     _corridorValidator.WorkspaceBytes;
             }
         }
@@ -82,6 +90,38 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             out string detail)
         {
             return _corridorValidator.TryValidateWalkSegment(from, to, out detail);
+        }
+
+        internal bool TryValidateWalkSegment(CompactRainPoint from, CompactRainPoint to,
+            bool allowUnsafeStart, out string detail)
+        {
+            return _corridorValidator.TryValidateWalkSegment(from, to,
+                allowUnsafeStart, out detail);
+        }
+
+        internal bool TryMeasurePointClearance(CompactRainPoint point,
+            out float clearance, out float required, out string detail)
+        {
+            if (!TryMeasurePointClearance(point, out clearance, out required))
+            {
+                detail = "point_projection";
+                return false;
+            }
+            CompactRainProjection projection;
+            _corridorValidator.TryProjectEndpoint(point, out projection);
+            detail = "clearance=" + clearance.ToString("0.000") +
+                " required=" + required.ToString("0.000") +
+                " poly=" + projection.PolyIndex;
+            return true;
+        }
+
+        internal bool TryMeasurePointClearance(CompactRainPoint point,
+            out float clearance, out float required)
+        {
+            required = _corridorValidator.MinimumBoundaryClearance;
+            CompactRainProjection projection;
+            return _corridorValidator.TryMeasurePointClearance(point,
+                out projection, out clearance);
         }
 
         internal CompactRainSearchStatus Begin(CompactRainPoint start, CompactRainPoint goal,
@@ -102,11 +142,24 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             if (!_dataset.SpatialIndex.TryProject(goal, maximumHorizontalProjection,
                 maximumVerticalProjection, out _goalProjection))
                 return Fail("goal_projection_failed");
+            if (_startProjection.VerticalError > 1.10f)
+                return Fail("start_layer_mismatch=" +
+                    _startProjection.VerticalError.ToString("0.00"));
             CompactRainNavPolyRecord startPoly = _dataset.GetPoly(_startProjection.PolyIndex);
             CompactRainNavPolyRecord goalPoly = _dataset.GetPoly(_goalProjection.PolyIndex);
             if ((startPoly.Flags & CompactRainNavFormat.PolyUnwalkable) != 0 ||
                 (goalPoly.Flags & CompactRainNavFormat.PolyUnwalkable) != 0)
                 return Fail("projected_poly_unwalkable");
+            float startClearance;
+            string pointDetail;
+            bool startSafe = _corridorValidator.IsPointSafe(_startProjection.Point,
+                out startClearance, out pointDetail);
+            if (!startSafe && !_capabilities.AllowUnsafeStart)
+                return Fail("unsafe_start " + pointDetail);
+            if (!_corridorValidator.IsPointSafe(_goalProjection.Point,
+                out _goalClearance, out pointDetail))
+                return Fail("unsafe_goal " + pointDetail);
+            _startPoly = _startProjection.PolyIndex;
             _goalPoly = _goalProjection.PolyIndex;
             if (_startProjection.PolyIndex == _goalPoly)
             {
@@ -119,8 +172,12 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 int portalIndex = _dataset.GetPolyPortalIndex(startPoly.PortalStart + i);
                 if (!_dataset.IsPortalOnPolyBoundary(portalIndex,
                     _startProjection.PolyIndex)) continue;
-                float cost = CompactRainPoint.Distance(_startProjection.Point,
+                float portalClearance;
+                if (!TryGetSafePortalClearance(portalIndex, startPoly.Component,
+                    out portalClearance)) continue;
+                float distance = CompactRainPoint.Distance(_startProjection.Point,
                     _dataset.GetPortalCenter(portalIndex));
+                float cost = AdjustForSafety(distance, portalClearance);
                 Relax(portalIndex, cost, -1, -1);
             }
             if (_heapCount <= 0) return Fail("start_poly_has_no_portals");
@@ -150,8 +207,10 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
                 if (PortalTouchesPoly(portalIndex, _goalPoly))
                 {
-                    float candidate = portalCost + CompactRainPoint.Distance(
+                    float goalDistance = CompactRainPoint.Distance(
                         _dataset.GetPortalCenter(portalIndex), _goalProjection.Point);
+                    float candidate = portalCost + AdjustForSafety(goalDistance,
+                        Math.Min(GetCachedPortalClearance(portalIndex), _goalClearance));
                     if (candidate < _bestGoalCost)
                     {
                         _bestGoalCost = candidate;
@@ -193,13 +252,25 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 if (!_dataset.IsPortalOnPolyBoundary(portalIndex, polyIndex)) continue;
                 CompactRainNavPolyRecord poly = _dataset.GetPoly(polyIndex);
                 if ((poly.Flags & CompactRainNavFormat.PolyUnwalkable) != 0) continue;
+                float polyClearance = _dataset.GetSurface(polyIndex).Clearance;
+                if (polyIndex != _startPoly && polyIndex != _goalPoly &&
+                    polyClearance + 0.015f <
+                    _corridorValidator.MinimumBoundaryClearance) continue;
                 for (int p = 0; p < poly.PortalCount; p++)
                 {
                     int neighbor = _dataset.GetPolyPortalIndex(poly.PortalStart + p);
                     if (neighbor == portalIndex) continue;
                     if (!_dataset.IsPortalOnPolyBoundary(neighbor, polyIndex)) continue;
-                    float nextCost = baseCost + CompactRainPoint.Distance(center,
+                    float neighborClearance;
+                    if (!TryGetSafePortalClearance(neighbor, poly.Component,
+                        out neighborClearance)) continue;
+                    float transitionClearance = Math.Min(neighborClearance,
+                        polyIndex == _startPoly || polyIndex == _goalPoly
+                            ? neighborClearance : polyClearance);
+                    float distance = CompactRainPoint.Distance(center,
                         _dataset.GetPortalCenter(neighbor));
+                    float nextCost = baseCost + AdjustForSafety(distance,
+                        transitionClearance);
                     Relax(neighbor, nextCost, portalIndex, -1);
                 }
             }
@@ -208,8 +279,13 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             {
                 int linkIndex = _linkIndices[i];
                 CompactRainNavLinkRecord link = _dataset.GetLink(linkIndex);
-                if (!CanUseLink(link, _capabilities)) continue;
-                Relax(link.ToPortal, baseCost + link.Cost, portalIndex, linkIndex);
+                if (!CanUseLink(link, _capabilities) || !IsSafeLink(link)) continue;
+                int component = GetPortalComponent(link.ToPortal);
+                float destinationClearance;
+                if (component < 0 || !TryGetSafePortalClearance(link.ToPortal,
+                    component, out destinationClearance)) continue;
+                Relax(link.ToPortal, baseCost + AdjustForSafety(link.Cost,
+                    destinationClearance), portalIndex, linkIndex);
             }
         }
 
@@ -244,7 +320,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             string corridorDetail;
             if (!CompactRainFunnel.BuildPath(_dataset, _corridorValidator,
                 new int[0], new int[0], _startProjection.Point, _goalProjection.Point,
-                out points, out actions, out corridorDetail))
+                _capabilities.AllowUnsafeStart, out points, out actions,
+                out corridorDetail))
             {
                 Fail("direct_" + corridorDetail);
                 return;
@@ -278,7 +355,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             byte[] actions;
             string corridorDetail;
             if (!CompactRainFunnel.BuildPath(_dataset, _corridorValidator, portals, links,
-                _startProjection.Point, _goalProjection.Point, out points, out actions,
+                _startProjection.Point, _goalProjection.Point,
+                _capabilities.AllowUnsafeStart, out points, out actions,
                 out corridorDetail))
             {
                 Fail(corridorDetail + " expanded=" + _expandedNodes);
@@ -312,6 +390,68 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             _status = CompactRainSearchStatus.Failed;
             _detail = detail;
             return _status;
+        }
+
+        private bool TryGetSafePortalClearance(int portalIndex, int component,
+            out float clearance)
+        {
+            if (_portalSafety[portalIndex] != 0)
+            {
+                clearance = _portalClearance[portalIndex];
+                return _portalSafety[portalIndex] > 0;
+            }
+            clearance = _corridorValidator.MeasureBoundaryClearance(
+                _dataset.GetPortalCenter(portalIndex), component);
+            _portalClearance[portalIndex] = clearance;
+            bool safe = clearance + 0.015f >=
+                _corridorValidator.MinimumBoundaryClearance;
+            _portalSafety[portalIndex] = (sbyte)(safe ? 1 : -1);
+            return safe;
+        }
+
+        private float GetCachedPortalClearance(int portalIndex)
+        {
+            if (_portalSafety[portalIndex] != 0)
+                return _portalClearance[portalIndex];
+            int component = GetPortalComponent(portalIndex);
+            float clearance;
+            return component >= 0 &&
+                TryGetSafePortalClearance(portalIndex, component, out clearance)
+                ? clearance : 0f;
+        }
+
+        private int GetPortalComponent(int portalIndex)
+        {
+            CompactRainNavPortalRecord portal = _dataset.GetPortal(portalIndex);
+            for (int i = 0; i < portal.PolyCount; i++)
+            {
+                int polyIndex = _dataset.GetPortalPolyIndex(portal.PolyStart + i);
+                if (polyIndex >= 0 && polyIndex < _dataset.PolyCount)
+                    return _dataset.GetPoly(polyIndex).Component;
+            }
+            return -1;
+        }
+
+        private bool IsSafeLink(CompactRainNavLinkRecord link)
+        {
+            CompactRainPoint start = new CompactRainPoint(link.StartX, link.StartY,
+                link.StartZ);
+            CompactRainPoint end = new CompactRainPoint(link.EndX, link.EndY, link.EndZ);
+            float clearance;
+            string detail;
+            return _corridorValidator.IsPointSafe(start, out clearance, out detail) &&
+                _corridorValidator.IsPointSafe(end, out clearance, out detail);
+        }
+
+        private float AdjustForSafety(float distance, float clearance)
+        {
+            float preferred = _corridorValidator.PreferredBoundaryClearance;
+            float minimum = _corridorValidator.MinimumBoundaryClearance;
+            if (clearance >= preferred || preferred <= minimum + 0.01f)
+                return distance;
+            float normalized = (preferred - Math.Max(minimum, clearance)) /
+                (preferred - minimum);
+            return distance * (1f + normalized * normalized * 12f);
         }
 
         private void PushHeap(int portalIndex)
@@ -456,6 +596,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
         public float JumpVelocity;
         public float RunSpeed;
         public float MaximumDrop;
+        public bool AllowUnsafeStart;
 
         public CompactRainPathCapabilities()
         {
@@ -464,6 +605,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             JumpVelocity = 0f;
             RunSpeed = 0f;
             MaximumDrop = 0f;
+            AllowUnsafeStart = false;
         }
 
         public CompactRainPathCapabilities(bool allowJump, float jumpHeight,
@@ -474,6 +616,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             JumpVelocity = jumpVelocity;
             RunSpeed = runSpeed;
             MaximumDrop = maximumDrop;
+            AllowUnsafeStart = false;
         }
     }
 

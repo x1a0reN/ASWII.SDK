@@ -10,7 +10,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         internal static bool BuildPath(CompactRainNavDataset dataset,
             CompactRainCorridorValidator validator, int[] portals, int[] incomingLinks,
-            CompactRainPoint start, CompactRainPoint goal,
+            CompactRainPoint start, CompactRainPoint goal, bool allowUnsafeStart,
             out CompactRainPoint[] waypoints, out byte[] actions, out string detail)
         {
             waypoints = null;
@@ -37,7 +37,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 string partitionDetail;
                 if (!AppendSafePartition(dataset, validator, portals, partitionStart, i - 1,
                     partitionStartPoint, linkStart, points, pointActions, ref stats,
-                    out partitionDetail))
+                    allowUnsafeStart && partitionStart == 0, out partitionDetail))
                 {
                     detail = "corridor=failed partition=" + stats.Partitions + " " + partitionDetail;
                     return false;
@@ -49,7 +49,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             string finalDetail;
             if (!AppendSafePartition(dataset, validator, portals, partitionStart,
                 portals.Length - 1, partitionStartPoint, goal, points, pointActions,
-                ref stats, out finalDetail))
+                ref stats, allowUnsafeStart && partitionStart == 0, out finalDetail))
             {
                 detail = "corridor=failed partition=" + stats.Partitions + " " + finalDetail;
                 return false;
@@ -69,7 +69,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             CompactRainCorridorValidator validator, int[] portals,
             int startIndex, int endIndex, CompactRainPoint start, CompactRainPoint goal,
             List<CompactRainPoint> output, List<byte> actions, ref CompactRainFunnelStats stats,
-            out string detail)
+            bool allowUnsafeStart, out string detail)
         {
             stats.Partitions++;
             int portalCount = endIndex < startIndex ? 0 : endIndex - startIndex + 1;
@@ -94,7 +94,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                 CompactRainPoint current = rawPoints[i];
                 string segmentDetail;
                 stats.Checks++;
-                if (validator.TryValidateWalkSegment(previous, current, out segmentDetail))
+                if (validator.TryValidateWalkSegment(previous, current,
+                    allowUnsafeStart && i == 1, out segmentDetail))
                 {
                     AddDistinct(safePoints, current);
                     continue;
@@ -104,7 +105,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     rawNodes[i - 1], rawNodes[i], rawPoints[i - 1], current);
                 List<CompactRainPoint> repairs;
                 if (transitionPoly < 0 || !TryFindRepairPath(dataset, validator,
-                    transitionPoly, previous, current, ref stats, out repairs))
+                    transitionPoly, previous, current, allowUnsafeStart && i == 1,
+                    ref stats, out repairs))
                 {
                     detail = "segment=" + (i - 1) + "->" + i + " poly=" +
                         transitionPoly + " nodes=" + rawNodes[i - 1] + "->" +
@@ -132,7 +134,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     string shortcutDetail;
                     stats.Checks++;
                     if (!validator.TryValidateWalkSegment(safePoints[anchor],
-                        safePoints[candidate], out shortcutDetail)) continue;
+                        safePoints[candidate], allowUnsafeStart && anchor == 0,
+                        out shortcutDetail)) continue;
                     selected = candidate;
                     break;
                 }
@@ -200,7 +203,7 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
 
         private static bool TryFindRepairPath(CompactRainNavDataset dataset,
             CompactRainCorridorValidator validator, int polyIndex, CompactRainPoint from,
-            CompactRainPoint to, ref CompactRainFunnelStats stats,
+            CompactRainPoint to, bool allowUnsafeStart, ref CompactRainFunnelStats stats,
             out List<CompactRainPoint> repairs)
         {
             repairs = new List<CompactRainPoint>();
@@ -296,7 +299,8 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
                     string segmentDetail;
                     stats.Checks++;
                     if (!validator.TryValidateWalkSegment(candidates[current],
-                        candidates[next], out segmentDetail)) continue;
+                        candidates[next], allowUnsafeStart && current == 0,
+                        out segmentDetail)) continue;
                     float nextCost = costs[current] + CompactRainPoint.DistanceXZ(
                         candidates[current], candidates[next]);
                     if (nextCost >= costs[next]) continue;

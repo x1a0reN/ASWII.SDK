@@ -30,6 +30,27 @@ namespace ASWDEBUG.Cheats.AutoBattle.CompactNav
             return _pathfinder.TryValidateWalkSegment(from, to, out detail);
         }
 
+        internal bool TryValidateWalkSegment(CompactRainPoint from, CompactRainPoint to,
+            bool allowUnsafeStart, out string detail)
+        {
+            return _pathfinder.TryValidateWalkSegment(from, to, allowUnsafeStart,
+                out detail);
+        }
+
+        internal bool TryMeasurePointClearance(CompactRainPoint point,
+            out float clearance, out float required, out string detail)
+        {
+            return _pathfinder.TryMeasurePointClearance(point, out clearance,
+                out required, out detail);
+        }
+
+        internal bool TryMeasurePointClearance(CompactRainPoint point,
+            out float clearance, out float required)
+        {
+            return _pathfinder.TryMeasurePointClearance(point, out clearance,
+                out required);
+        }
+
         internal int Begin(CompactRainPoint start, CompactRainPoint goal,
             CompactRainPathCapabilities capabilities, float maximumHorizontalProjection,
             float maximumVerticalProjection)

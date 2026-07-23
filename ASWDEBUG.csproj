@@ -86,6 +86,7 @@
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavConverter.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavAutoConverter.cs" />
+    <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainBoundaryIndex.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainCorridorValidator.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavDataset.cs" />
     <Compile Include="Cheats\AutoBattle\CompactNav\CompactRainNavFormat.cs" />
