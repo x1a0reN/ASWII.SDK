@@ -200,6 +200,9 @@ function Test-VariantAssembly {
             'TickRoleDirector',
             'TickGuardDirector',
             'TickAssaultDirector',
+            'MoveCombatStrafe',
+            'IsSafeCombatDirection',
+            'TraceCombatMovement',
             'ShouldRejectExposedHideRoute',
             'TryValidateCliffApproach'
         )
@@ -373,6 +376,7 @@ $manifest = [ordered]@{
             configurableRoleStrategy = $false
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
+            continuousCombatMovement = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }
@@ -386,6 +390,7 @@ $manifest = [ordered]@{
             configurableRoleStrategy = $false
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
+            continuousCombatMovement = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }

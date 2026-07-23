@@ -56,6 +56,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static readonly Dictionary<int, EnemyTrack> EnemyTracks = new Dictionary<int, EnemyTrack>(16);
         private static readonly List<Vector3> RouteExposurePoints = new List<Vector3>(48);
         private static readonly float[] SafeRadii = { 5f, 9f, 13f };
+        private static readonly float[] CombatDirectionOffsets =
+            { 0f, 18f, -18f, 36f, -36f, 58f, -58f, 82f, -82f, 112f, -112f, 145f, -145f, 180f };
 
         private static bool _roundActive;
         private static bool _controlStarted;
@@ -147,12 +149,17 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static int _failedCandidateCursor;
         private static int _failedCliffCandidateCursor;
         private static int _combatStrafeSign = 1;
+        private static float _combatStrafeSwitchAt;
+        private static float _combatMoveProgressAt;
+        private static float _nextCombatMoveTraceAt;
+        private static Vector3 _combatMoveLastPosition;
+        private static Vector3 _combatMoveDirection;
+        private static int _combatMoveTargetUid;
         private static bool _hasSafePoint;
         private static bool _hasAttackPoint;
         private static bool _hasCliff;
         private static bool _cliffJumpLogged;
         private static bool _serverSuicideRequested;
-        private static bool _combatStrafeActive;
         private static Character _attackTarget;
         private static Character _searchTarget;
         private static float _searchTargetLockedAt;
@@ -1228,10 +1235,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             SurvivalCombatAdapter.SuspendSurvivalNavigation("guard_arrow_rain");
             AutoBattleInput.ClearFire();
             SurvivalCombatAdapter.CloseSurvivalScope(player);
-            AutoBattleInput.ClearMovement();
             float distance = XzDistance(player.transform.position, _guardArrowTarget.transform.position);
             bool aimReady = SurvivalCombatAdapter.PrepareSurvivalTargetSkill(player,
                 _guardArrowTarget, camera);
+            MoveCombatStrafe(player, _guardArrowTarget);
             if (aimReady && SurvivalCombatAdapter.TryUseSurvivalSkill(player,
                 SkillType.kSkillArrowRain, "guard_arrow_rain_7m_lock"))
             {
@@ -1718,7 +1725,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
             bool fired = SurvivalCombatAdapter.AttackEmergency(player, _emergencyTarget, camera,
                 out strictLine, out distance);
-            MoveEmergency(player, _emergencyTarget, distance);
+            MoveCombatStrafe(player, _emergencyTarget);
             SurvivalCombatAdapter.LogCombatState(player, _emergencyTarget, strictLine, distance, fired);
             StatusText = "近敌反击 | 目标 " + SafeName(_emergencyTarget) + " | 距离 " +
                 distance.ToString("0.0") + " / " + triggerDistance.ToString("0.0") + " | 隐身 " +
@@ -1915,8 +1922,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            if (opportunityOnly) MoveCombatStrafe(player, _attackTarget);
-            else MoveAttackPursuit(player, _attackTarget, camera, false);
+            MoveCombatStrafe(player, _attackTarget);
             StatusText = modeName + " | 存活 " + RemainingPlayers + " | 目标 " + SafeName(_attackTarget) +
                 " | 距离 " + distance.ToString("0.0") + " | 直线 " + strictLine + " | 开火 " + fired;
         }
@@ -2939,8 +2945,20 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             {
                 _searchTarget = null;
                 _combatStrafeSign = (target.uid & 1) == 0 ? 1 : -1;
-                _combatStrafeActive = false;
+                _combatStrafeSwitchAt = 0f;
+                _combatMoveProgressAt = 0f;
+                _combatMoveLastPosition = Vector3.zero;
+                _combatMoveDirection = Vector3.zero;
+                _combatMoveTargetUid = target.uid;
                 SurvivalCombatAdapter.SuspendSurvivalNavigation("combat");
+            }
+            else
+            {
+                _combatStrafeSwitchAt = 0f;
+                _combatMoveProgressAt = 0f;
+                _combatMoveLastPosition = Vector3.zero;
+                _combatMoveDirection = Vector3.zero;
+                _combatMoveTargetUid = 0;
             }
             _hasAttackPoint = false;
             _attackTargetLockedAt = Time.time;
@@ -2974,8 +2992,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             for (int i = 0; i < candidates.Length; i++)
             {
                 Vector3 candidate = candidates[i];
-                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, candidate, player.transform.root))
-                    continue;
+                if (!IsSafeCombatDirection(player, candidate)) continue;
                 float score = Vector3.Dot(candidate, away) * 3f - i * 0.04f;
                 if (score <= bestScore) continue;
                 bestScore = score;
@@ -2987,7 +3004,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return;
             }
 
-            AutoBattleInput.ClearMovement();
+            Vector3 fallback = MoveCombatStrafe(player, target);
+            if (fallback.sqrMagnitude > 0.01f) return;
             if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(player.transform.position, away, player.transform.root))
             {
                 AutoBattleInput.PressAction(ActionType.kActionJump, 0.10f);
@@ -2995,37 +3013,164 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
         }
 
-        private static void MoveCombatStrafe(Character player, Character target)
+        private static Vector3 MoveCombatStrafe(Character player, Character target)
         {
-            if (player == null || target == null) return;
+            if (player == null || player.transform == null || target == null || target.transform == null)
+                return Vector3.zero;
+            Vector3 position = player.transform.position;
+            if (_combatMoveTargetUid != target.uid)
+            {
+                _combatMoveTargetUid = target.uid;
+                _combatStrafeSign = (target.uid & 1) == 0 ? 1 : -1;
+                _combatStrafeSwitchAt = 0f;
+                _combatMoveProgressAt = 0f;
+                _combatMoveLastPosition = position;
+                _combatMoveDirection = Vector3.zero;
+            }
             Vector3 toTarget = target.transform.position - player.transform.position;
             toTarget.y = 0f;
-            if (toTarget.sqrMagnitude < 0.01f) return;
+            if (toTarget.sqrMagnitude < 0.01f) toTarget = player.transform.forward;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude < 0.01f) toTarget = Vector3.forward;
             float distance = toTarget.magnitude;
-            if (_combatStrafeActive)
-            {
-                if (distance >= 15f) _combatStrafeActive = false;
-            }
-            else if (distance <= 13f) _combatStrafeActive = true;
-            if (!_combatStrafeActive)
-            {
-                AutoBattleInput.ClearMovement();
-                return;
-            }
             toTarget.Normalize();
-            Vector3 side = Vector3.Cross(Vector3.up, toTarget) * _combatStrafeSign;
-            if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, side, player.transform.root))
+
+            bool stalled = false;
+            if (_combatMoveProgressAt <= 0f)
             {
-                Vector3 opposite = -side;
-                if (AutoBattleRoutePlanner.HasForwardBlock(player.transform.position, opposite, player.transform.root))
-                {
-                    AutoBattleInput.ClearMovement();
-                    return;
-                }
-                side = opposite;
-                _combatStrafeSign = -_combatStrafeSign;
+                _combatMoveLastPosition = position;
+                _combatMoveProgressAt = Time.time;
             }
-            AutoBattleInput.SetMoveWorld(player, side, false);
+            else if (XzDistance(position, _combatMoveLastPosition) >= 0.18f)
+            {
+                _combatMoveLastPosition = position;
+                _combatMoveProgressAt = Time.time;
+            }
+            else if (Time.time - _combatMoveProgressAt >= 0.70f)
+            {
+                _combatStrafeSign = -_combatStrafeSign;
+                _combatStrafeSwitchAt = 0f;
+                _combatMoveDirection = Vector3.zero;
+                _combatMoveProgressAt = Time.time;
+                _combatMoveLastPosition = position;
+                stalled = true;
+            }
+
+            if (_combatStrafeSwitchAt <= 0f)
+            {
+                _combatStrafeSwitchAt = Time.time + 1.45f +
+                    ((target.uid + Mathf.FloorToInt(Time.time * 10f)) & 3) * 0.18f;
+            }
+            else if (Time.time >= _combatStrafeSwitchAt)
+            {
+                _combatStrafeSign = -_combatStrafeSign;
+                _combatStrafeSwitchAt = Time.time + 1.45f +
+                    ((target.uid + Mathf.FloorToInt(Time.time * 10f)) & 3) * 0.18f;
+                _combatMoveDirection = Vector3.zero;
+            }
+
+            Vector3 side = Vector3.Cross(Vector3.up, toTarget) * _combatStrafeSign;
+            float rangeCorrection = Mathf.Clamp((distance - 9f) / 5f, -0.95f, 0.95f);
+            Vector3 preferred = side + toTarget * (rangeCorrection * 0.85f);
+            preferred.y = 0f;
+            if (preferred.sqrMagnitude < 0.01f) preferred = side;
+            preferred.Normalize();
+
+            if (!stalled && _combatMoveDirection.sqrMagnitude > 0.01f &&
+                Vector3.Dot(_combatMoveDirection, preferred) >= 0.15f &&
+                IsSafeCombatDirection(player, _combatMoveDirection))
+            {
+                AutoBattleInput.SetMoveWorld(player, _combatMoveDirection, false);
+                return _combatMoveDirection;
+            }
+
+            Vector3 selected = Vector3.zero;
+            for (int i = 0; i < CombatDirectionOffsets.Length; i++)
+            {
+                Vector3 candidate = Quaternion.AngleAxis(CombatDirectionOffsets[i], Vector3.up) * preferred;
+                candidate.y = 0f;
+                if (candidate.sqrMagnitude < 0.01f) continue;
+                candidate.Normalize();
+                if (!IsSafeCombatDirection(player, candidate)) continue;
+                selected = candidate;
+                break;
+            }
+
+            string clearanceDetail = string.Empty;
+            if (selected.sqrMagnitude <= 0.01f)
+            {
+                AutoBattleRoutePlanner.TryFindRainClearanceDirection(position, preferred,
+                    player.transform.root, out selected, out clearanceDetail);
+                if (selected.sqrMagnitude > 0.01f && !IsSafeCombatDirection(player, selected))
+                {
+                    selected = Vector3.zero;
+                    clearanceDetail += " combat_validation=reject";
+                }
+            }
+            if (selected.sqrMagnitude > 0.01f)
+            {
+                selected.y = 0f;
+                selected.Normalize();
+                _combatMoveDirection = selected;
+                AutoBattleInput.SetMoveWorld(player, selected, false);
+                TraceCombatMovement(target, distance, stalled ? "stall_recovered" : "moving",
+                    selected, clearanceDetail);
+                return selected;
+            }
+
+            if (_combatMoveDirection.sqrMagnitude > 0.01f &&
+                IsSafeCombatDirection(player, _combatMoveDirection))
+            {
+                AutoBattleInput.SetMoveWorld(player, _combatMoveDirection, false);
+                TraceCombatMovement(target, distance, "last_lane_fallback",
+                    _combatMoveDirection, clearanceDetail);
+                return _combatMoveDirection;
+            }
+            if (AutoBattleRoutePlanner.ShouldJumpForwardObstacle(position, preferred,
+                player.transform.root))
+            {
+                AutoBattleInput.SetMoveWorld(player, preferred, false);
+                AutoBattleInput.PressAction(ActionType.kActionJump, 0.10f);
+                AutoBattleInput.HoldAction(ActionType.kActionJump, 0.22f);
+                TraceCombatMovement(target, distance, "jump_clearance", preferred,
+                    clearanceDetail);
+                return preferred;
+            }
+
+            TraceCombatMovement(target, distance, "no_safe_lane", Vector3.zero,
+                clearanceDetail);
+            AutoBattleInput.ClearMovement();
+            return Vector3.zero;
+        }
+
+        private static bool IsSafeCombatDirection(Character player, Vector3 direction)
+        {
+            if (player == null || player.transform == null) return false;
+            direction.y = 0f;
+            if (direction.sqrMagnitude < 0.01f) return false;
+            direction.Normalize();
+            Vector3 position = player.transform.position;
+            if (AutoBattleRoutePlanner.HasForwardBlock(position, direction, player.transform.root))
+                return false;
+            Vector3 probe;
+            if (!TryProjectGround(position + direction * 1.05f, position.y, 1.35f, out probe))
+                return false;
+            if (AutoBattleRoutePlanner.IsGameNavigationReady &&
+                !AutoBattleRoutePlanner.IsPointOnOwnedRainGraph(probe, 0.95f))
+                return false;
+            return AutoBattleRoutePlanner.HasSupportedStandingPoint(probe, player.transform.root) &&
+                AutoBattleRoutePlanner.CanFollowRouteSegment(position, probe, player.transform.root);
+        }
+
+        private static void TraceCombatMovement(Character target, float distance, string mode,
+            Vector3 direction, string detail)
+        {
+            if (Time.time < _nextCombatMoveTraceAt) return;
+            _nextCombatMoveTraceAt = Time.time + 0.9f;
+            FileLogger.Log("SURVIVAL][MOVE", "combat=" + mode + " uid=" +
+                (target == null ? 0 : target.uid) + " dist=" + distance.ToString("0.0") +
+                " direction=" + FormatVec(direction) +
+                (string.IsNullOrEmpty(detail) ? string.Empty : " " + detail));
         }
 
         private static Vector3 MoveAttackPursuit(Character player, Character target, Camera camera, bool lookAlongRoute)
@@ -3055,8 +3200,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             Vector3 move = SurvivalCombatAdapter.NavigatePursuit(player, pursuitPoint);
             if (move.sqrMagnitude <= 0.01f)
             {
-                AutoBattleInput.ClearMovement();
-                return Vector3.zero;
+                return MoveCombatStrafe(player, target);
             }
 
             AutoBattleInput.SetMoveWorld(player, move, false);
@@ -3525,7 +3669,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _attackPointLastProgressAt = 0f;
             _nextAttackSearchTraceAt = 0f;
             _combatStrafeSign = 1;
-            _combatStrafeActive = false;
+            _combatStrafeSwitchAt = 0f;
+            _combatMoveProgressAt = 0f;
+            _nextCombatMoveTraceAt = 0f;
+            _combatMoveLastPosition = Vector3.zero;
+            _combatMoveDirection = Vector3.zero;
+            _combatMoveTargetUid = 0;
         }
 
         private static string FormatVec(Vector3 value)

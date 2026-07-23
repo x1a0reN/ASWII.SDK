@@ -50,7 +50,7 @@ Character.character_info.career
 - HP 下降后立即尝试治疗。
 - 任一存活敌人进入 5m 时立即尝试冲击波，包含近身隐身敌人。
 - 箭雨就绪且非隐身敌人处于 6.7-8.8m、存在严格弹道视线时，锁定单一目标。
-- 锁定后暂停移动，先把相机方向稳定到目标；至少经过一次视图更新后才使用箭雨。
+- 锁定后继续安全侧移并把相机方向稳定到目标；至少经过一次视图更新后才使用箭雨。
 - 短时遮挡允许 0.45 秒保持目标，避免目标在边缘抖动导致重复切换。
 
 ### 3.3 突击兵
@@ -72,6 +72,19 @@ Character.character_info.career
 5. 己方隐身先结束且对方仍在等待：进入 `RevealPursuit`，使用 RAIN 路径主动接近；进入 6m 后强锁攻击。
 
 目标锁定期间不做分数切换，避免镜头和移动在多人之间抖动。完成条件只认 `num_killed` 增长；助攻不再提前结束击杀任务。
+
+### 3.4 攻击期间持续移动
+
+正式生存循环的普通攻击、近敌反击、突击兵 `HardHunt` 和护卫兵箭雨瞄准都使用同一套持续战斗移动：
+
+- 相机继续强锁当前目标，移动输入与瞄准、开火输入同时保持；
+- 以约 9m 为理想距离，过远时斜向接近，过近时斜向后撤，其余时间环绕侧移；
+- 每 1.45-1.99 秒切换一次环绕方向，避免长时间沿单一方向形成固定轨迹；
+- 0.70 秒内没有取得至少 0.18m 的实际位移时，立即反向并重新选择通道；
+- 首选方向不可用时扫描 14 个角度，再使用 RAIN clearance 方向兜底；
+- 每个候选都必须通过前向障碍、地面投影、当前 RAIN 图归属、站立支撑和短路径可通行校验，不能为了侧移跨过悬崖边或穿过拐角。
+
+隐身敌人在 6m 外停下时的 `HiddenWatch` 属于尚未开战的导演等待状态，仍按既定剧本原地观察。一旦进入追击或攻击，持续移动立即生效。若当前位置不存在任何通过安全校验的移动方向，系统会记录 `combat=no_safe_lane` 并短暂停止输入，而不是盲目跨出悬崖；下一帧继续重试。
 
 ## 4. 击杀后与悬崖结束
 
@@ -103,6 +116,7 @@ Character.character_info.career
 [SURVIVAL][ROLE] damage response sequence=...
 [SURVIVAL][ROLE] assault state ...
 [SURVIVAL][ROLE] director=hidden_watch|reveal_pursuit|hard_hunt ...
+[SURVIVAL][MOVE] combat=moving|stall_recovered|last_lane_fallback|jump_clearance|no_safe_lane ...
 [SURVIVAL] hide route rejected sightSamples=...
 [SURVIVAL] reachable cliff candidate ... verifiedMinDrop=...
 ~~~
