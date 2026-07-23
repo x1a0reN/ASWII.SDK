@@ -1,23 +1,22 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Threading;
 using Harmony;
 using UnityEngine;
 
 namespace Doorstop
 {
     /// <summary>
-    /// Unity Doorstop 入口点。
-    /// 
-    /// 关键约束：Doorstop.Start() 在 Mono ReloadAssembly 期间被调用，
-    /// 此时不能创建 GameObject 或调用大部分 Unity API。
-    /// 
-    /// 策略：用 Harmony patch GameApp.Awake()，在游戏自身初始化时注入。
-    /// GameApp.Awake() 一定在 Unity 主线程、引擎就绪后执行。
+    /// Supports both early Doorstop loading and late Mono runtime injection.
+    /// Unity objects are created only from a GameApp main-thread callback.
     /// </summary>
     public static class Entrypoint
     {
+        private static readonly object PatchSync = new object();
         private static bool _patched;
+        private static bool _assemblyLoadSubscribed;
+        private static bool _bootstrapping;
         private static bool _bootstrapped;
 
         public static void Start()
@@ -26,15 +25,14 @@ namespace Doorstop
             {
                 LogInfo("Doorstop.Entrypoint.Start() called");
 
-                // 检查 Assembly-CSharp 是否已加载
-                Assembly asmAC = FindAssembly("Assembly-CSharp");
-                if (asmAC != null)
+                Assembly assemblyCSharp = FindAssembly("Assembly-CSharp");
+                if (assemblyCSharp != null)
                 {
-                    PatchGameEntry(asmAC);
+                    PatchGameEntry(assemblyCSharp, false);
                 }
-                else
+                else if (!_assemblyLoadSubscribed)
                 {
-                    // 等待 Assembly-CSharp 加载后再 patch
+                    _assemblyLoadSubscribed = true;
                     AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
                     LogInfo("Waiting for Assembly-CSharp...");
                 }
@@ -45,17 +43,46 @@ namespace Doorstop
             }
         }
 
+        public static void StartInjected()
+        {
+            try
+            {
+                LogInfo("Doorstop.Entrypoint.StartInjected() called");
+                Assembly assemblyCSharp = WaitForAssembly("Assembly-CSharp", 30000);
+                if (assemblyCSharp == null)
+                {
+                    throw new InvalidOperationException(
+                        "Assembly-CSharp was not loaded within 30 seconds.");
+                }
+
+                PatchGameEntry(assemblyCSharp, true);
+                if (!_patched)
+                {
+                    throw new InvalidOperationException(
+                        "Unity main-thread bootstrap patch was not installed.");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogInfo("StartInjected error: " + ex);
+                throw;
+            }
+        }
+
         private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
         {
             try
             {
-                if (args.LoadedAssembly != null &&
-                    args.LoadedAssembly.GetName().Name == "Assembly-CSharp")
+                if (args.LoadedAssembly == null ||
+                    args.LoadedAssembly.GetName().Name != "Assembly-CSharp")
                 {
-                    AppDomain.CurrentDomain.AssemblyLoad -= OnAssemblyLoad;
-                    LogInfo("Assembly-CSharp loaded, patching...");
-                    PatchGameEntry(args.LoadedAssembly);
+                    return;
                 }
+
+                AppDomain.CurrentDomain.AssemblyLoad -= OnAssemblyLoad;
+                _assemblyLoadSubscribed = false;
+                LogInfo("Assembly-CSharp loaded, patching...");
+                PatchGameEntry(args.LoadedAssembly, false);
             }
             catch (Exception ex)
             {
@@ -63,64 +90,68 @@ namespace Doorstop
             }
         }
 
-        /// <summary>
-        /// 用 Harmony patch GameApp.Awake()，在其执行时启动我们的代码。
-        /// Harmony patch 操作本身不需要 Unity 主线程，是安全的。
-        /// </summary>
-        private static void PatchGameEntry(Assembly asmAC)
+        private static void PatchGameEntry(
+            Assembly assemblyCSharp,
+            bool requireRecurringMethod)
         {
-            if (_patched) return;
-            _patched = true;
-
-            try
+            lock (PatchSync)
             {
-                Type gameAppType = asmAC.GetType("GameApp");
-                if (gameAppType == null)
-                {
-                    LogInfo("GameApp type not found, trying fallback...");
-                    // 兜底：尝试其他常见入口
-                    gameAppType = asmAC.GetType("StartConfig");
-                }
-
-                if (gameAppType == null)
-                {
-                    LogInfo("No suitable entry type found in Assembly-CSharp!");
-                    return;
-                }
-
-                MethodInfo awakeMethod = gameAppType.GetMethod("Awake",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                if (awakeMethod == null)
-                {
-                    // 尝试 Start
-                    awakeMethod = gameAppType.GetMethod("Start",
-                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                }
-
-                if (awakeMethod == null)
-                {
-                    LogInfo("No Awake/Start method found on " + gameAppType.Name);
-                    return;
-                }
-
-                var harmony = HarmonyInstance.Create("doorstop.bootstrap");
-                var postfix = typeof(Entrypoint).GetMethod("GameEntryPostfix",
-                    BindingFlags.Static | BindingFlags.NonPublic);
-
-                harmony.Patch(awakeMethod, null, new HarmonyMethod(postfix));
-                LogInfo("Patched " + gameAppType.Name + "." + awakeMethod.Name + " successfully");
-            }
-            catch (Exception ex)
-            {
-                LogInfo("PatchGameEntry failed: " + ex);
+                PatchGameEntryCore(assemblyCSharp, requireRecurringMethod);
             }
         }
 
-        /// <summary>
-        /// Harmony Postfix：在 GameApp.Awake() 执行后触发。
-        /// 此时在 Unity 主线程，引擎已就绪，可以安全创建 GameObject。
-        /// </summary>
+        private static void PatchGameEntryCore(
+            Assembly assemblyCSharp,
+            bool requireRecurringMethod)
+        {
+            if (_patched)
+            {
+                return;
+            }
+
+            Type gameAppType = assemblyCSharp.GetType("GameApp") ??
+                assemblyCSharp.GetType("StartConfig");
+            if (gameAppType == null)
+            {
+                throw new MissingMemberException(
+                    "No suitable entry type found in Assembly-CSharp.");
+            }
+
+            MethodInfo entryMethod = FindParameterlessInstanceMethod(
+                gameAppType,
+                "Update");
+            if (entryMethod == null && !requireRecurringMethod)
+            {
+                entryMethod = FindParameterlessInstanceMethod(gameAppType, "Awake");
+            }
+            if (entryMethod == null && !requireRecurringMethod)
+            {
+                entryMethod = FindParameterlessInstanceMethod(gameAppType, "Start");
+            }
+            if (entryMethod == null)
+            {
+                throw new MissingMethodException(
+                    requireRecurringMethod
+                        ? "No parameterless Update method found on " + gameAppType.Name
+                        : "No parameterless Update/Awake/Start method found on " +
+                            gameAppType.Name);
+            }
+
+            HarmonyInstance harmony = HarmonyInstance.Create("doorstop.bootstrap");
+            MethodInfo postfix = typeof(Entrypoint).GetMethod(
+                "GameEntryPostfix",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            if (postfix == null)
+            {
+                throw new MissingMethodException("GameEntryPostfix");
+            }
+
+            harmony.Patch(entryMethod, null, new HarmonyMethod(postfix));
+            _patched = true;
+            LogInfo("Patched " + gameAppType.Name + "." + entryMethod.Name +
+                " successfully");
+        }
+
         private static void GameEntryPostfix()
         {
             try
@@ -135,48 +166,102 @@ namespace Doorstop
 
         private static void Bootstrap()
         {
-            if (_bootstrapped) return;
-            _bootstrapped = true;
+            if (_bootstrapped || _bootstrapping)
+            {
+                return;
+            }
 
-            LogInfo("Bootstrap: creating ConsoleManager");
+            _bootstrapping = true;
+            GameObject host = null;
+            try
+            {
+                LogInfo("Bootstrap: creating ConsoleManager");
+                host = new GameObject("__RuntimeInjectionBoot__");
+                host.hideFlags = HideFlags.HideAndDontSave;
+                UnityEngine.Object.DontDestroyOnLoad(host);
+                host.AddComponent<ConsoleManager>();
+                _bootstrapped = true;
+                LogInfo("Bootstrap: ConsoleManager created OK");
+            }
+            catch
+            {
+                if (host != null)
+                {
+                    UnityEngine.Object.Destroy(host);
+                }
+                throw;
+            }
+            finally
+            {
+                _bootstrapping = false;
+            }
+        }
 
-            // 创建 ConsoleManager（原有入口），它会负责后续所有初始化
-            GameObject host = new GameObject("__DoorstopBoot__");
-            host.hideFlags = HideFlags.HideAndDontSave;
-            UnityEngine.Object.DontDestroyOnLoad(host);
-            host.AddComponent<ConsoleManager>();
+        private static MethodInfo FindParameterlessInstanceMethod(
+            Type type,
+            string name)
+        {
+            return type.GetMethod(
+                name,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                null,
+                Type.EmptyTypes,
+                null);
+        }
 
-            LogInfo("Bootstrap: ConsoleManager created OK");
+        private static Assembly WaitForAssembly(
+            string name,
+            int timeoutMilliseconds)
+        {
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+            Assembly assembly;
+            while ((assembly = FindAssembly(name)) == null &&
+                   DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(100);
+            }
+            return assembly;
         }
 
         private static Assembly FindAssembly(string name)
         {
-            Assembly[] asms = AppDomain.CurrentDomain.GetAssemblies();
-            for (int i = 0; i < asms.Length; i++)
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < assemblies.Length; i++)
             {
                 try
                 {
-                    if (asms[i].GetName().Name == name)
-                        return asms[i];
+                    if (assemblies[i].GetName().Name == name)
+                    {
+                        return assemblies[i];
+                    }
                 }
-                catch { }
+                catch
+                {
+                }
             }
             return null;
         }
 
-        private static void LogInfo(string msg)
+        private static void LogInfo(string message)
         {
             try
             {
-                string logDir = Path.Combine(
+                string logDirectory = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "ASWII");
-                if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
-                string logPath = Path.Combine(logDir, "doorstop_boot.log");
-                File.AppendAllText(logPath,
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [Doorstop] " + msg + Environment.NewLine);
+                if (!Directory.Exists(logDirectory))
+                {
+                    Directory.CreateDirectory(logDirectory);
+                }
+
+                File.AppendAllText(
+                    Path.Combine(logDirectory, "doorstop_boot.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") +
+                    " [Doorstop] " + message + Environment.NewLine);
             }
-            catch { }
+            catch
+            {
+            }
         }
     }
 }
