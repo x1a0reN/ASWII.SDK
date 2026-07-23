@@ -6,6 +6,14 @@ using UnityEngine;
 
 namespace ASWDEBUG.Cheats.AutoBattle
 {
+    internal enum SurvivalRoleKind
+    {
+        Unknown,
+        Guard,
+        Heavy,
+        Assault
+    }
+
     public static class SurvivalCombatAdapter
     {
         private const float CameraPitchOffset = -11.309932f;
@@ -159,6 +167,103 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             AutoBattleInput.MarkActivity(0.35f);
             try { if (player != null) player.ResetIdleMenu(); } catch { }
+        }
+
+        internal static SurvivalRoleKind DetectSurvivalRole(Character player)
+        {
+            try
+            {
+                if (player != null && player.character_info != null)
+                {
+                    switch (player.character_info.career)
+                    {
+                        case CareerType.kCareerSolider:
+                            return SurvivalRoleKind.Guard;
+                        case CareerType.kCareerGunner:
+                            return SurvivalRoleKind.Heavy;
+                        case CareerType.kCareerCommando:
+                            return SurvivalRoleKind.Assault;
+                    }
+                }
+            }
+            catch { }
+
+            // Older snapshots may not populate career immediately. Equipped active skills
+            // provide a stable fallback without depending on localized item names.
+            if (FindSurvivalSkill(player, SkillType.kSkillHeal, false) != null ||
+                FindSurvivalSkill(player, SkillType.kSkillShockWave, false) != null ||
+                FindSurvivalSkill(player, SkillType.kSkillArrowRain, false) != null)
+                return SurvivalRoleKind.Guard;
+            if (FindSurvivalSkill(player, SkillType.kSkillShield, false) != null ||
+                FindSurvivalSkill(player, SkillType.kSkillGallop, false) != null)
+                return SurvivalRoleKind.Heavy;
+            if (FindSurvivalSkill(player, SkillType.kSkillHidden, false) != null ||
+                FindSurvivalSkill(player, SkillType.kSkillSpurt, false) != null)
+                return SurvivalRoleKind.Assault;
+            return SurvivalRoleKind.Unknown;
+        }
+
+        internal static bool HasSurvivalSkill(Character player, SkillType type)
+        {
+            return FindSurvivalSkill(player, type, false) != null;
+        }
+
+        internal static bool IsSurvivalSkillReady(Character player, SkillType type)
+        {
+            return FindSurvivalSkill(player, type, true) != null;
+        }
+
+        internal static bool TryUseSurvivalSkill(Character player, SkillType type, string reason)
+        {
+            SkillInfo skill = FindSurvivalSkill(player, type, true);
+            if (skill == null) return false;
+            try
+            {
+                if (!skill.CanAction()) return false;
+                bool used = skill.Action();
+                if (!used) return false;
+                skill.cool_down_ready = false;
+                LastAction = reason;
+                FileLogger.Log("SURVIVAL][ROLE", "skill reason=" + reason +
+                    " slot=" + skill.slot + " subtype=" + skill.sub_type);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("SURVIVAL][ROLE", "skill failed reason=" + reason +
+                    " ex=" + ex.GetType().Name + ":" + ex.Message);
+                return false;
+            }
+        }
+
+        internal static bool PrepareSurvivalTargetSkill(Character player, Character target,
+            Camera camera)
+        {
+            if (player == null || target == null || camera == null) return false;
+            Vector3 aimPoint;
+            if (!TryGetEmergencyAimPoint(player, target, camera, out aimPoint)) return false;
+            return PrepareBodyAim(player, target, camera, aimPoint, true);
+        }
+
+        private static SkillInfo FindSurvivalSkill(Character player, SkillType type, bool requireReady)
+        {
+            try
+            {
+                if (player == null || player.character_info == null ||
+                    player.character_info.slots_info == null ||
+                    player.character_info.slots_info.object_info == null)
+                    return null;
+                ObjectBaseInfo[] slots = player.character_info.slots_info.object_info;
+                for (int i = 0; i < slots.Length; i++)
+                {
+                    SkillInfo skill = slots[i] as SkillInfo;
+                    if (skill == null || skill.sub_type != (byte)type) continue;
+                    if (requireReady && !skill.cool_down_ready) continue;
+                    return skill;
+                }
+            }
+            catch { }
+            return null;
         }
 
         public static Vector3 NavigateSurvival(Character player, Vector3 destination, bool tacticalMove, string intent)

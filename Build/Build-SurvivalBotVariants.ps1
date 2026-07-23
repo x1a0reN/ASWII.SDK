@@ -184,11 +184,40 @@ function Test-VariantAssembly {
             Assert-Condition ($matched.Count -eq 0) "$Edition contains removed UI literal $fragment"
         }
 
+        $managerType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.SurvivalBot.SurvivalBotManager'
+        } | Select-Object -First 1
+        $adapterType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.SurvivalCombatAdapter'
+        } | Select-Object -First 1
+        $roleType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.SurvivalRoleKind'
+        } | Select-Object -First 1
+        Assert-Condition ($null -ne $managerType) "$Edition is missing SurvivalBotManager"
+        Assert-Condition ($null -ne $adapterType) "$Edition is missing SurvivalCombatAdapter"
+        Assert-Condition ($null -ne $roleType) "$Edition is missing SurvivalRoleKind"
+        $requiredManagerMethods = @(
+            'TickRoleDirector',
+            'TickGuardDirector',
+            'TickAssaultDirector',
+            'ShouldRejectExposedHideRoute',
+            'TryValidateCliffApproach'
+        )
+        $managerMethodNames = @($managerType.Methods | ForEach-Object { $_.Name })
+        foreach ($methodName in $requiredManagerMethods) {
+            Assert-Condition ($managerMethodNames -contains $methodName) "$Edition is missing director method $methodName"
+        }
+        $requiredAdapterMethods = @(
+            'DetectSurvivalRole',
+            'TryUseSurvivalSkill',
+            'PrepareSurvivalTargetSkill'
+        )
+        $adapterMethodNames = @($adapterType.Methods | ForEach-Object { $_.Name })
+        foreach ($methodName in $requiredAdapterMethods) {
+            Assert-Condition ($adapterMethodNames -contains $methodName) "$Edition is missing adapter method $methodName"
+        }
+
         if ($Edition -eq 'ReleaseA') {
-            $managerType = $types | Where-Object {
-                $_.FullName -eq 'ASWDEBUG.Cheats.SurvivalBot.SurvivalBotManager'
-            } | Select-Object -First 1
-            Assert-Condition ($null -ne $managerType) 'ReleaseA is missing SurvivalBotManager'
             $forbiddenManagerMethods = @(
                 'SetCombatTestEnabled',
                 'SetRoomTestEnabled',
@@ -341,8 +370,11 @@ $manifest = [ordered]@{
             roomTest = $true
             level33LocalPatrol = $true
             configurableTactics = $false
-            roleStrategy = $false
-            survivalDefenseSkills = $false
+            configurableRoleStrategy = $false
+            configurableSurvivalDefenseSkills = $false
+            automaticRoleDirector = $true
+            concealedRouteAudit = $true
+            lethalCliffValidation = $true
         }
         ReleaseA = [ordered]@{
             internalTools = $false
@@ -351,8 +383,11 @@ $manifest = [ordered]@{
             roomTest = $false
             level33LocalPatrol = $false
             configurableTactics = $false
-            roleStrategy = $false
-            survivalDefenseSkills = $false
+            configurableRoleStrategy = $false
+            configurableSurvivalDefenseSkills = $false
+            automaticRoleDirector = $true
+            concealedRouteAudit = $true
+            lethalCliffValidation = $true
         }
     }
     audits = @($privateAudit, $releaseAudit)
