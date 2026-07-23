@@ -187,6 +187,9 @@ function Test-VariantAssembly {
         $managerType = $types | Where-Object {
             $_.FullName -eq 'ASWDEBUG.Cheats.SurvivalBot.SurvivalBotManager'
         } | Select-Object -First 1
+        $antiIdleType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.SurvivalBot.SurvivalAntiIdle'
+        } | Select-Object -First 1
         $adapterType = $types | Where-Object {
             $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.SurvivalCombatAdapter'
         } | Select-Object -First 1
@@ -206,6 +209,7 @@ function Test-VariantAssembly {
             $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.AutoBattleRoutePlanner/DenseSegmentProbe'
         } | Select-Object -First 1
         Assert-Condition ($null -ne $managerType) "$Edition is missing SurvivalBotManager"
+        Assert-Condition ($null -ne $antiIdleType) "$Edition is missing SurvivalAntiIdle"
         Assert-Condition ($null -ne $adapterType) "$Edition is missing SurvivalCombatAdapter"
         Assert-Condition ($null -ne $roleType) "$Edition is missing SurvivalRoleKind"
         Assert-Condition ($null -ne $compactRuntimeType) "$Edition is missing CompactRainNavRuntime"
@@ -229,6 +233,11 @@ function Test-VariantAssembly {
         foreach ($methodName in $requiredManagerMethods) {
             Assert-Condition ($managerMethodNames -contains $methodName) "$Edition is missing director method $methodName"
         }
+        $antiIdleMethodNames = @($antiIdleType.Methods | ForEach-Object { $_.Name })
+        Assert-Condition ($antiIdleMethodNames -contains 'OnFightStateUpdate') `
+            "$Edition is missing FightState anti-idle reset"
+        Assert-Condition ($settingsMethodNames -contains 'get_IgnoreIdleKickEnabled') `
+            "$Edition is missing anti-idle setting"
         $requiredAdapterMethods = @(
             'DetectSurvivalRole',
             'TryUseSurvivalSkill',
@@ -407,6 +416,7 @@ $manifest = [ordered]@{
             configurableRoleStrategy = $false
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
+            ignoreIdleKick = $true
             continuousCombatMovement = $true
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true
@@ -425,6 +435,7 @@ $manifest = [ordered]@{
             configurableRoleStrategy = $false
             configurableSurvivalDefenseSkills = $false
             automaticRoleDirector = $true
+            ignoreIdleKick = $true
             continuousCombatMovement = $true
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true

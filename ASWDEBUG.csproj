@@ -105,6 +105,7 @@
     <Compile Include="Cheats\SurvivalBot\LocalNavigationCombatTest.cs" Condition=" '$(SurvivalEdition)' == 'Private' " />
     <Compile Include="Cheats\SurvivalBot\SurvivalBotManager.cs" />
     <Compile Include="Cheats\SurvivalBot\SurvivalBotSettings.cs" />
+    <Compile Include="Cheats\SurvivalBot\SurvivalAntiIdle.cs" />
     <Compile Include="Build\SurvivalBuildProfile.cs" />
     <Compile Include="Loader\ConsoleManager.cs" />
     <Compile Include="Loader\DoorstopEntrypoint.cs" />

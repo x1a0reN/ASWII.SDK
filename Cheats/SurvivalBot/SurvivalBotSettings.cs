@@ -15,6 +15,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
 
         private static bool _loaded;
         private static int _enemyEspEnabled;
+        private static int _ignoreIdleKickEnabled;
         private static int _matchTimeoutIndex;
         private static int _participantCaptureIndex;
         private static int _separationIndex;
@@ -26,6 +27,11 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         public static bool EnemyEspEnabled
         {
             get { EnsureLoaded(); return _enemyEspEnabled != 0; }
+        }
+
+        public static bool IgnoreIdleKickEnabled
+        {
+            get { EnsureLoaded(); return _ignoreIdleKickEnabled != 0; }
         }
 
         public static float MatchTimeoutSeconds
@@ -68,6 +74,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             if (_loaded) return;
 
             _enemyEspEnabled = PlayerPrefs.GetInt(KeyPrefix + "EnemyEspEnabled", 1) == 0 ? 0 : 1;
+            _ignoreIdleKickEnabled = PlayerPrefs.GetInt(KeyPrefix + "IgnoreIdleKickEnabled", 1) == 0 ? 0 : 1;
             _matchTimeoutIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "MatchTimeoutIndex", 1), 0, MatchTimeoutValues.Length - 1);
             _participantCaptureIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "ParticipantCaptureIndex", 1), 0, ParticipantCaptureValues.Length - 1);
             _separationIndex = Clamp(PlayerPrefs.GetInt(KeyPrefix + "SeparationIndex", 2), 0, SeparationValues.Length - 1);
@@ -82,6 +89,12 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         {
             EnsureLoaded();
             SaveIfChanged(ref _enemyEspEnabled, KeyPrefix + "EnemyEspEnabled", value ? 1 : 0);
+        }
+
+        public static void SetIgnoreIdleKickEnabled(bool value)
+        {
+            EnsureLoaded();
+            SaveIfChanged(ref _ignoreIdleKickEnabled, KeyPrefix + "IgnoreIdleKickEnabled", value ? 1 : 0);
         }
 
         public static void SetMatchTimeoutSeconds(float value)

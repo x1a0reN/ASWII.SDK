@@ -12,6 +12,7 @@ namespace ASWDEBUG.UI
         {
             None,
             EnemyEsp,
+            IgnoreIdleKick,
             MatchTimeout,
             ParticipantCapture,
             Separation,
@@ -186,10 +187,11 @@ namespace ASWDEBUG.UI
             bool compactNavigation = _window.height < 470f;
             float navigationHeight = compactNavigation ? 52f : 112f;
             float navigationTop = statusTop - navigationHeight - 5f;
-            _rowStride = Mathf.Clamp((navigationTop - y - 2f) / 8f,
+            _rowStride = Mathf.Clamp((navigationTop - y - 2f) / 9f,
                 compactNavigation ? 13f : 17f, RowHeight + 1f);
 
             DrawDropdownRow(ref y, "敌人 ESP", DropdownId.EnemyEsp, EnabledNames, SurvivalBotSettings.EnemyEspEnabled ? 0 : 1);
+            DrawDropdownRow(ref y, "无视挂机", DropdownId.IgnoreIdleKick, EnabledNames, SurvivalBotSettings.IgnoreIdleKickEnabled ? 0 : 1);
             DrawDropdownRow(ref y, "匹配超时", DropdownId.MatchTimeout, MatchTimeoutNames, FindNearest(MatchTimeoutValues, SurvivalBotSettings.MatchTimeoutSeconds));
             DrawDropdownRow(ref y, "人数锁定", DropdownId.ParticipantCapture, ParticipantCaptureNames, FindNearest(ParticipantCaptureValues, SurvivalBotSettings.ParticipantCaptureSeconds));
             DrawDropdownRow(ref y, "躲避距离", DropdownId.Separation, SeparationNames, FindNearest(SeparationValues, SurvivalBotSettings.DesiredSeparation));
@@ -500,6 +502,7 @@ namespace ASWDEBUG.UI
         private static void ApplyDropdownSelection(DropdownId id, int selected)
         {
             if (id == DropdownId.EnemyEsp) SurvivalBotSettings.SetEnemyEspEnabled(selected == 0);
+            else if (id == DropdownId.IgnoreIdleKick) SurvivalBotSettings.SetIgnoreIdleKickEnabled(selected == 0);
             else if (id == DropdownId.MatchTimeout) SurvivalBotSettings.SetMatchTimeoutSeconds(MatchTimeoutValues[Clamp(selected, 0, MatchTimeoutValues.Length - 1)]);
             else if (id == DropdownId.ParticipantCapture) SurvivalBotSettings.SetParticipantCaptureSeconds(ParticipantCaptureValues[Clamp(selected, 0, ParticipantCaptureValues.Length - 1)]);
             else if (id == DropdownId.Separation) SurvivalBotSettings.SetDesiredSeparation(SeparationValues[Clamp(selected, 0, SeparationValues.Length - 1)]);

@@ -98,6 +98,7 @@ namespace ASWDEBUG.Patch
             PatchByName(harmony, typeof(LobbyConnection), "ResponseCancelMatching", 0, null, "MatchingCancelResponsePostfix");
             PatchByName(harmony, typeof(UITakeCardManager), "Refresh", 0, null, "CardRefreshPostfix");
             PatchByName(harmony, typeof(UIJiesuan), "ShowSelf", 0, null, "BalanceShownPostfix");
+            PatchByName(harmony, typeof(FightState), "Update", 1, "FightStateUpdatePrefix", null);
         }
 
         private static void PatchByName(HarmonyInstance harmony, Type type, string name, int parameterCount, string prefix, string postfix)
@@ -249,6 +250,11 @@ namespace ASWDEBUG.Patch
         private static bool InputAnyKeyDownPrefix(ref bool __result)
         {
             return !AutoBattleInput.TryAnyKeyDown(ref __result);
+        }
+
+        private static void FightStateUpdatePrefix(object __instance)
+        {
+            SurvivalAntiIdle.OnFightStateUpdate(__instance);
         }
 
         private static void LevelLoadMapPrefix(Level __instance, string name, ref bool load_navmesh,
