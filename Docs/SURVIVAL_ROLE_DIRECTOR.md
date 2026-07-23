@@ -99,6 +99,17 @@ Character.character_info.career
 
 因此该优化只改变计算调度，不放宽悬崖、拐角、走廊或实时物理安全门槛。完成日志新增 `optSlices`、`finalizeSlices` 和 `finalizeCpuMs`，用于区分总计算量与单帧停顿。
 
+### 3.6 猎杀锁定前预瞄
+
+猎杀追击不再把镜头平滑到路线行进方向，而是持续平滑到已绑定导演目标的身体点。目标轨迹有效时使用 0.10 秒水平速度前馈，并把前馈距离限制在 0.55m，避免快速目标造成过量领先。
+
+- 预瞄沿用 240 度/秒的平滑视角更新，不直接瞬移镜头。
+- `HardHunt` 在与目标方向收敛到 5 度内之前继续安全移动但不发起强锁开火；达到门槛后才进入原有精确身体锁定，因此最终 `SnapLook` 只负责很小的误差修正。
+- 路线暂时等待、失败或回退到安全战斗侧移时，预瞄仍继续，不再因没有移动向量而看向旧路线。
+- 发出开火请求后不再执行第二次追击视角更新，避免同一帧把刚完成的身体瞄准覆盖掉。
+
+日志 `[SURVIVAL][AIM] prelock ... ready=... lead=...` 可用于确认开火前的收敛状态。
+
 ## 4. 击杀后与悬崖结束
 
 - 完成一次实际击杀后停止主动职业猎杀，继续躲避并保留必要的近敌反击。
@@ -133,6 +144,7 @@ Character.character_info.career
 [SURVIVAL][ROLE] assault state ...
 [SURVIVAL][ROLE] director=hidden_watch|reveal_pursuit|hard_hunt ...
 [SURVIVAL][MOVE] combat=moving|stall_recovered|last_lane_fallback|jump_clearance|no_safe_lane ...
+[SURVIVAL][AIM] prelock uid=... ready=... lead=... point=...
 [SURVIVAL] hide route rejected sightSamples=...
 [SURVIVAL] reachable cliff candidate ... verifiedMinDrop=...
 ~~~

@@ -97,6 +97,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static float _attackPointSetAt;
         private static float _attackPointLastProgressAt;
         private static float _nextAttackSearchTraceAt;
+        private static float _nextPursuitAimTraceAt;
         private static float _attackTargetVisibleAt;
         private static float _attackTargetLockedAt;
         private static float _attackEngagementStartedAt;
@@ -144,7 +145,6 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static Vector3 _safePoint;
         private static Vector3 _attackPoint;
         private static Vector3 _attackPointTargetPosition;
-        private static Vector3 _attackSearchLookDirection;
         private static Vector3 _cliffEdge;
         private static Vector3 _cliffOutward;
         private static Vector3 _cliffJumpStart;
@@ -1532,6 +1532,23 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 return true;
             }
 
+            bool preAimReady = PreAimPursuitTarget(player, target, camera);
+            if (!preAimReady)
+            {
+                SurvivalCombatAdapter.CancelSurvivalAttack();
+                SurvivalCombatAdapter.CloseSurvivalScope(player);
+                if (hidden || !track.FireLine)
+                    MoveAttackPursuit(player, target, camera, false);
+                else
+                    MoveCombatStrafe(player, target);
+                SurvivalCombatAdapter.LogCombatState(player, target, track.FireLine,
+                    distance, false);
+                StatusText = "Assault director | pre-aim | distance " +
+                    distance.ToString("0.0") + " | hidden " + hidden;
+                TraceDirector("pre_aim", track);
+                return true;
+            }
+
             bool strictLine = false;
             bool fired = false;
             if (!track.Invincible)
@@ -1539,7 +1556,8 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                     out strictLine, out distance);
             else
                 SurvivalCombatAdapter.CancelSurvivalAttack();
-            if (hidden || !strictLine) MoveAttackPursuit(player, target, camera, true);
+            if (hidden || !strictLine)
+                MoveAttackPursuit(player, target, camera, false);
             else MoveCombatStrafe(player, target);
             SurvivalCombatAdapter.LogCombatState(player, target, strictLine, distance, fired);
             StatusText = "Assault director | hard hunt | distance " + distance.ToString("0.0") +
@@ -3222,12 +3240,15 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 (string.IsNullOrEmpty(detail) ? string.Empty : " " + detail));
         }
 
-        private static Vector3 MoveAttackPursuit(Character player, Character target, Camera camera, bool lookAlongRoute)
+        private static Vector3 MoveAttackPursuit(Character player, Character target, Camera camera,
+            bool preAimTarget)
         {
             if (player == null || player.transform == null || target == null || target.transform == null)
                 return Vector3.zero;
 
             Vector3 targetPosition = target.transform.position;
+            if (preAimTarget && camera != null)
+                PreAimPursuitTarget(player, target, camera);
             Vector3 pursuitPoint;
             if (!TryProjectGround(targetPosition, targetPosition.y, 3f, out pursuitPoint))
                 pursuitPoint = targetPosition;
@@ -3253,21 +3274,32 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             AutoBattleInput.SetMoveWorld(player, move, false);
-            if (lookAlongRoute && camera != null)
-            {
-                Vector3 desiredLook = move.normalized;
-                if (_attackSearchLookDirection.sqrMagnitude < 0.01f) _attackSearchLookDirection = desiredLook;
-                else
-                {
-                    _attackSearchLookDirection = Vector3.Slerp(_attackSearchLookDirection, desiredLook,
-                        Mathf.Clamp01(Time.deltaTime * 8f));
-                    _attackSearchLookDirection.y = 0f;
-                    if (_attackSearchLookDirection.sqrMagnitude > 0.01f) _attackSearchLookDirection.Normalize();
-                }
-                SurvivalCombatAdapter.LookSurvival(player, camera,
-                    player.transform.position + _attackSearchLookDirection * 8f + Vector3.up);
-            }
             return move;
+        }
+
+        private static bool PreAimPursuitTarget(Character player, Character target, Camera camera)
+        {
+            if (player == null || player.transform == null || target == null ||
+                target.transform == null || camera == null) return false;
+
+            Vector3 lead = Vector3.zero;
+            EnemyTrack track = GetEnemyTrack(target);
+            if (track != null && track.SampleAt > 0f && Time.time - track.SampleAt <= 0.35f)
+            {
+                lead = track.Velocity * 0.10f;
+                lead.y = 0f;
+                if (lead.magnitude > 0.55f) lead = lead.normalized * 0.55f;
+            }
+            Vector3 aimPoint = target.transform.position + lead + Vector3.up * 0.82f;
+            bool ready = SurvivalCombatAdapter.PreAimSurvivalTarget(player, camera, aimPoint);
+            if (Time.time >= _nextPursuitAimTraceAt)
+            {
+                _nextPursuitAimTraceAt = Time.time + 0.9f;
+                FileLogger.Log("SURVIVAL][AIM", "prelock uid=" + target.uid +
+                    " ready=" + ready + " lead=" + lead.magnitude.ToString("0.00") +
+                    " point=" + FormatVec(aimPoint));
+            }
+            return ready;
         }
 
         private static float CharacterHealthPercent(Character target)
@@ -3752,10 +3784,10 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             _hasAttackPoint = false;
             _attackPoint = Vector3.zero;
             _attackPointTargetPosition = Vector3.zero;
-            _attackSearchLookDirection = Vector3.zero;
             _attackPointSetAt = 0f;
             _attackPointLastProgressAt = 0f;
             _nextAttackSearchTraceAt = 0f;
+            _nextPursuitAimTraceAt = 0f;
             _combatStrafeSign = 1;
             _combatStrafeSwitchAt = 0f;
             _combatMoveProgressAt = 0f;

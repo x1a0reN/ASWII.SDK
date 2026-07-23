@@ -875,6 +875,12 @@ namespace ASWDEBUG.Cheats.AutoBattle
             ApplyLook(player, camera, point, 240f, 3.5f);
         }
 
+        public static bool PreAimSurvivalTarget(Character player, Camera camera, Vector3 point)
+        {
+            if (player == null || camera == null || player.camera == null) return false;
+            return ApplyLook(player, camera, point, 240f, 5.0f);
+        }
+
         public static bool CloseSurvivalScope(Character player)
         {
             return SetSniperScope(player == null ? null : player.mWeapon, false);

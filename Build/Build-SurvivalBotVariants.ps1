@@ -219,6 +219,7 @@ function Test-VariantAssembly {
             'MoveCombatStrafe',
             'IsSafeCombatDirection',
             'TraceCombatMovement',
+            'PreAimPursuitTarget',
             'TickFindCliff',
             'MoveWhileSearchingCliff',
             'ShouldRejectExposedHideRoute',
@@ -231,7 +232,8 @@ function Test-VariantAssembly {
         $requiredAdapterMethods = @(
             'DetectSurvivalRole',
             'TryUseSurvivalSkill',
-            'PrepareSurvivalTargetSkill'
+            'PrepareSurvivalTargetSkill',
+            'PreAimSurvivalTarget'
         )
         $adapterMethodNames = @($adapterType.Methods | ForEach-Object { $_.Name })
         foreach ($methodName in $requiredAdapterMethods) {
@@ -409,6 +411,7 @@ $manifest = [ordered]@{
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true
             slicedExactRouteFinalization = $true
+            huntTargetPreAim = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }
@@ -426,6 +429,7 @@ $manifest = [ordered]@{
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true
             slicedExactRouteFinalization = $true
+            huntTargetPreAim = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }
