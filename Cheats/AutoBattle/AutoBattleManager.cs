@@ -290,10 +290,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
             bool softDestinationChanged = !firstDestination &&
                 (destinationDelta > softDestinationThreshold || destinationYDelta > 1.25f);
             bool hardDestinationChanged = firstDestination || destinationDelta > hardDestinationThreshold || destinationYDelta > 2.5f;
-            bool pendingWithoutPath = attackChase && _pathSearchPending &&
-                (Path.Count == 0 || _pathIndex >= Path.Count);
+            bool pendingAttackSearch = attackChase && _pathSearchPending;
             bool commitDestination = firstDestination || hardDestinationChanged ||
-                (softDestinationChanged && !pendingWithoutPath && Time.time >= _nextRepath);
+                (softDestinationChanged && !pendingAttackSearch && Time.time >= _nextRepath);
             if (hardDestinationChanged)
             {
                 ClearPath();
@@ -342,7 +341,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                         _pendingLocalOrigin = playerPosition;
                     }
                     float pendingAge = Time.time - _pendingLocalStartedAt;
-                    if (pendingAge >= 1.25f)
+                    bool exactFinalizePending = LastPathProvider != null &&
+                        LastPathProvider.EndsWith("_finalize_pending", StringComparison.Ordinal);
+                    float pendingTimeout = exactFinalizePending ? 3.5f : 1.25f;
+                    if (pendingAge >= pendingTimeout)
                     {
                         ClearPath();
                         _nextRepath = Time.time + 0.2f;
@@ -925,7 +927,9 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 if (route.Provider != null && route.Provider.EndsWith("_pending", StringComparison.Ordinal))
                 {
                     _pathSearchPending = true;
-                    _nextRepath = Time.time + 0.18f;
+                    bool finalizePending = route.Provider.EndsWith("_finalize_pending",
+                        StringComparison.Ordinal);
+                    _nextRepath = Time.time + (finalizePending ? 0.01f : 0.18f);
                     LastPath = hadUsablePath ? "path_pending_follow" : "path_pending_hold";
                 }
                 else

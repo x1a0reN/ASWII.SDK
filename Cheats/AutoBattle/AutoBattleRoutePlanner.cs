@@ -72,6 +72,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private const int RainPathStepsPerSlice = 2048;
         private const float RainStartLayerTolerance = 1.65f;
         private const float RainStartAnchorMaxRadius = 5.25f;
+        private const double RainFinalizeSliceMilliseconds = 5.0;
+        private const int RainFinalizeStepsPerSlice = 12;
 
         private static readonly int[] Dx = { 1, -1, 0, 0, 1, 1, -1, -1 };
         private static readonly int[] Dz = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -97,6 +99,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         private static AutoBattleNavResourceState _navState = AutoBattleNavResourceState.Unavailable;
         private static PhysicsSearchJob _physicsSearchJob;
         private static RainSearchJob _rainSearchJob;
+        private static RainRouteFinalizeJob _rainFinalizeJob;
         private static int _sliceBudgetFrame = -1;
         private static float _sliceBudgetMilliseconds;
         private static float _sliceSpentMilliseconds;
@@ -152,6 +155,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             _physicsSearchJob = null;
             _rainSearchJob = null;
+            _rainFinalizeJob = null;
             bool runtimeRainActive = !_compactNavigationRequested && !string.IsNullOrEmpty(_navMapName);
             CompactRainNavRuntime.Shutdown(reason);
             if (runtimeRainActive) RuntimeRainNavMesh.Shutdown(reason);
@@ -172,6 +176,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
         {
             _physicsSearchJob = null;
             _rainSearchJob = null;
+            _rainFinalizeJob = null;
             if (_compactNavigationRequested)
                 CompactRainNavRuntime.DeactivateScene(reason);
             else if (!string.IsNullOrEmpty(_navMapName))
@@ -234,6 +239,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _nextNavProbeTime = 0f;
             _physicsSearchJob = null;
             _rainSearchJob = null;
+            _rainFinalizeJob = null;
             AutoBattleNavResourceState initialState = compactLevel33
                 ? (compactReady ? AutoBattleNavResourceState.Ready : AutoBattleNavResourceState.Fallback)
                 : (_navLoadRequested ? AutoBattleNavResourceState.Loading : AutoBattleNavResourceState.Unavailable);
@@ -306,6 +312,7 @@ namespace ASWDEBUG.Cheats.AutoBattle
             _nextNavProbeTime = 0f;
             _physicsSearchJob = null;
             _rainSearchJob = null;
+            _rainFinalizeJob = null;
             SetNavigationState(AutoBattleNavResourceState.Loading,
                 "map=" + SafeMap(normalized) + " provider=runtime profile=" +
                 (highDetail ? "max_detail" : "long_run_0.20") + " source=map_bake");
@@ -351,6 +358,13 @@ namespace ASWDEBUG.Cheats.AutoBattle
             string rainDetail = IsGameNavigationReady ? "ready" :
                 (_compactNavigationRequested ? CompactRainNavRuntime.Detail : RuntimeRainNavMesh.Detail);
 
+            if (_rainFinalizeJob != null)
+            {
+                if (_rainFinalizeJob.Matches(to, ignoreRoot, capabilities))
+                    return TickRainRouteFinalize(navigationProvider);
+                _rainFinalizeJob = null;
+            }
+
             if (IsGameNavigationReady)
             {
                 bool rainPending;
@@ -372,8 +386,10 @@ namespace ASWDEBUG.Cheats.AutoBattle
                     }
                     else
                     {
-                        points = OptimizeRainPath(from, points, capabilities, ignoreRoot,
-                            out optimizerPartial, out optimizeDetail);
+                        _rainFinalizeJob = new RainRouteFinalizeJob(navigationProvider,
+                            rainDetail, rainPartial, from, to, points, rainOffMeshFlags,
+                            capabilities, ignoreRoot);
+                        return TickRainRouteFinalize(navigationProvider);
                     }
                     rainDetail += " " + optimizeDetail;
                     string validationDetail = "not_checked";
@@ -415,6 +431,28 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 LogRoute(route);
                 return route;
             }
+        }
+
+        private static AutoBattleRouteResult TickRainRouteFinalize(string navigationProvider)
+        {
+            RainRouteFinalizeJob job = _rainFinalizeJob;
+            if (job == null)
+                return Fail(navigationProvider + "_required",
+                    "result=fail reason=finalize_job_missing");
+
+            AutoBattleRouteResult result;
+            if (!job.Tick(out result))
+            {
+                AutoBattleRouteResult pending = Pending(navigationProvider +
+                    "_finalize_pending", job.ProgressDetail);
+                LogRoute(pending);
+                return pending;
+            }
+
+            _rainFinalizeJob = null;
+            _physicsSearchJob = null;
+            LogRoute(result);
+            return result;
         }
 
         private static void AnnotateBuiltInJumpFlags(AutoBattleRouteResult route, Vector3 from, AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
@@ -3457,6 +3495,709 @@ namespace ASWDEBUG.Cheats.AutoBattle
                 Pos = pos;
                 Jump = jump;
             }
+        }
+
+        // Retains every compact-nav and live-physics check while spreading them across frames.
+        private sealed class RainRouteFinalizeJob
+        {
+            private readonly string _provider;
+            private readonly string _rainDetail;
+            private readonly bool _rainPartial;
+            private readonly Vector3 _from;
+            private readonly Vector3 _to;
+            private readonly List<Vector3> _raw;
+            private readonly List<bool> _rawFlags;
+            private readonly AutoBattleRouteCapabilities _capabilities;
+            private readonly Transform _ignoreRoot;
+            private readonly IEnumerator<int> _work;
+            private List<Vector3> _optimized;
+            private List<bool> _validatedJumpFlags;
+            private AutoBattleRouteResult _result;
+            private string _stage = "optimize";
+            private string _optimizationDetailBase = "opt=rain_not_started";
+            private string _validationDetail = "not_checked";
+            private string _progress = "raw=0 clean=0 smooth=0";
+            private bool _optimizerPartial;
+            private bool _validationSuccess;
+            private bool _metricsAppended;
+            private int _slices;
+            private int _optSlices;
+            private double _cpuMilliseconds;
+            private double _optCpuMilliseconds;
+
+            public RainRouteFinalizeJob(string provider, string rainDetail, bool rainPartial,
+                Vector3 from, Vector3 to, List<Vector3> raw, List<bool> rawFlags,
+                AutoBattleRouteCapabilities capabilities, Transform ignoreRoot)
+            {
+                _provider = provider ?? "rain_navmesh";
+                _rainDetail = rainDetail ?? "ready";
+                _rainPartial = rainPartial;
+                _from = from;
+                _to = to;
+                _raw = raw == null ? new List<Vector3>() : new List<Vector3>(raw);
+                _rawFlags = rawFlags == null ? new List<bool>() : new List<bool>(rawFlags);
+                _capabilities = CopyCapabilities(capabilities);
+                _ignoreRoot = ignoreRoot;
+                _progress = "raw=" + _raw.Count + " clean=0 smooth=0";
+                _work = Run().GetEnumerator();
+            }
+
+            public string ProgressDetail
+            {
+                get
+                {
+                    return "result=pending phase=" + _stage + " " + _progress +
+                           " slices=" + _slices +
+                           " cpuMs=" + Math.Round(_cpuMilliseconds);
+                }
+            }
+
+            public bool Matches(Vector3 to, Transform ignoreRoot,
+                AutoBattleRouteCapabilities capabilities)
+            {
+                if (_ignoreRoot != ignoreRoot || capabilities == null) return false;
+                return XZDistance(_to, to) <= 0.65f &&
+                       Mathf.Abs(_to.y - to.y) <= 0.75f &&
+                       _capabilities.AllowJump == capabilities.AllowJump &&
+                       Mathf.Abs(_capabilities.JumpHeight - capabilities.JumpHeight) <= 0.01f &&
+                       Mathf.Abs(_capabilities.JumpVelocity - capabilities.JumpVelocity) <= 0.01f &&
+                       Mathf.Abs(_capabilities.RunSpeed - capabilities.RunSpeed) <= 0.01f;
+            }
+
+            public bool Tick(out AutoBattleRouteResult result)
+            {
+                result = null;
+                _slices++;
+                if (string.Equals(_stage, "optimize", StringComparison.Ordinal)) _optSlices++;
+                Stopwatch slice = Stopwatch.StartNew();
+                int steps = 0;
+                while (steps == 0 ||
+                       (steps < RainFinalizeStepsPerSlice &&
+                        slice.Elapsed.TotalMilliseconds < RainFinalizeSliceMilliseconds))
+                {
+                    string chargedStage = _stage;
+                    Stopwatch operation = Stopwatch.StartNew();
+                    bool hasMore;
+                    try
+                    {
+                        hasMore = _work.MoveNext();
+                    }
+                    catch (Exception ex)
+                    {
+                        _stage = "failed";
+                        _result = Fail(_provider + "_required",
+                            "result=fail reason=finalize_exception type=" +
+                            ex.GetType().Name + " message=" + SafeOneLine(ex.Message, 120));
+                        hasMore = false;
+                    }
+                    operation.Stop();
+                    ChargeCpu(chargedStage, operation.Elapsed.TotalMilliseconds);
+                    if (!hasMore)
+                    {
+                        if (_result == null)
+                            _result = Fail(_provider + "_required",
+                                "result=fail reason=finalize_result_missing");
+                        AppendMetrics();
+                        result = _result;
+                        return true;
+                    }
+                    steps++;
+                }
+                return false;
+            }
+
+            private void ChargeCpu(string stage, double milliseconds)
+            {
+                _cpuMilliseconds += milliseconds;
+                if (string.Equals(stage, "optimize", StringComparison.Ordinal))
+                    _optCpuMilliseconds += milliseconds;
+            }
+
+            private void AppendMetrics()
+            {
+                if (_metricsAppended || _result == null) return;
+                _metricsAppended = true;
+                _result.Detail += " finalizeSlices=" + _slices +
+                                  " finalizeCpuMs=" + Math.Round(_cpuMilliseconds);
+            }
+
+            private IEnumerable<int> Run()
+            {
+                foreach (int step in Optimize()) yield return step;
+                string optimizeDetail = _optimizationDetailBase +
+                    " optMs=" + Math.Round(_optCpuMilliseconds) +
+                    " optSlices=" + _optSlices;
+                string combinedRainDetail = _rainDetail + " " + optimizeDetail;
+
+                _stage = "validate";
+                _progress = "points=" + (_optimized == null ? 0 : _optimized.Count);
+                yield return 0;
+                if (!_rainPartial && _optimized != null && _optimized.Count > 0)
+                {
+                    foreach (int step in Validate()) yield return step;
+                }
+                else
+                {
+                    _validationSuccess = false;
+                    _validationDetail = _rainPartial ? "partial_rejected" : "empty";
+                }
+
+                if (!_validationSuccess)
+                {
+                    combinedRainDetail += _rainPartial
+                        ? " validate=partial_rejected"
+                        : " validate=" + _validationDetail;
+                    _stage = "failed";
+                    _result = Fail(_provider + "_required",
+                        "result=fail reason=complete_rain_path_unavailable " +
+                        combinedRainDetail);
+                    yield break;
+                }
+
+                _stage = "annotate";
+                _progress = "points=" + _optimized.Count;
+                yield return 0;
+                AutoBattleRouteResult route = FromPoints(_provider, _optimizerPartial,
+                    _optimized, combinedRainDetail + " validate=" + _validationDetail);
+                for (int i = 0; i < route.JumpFlags.Count &&
+                    i < _validatedJumpFlags.Count; i++)
+                    route.JumpFlags[i] = _validatedJumpFlags[i];
+                foreach (int step in Annotate(route)) yield return step;
+
+                _stage = "complete";
+                _progress = "points=" + route.Corners.Count;
+                _result = route;
+            }
+
+            private IEnumerable<int> Optimize()
+            {
+                int rawCount = _raw.Count;
+                List<Vector3> clean = new List<Vector3>(rawCount);
+                for (int i = 0; i < _raw.Count; i++)
+                {
+                    Vector3 point = _raw[i];
+                    if (!IsFinite(point)) continue;
+                    if (clean.Count > 0 && XZDistance(clean[clean.Count - 1], point) < 0.18f &&
+                        Mathf.Abs(clean[clean.Count - 1].y - point.y) < 0.28f)
+                        continue;
+                    clean.Add(point);
+                }
+
+                List<Vector3> simplified = new List<Vector3>(clean.Count);
+                Vector3 anchor = _from;
+                int cursor = 0;
+                int shortcuts = 0;
+                int denseRejects = 0;
+                int aswnavRejects = 0;
+                int compactFallbacks = 0;
+                int detourCount = 0;
+                int detourExpanded = 0;
+                int inferredJumps = 0;
+                while (cursor < clean.Count)
+                {
+                    _progress = "raw=" + rawCount + " clean=" + clean.Count +
+                                " smooth=" + simplified.Count + " cursor=" + cursor;
+                    int selected = -1;
+                    int furthest = Mathf.Min(clean.Count - 1, cursor + 6);
+                    for (int candidate = furthest; candidate >= cursor; candidate--)
+                    {
+                        if (candidate > cursor && !RainShortcutFollowsRawCorridor(anchor,
+                            clean, cursor, candidate, RainShortcutCorridorRadius)) continue;
+                        string compactSegmentDetail;
+                        bool compactSafe = IsCompactWalkSegmentSafe(anchor,
+                            clean[candidate], out compactSegmentDetail);
+                        yield return 0;
+                        if (!compactSafe)
+                        {
+                            aswnavRejects++;
+                            continue;
+                        }
+
+                        DenseSegmentProbe dense = new DenseSegmentProbe(anchor,
+                            clean[candidate], _ignoreRoot);
+                        while (!dense.Complete)
+                        {
+                            dense.Step();
+                            yield return 0;
+                        }
+                        if (!dense.Success)
+                        {
+                            denseRejects++;
+                            bool compactFallback = CanUseCompactCorridorFallback(
+                                clean[candidate], _ignoreRoot);
+                            yield return 0;
+                            if (!compactFallback) continue;
+                            compactFallbacks++;
+                        }
+                        selected = candidate;
+                        break;
+                    }
+                    if (selected < 0)
+                    {
+                        Vector3 blockedPoint = clean[cursor];
+                        Vector3 jumpDirection = blockedPoint - anchor;
+                        jumpDirection.y = 0f;
+                        float jumpHorizontal = jumpDirection.magnitude;
+                        float rise = blockedPoint.y - anchor.y;
+                        bool lowObstacle = ShouldJumpForwardObstacle(anchor,
+                            jumpDirection, _ignoreRoot);
+                        yield return 0;
+                        bool implicitJump = false;
+                        if (_capabilities.AllowJump && jumpHorizontal <= 4.2f &&
+                            (rise > 0.62f || lowObstacle))
+                        {
+                            implicitJump = TryJumpSegment(anchor, blockedPoint,
+                                _capabilities, _ignoreRoot);
+                            yield return 0;
+                        }
+                        if (implicitJump)
+                        {
+                            simplified.Add(blockedPoint);
+                            inferredJumps++;
+                            anchor = blockedPoint;
+                            cursor++;
+                            continue;
+                        }
+
+                        List<Vector3> detour;
+                        int resumeIndex;
+                        int expanded;
+                        string detourDetail;
+                        bool detourBuilt = TryBuildRainLocalDetour(anchor, clean,
+                            cursor, furthest, _ignoreRoot, out detour,
+                            out resumeIndex, out expanded, out detourDetail);
+                        yield return 0;
+                        if (!detourBuilt)
+                        {
+                            _optimizerPartial = simplified.Count > 0;
+                            _optimizationDetailBase = "opt=rain_blocked raw=" + rawCount +
+                                " clean=" + clean.Count + " at=" + cursor +
+                                " prefix=" + simplified.Count + " partial=" +
+                                (_optimizerPartial ? "1" : "0") +
+                                " denseRejects=" + denseRejects + " " + detourDetail;
+                            DumpRainPathFailure(_from, clean, null, simplified, null,
+                                _ignoreRoot, cursor, furthest, -1,
+                                _optimizationDetailBase);
+                            _optimized = simplified;
+                            yield break;
+                        }
+                        for (int i = 0; i < detour.Count; i++) simplified.Add(detour[i]);
+                        detourCount++;
+                        detourExpanded += expanded;
+                        anchor = clean[resumeIndex];
+                        cursor = resumeIndex + 1;
+                        continue;
+                    }
+                    if (selected > cursor) shortcuts += selected - cursor;
+                    simplified.Add(clean[selected]);
+                    anchor = clean[selected];
+                    cursor = selected + 1;
+                }
+
+                int adjustedCorners = 0;
+                for (int i = 1; i + 1 < simplified.Count; i++)
+                {
+                    _progress = "raw=" + rawCount + " clean=" + clean.Count +
+                                " smooth=" + simplified.Count + " corner=" + i +
+                                "/" + (simplified.Count - 2);
+                    Vector3 incoming = simplified[i] - simplified[i - 1];
+                    Vector3 outgoing = simplified[i + 1] - simplified[i];
+                    incoming.y = 0f;
+                    outgoing.y = 0f;
+                    if (incoming.sqrMagnitude < 0.36f || outgoing.sqrMagnitude < 0.36f)
+                        continue;
+                    incoming.Normalize();
+                    outgoing.Normalize();
+                    bool sharpTurn = Vector3.Dot(incoming, outgoing) <= 0.92f;
+                    if (!sharpTurn)
+                    {
+                        float directClearance = MeasureWallClearance(simplified[i],
+                            _ignoreRoot);
+                        yield return 0;
+                        if (directClearance >= 0.78f) continue;
+                    }
+
+                    RainCornerExpansionResult expansion = new RainCornerExpansionResult();
+                    foreach (int step in ExpandCorner(simplified[i - 1], simplified[i],
+                        simplified[i + 1], expansion)) yield return step;
+                    if (expansion.Found)
+                    {
+                        simplified[i] = expansion.Expanded;
+                        adjustedCorners++;
+                    }
+                }
+
+                _optimized = simplified;
+                _optimizationDetailBase = "opt=rain raw=" + rawCount +
+                    " clean=" + clean.Count + " smooth=" + simplified.Count +
+                    " corners=" + adjustedCorners + " shortcuts=" + shortcuts +
+                    " aswnavRejects=" + aswnavRejects +
+                    " denseRejects=" + denseRejects +
+                    " compactFallbacks=" + compactFallbacks +
+                    " detours=" + detourCount +
+                    " detourExpanded=" + detourExpanded +
+                    " inferredJumps=" + inferredJumps +
+                    " body=" + NavigationBodyRadius.ToString("0.00") +
+                    " corridor=" + RainShortcutCorridorRadius.ToString("0.00");
+            }
+
+            private IEnumerable<int> ExpandCorner(Vector3 previous, Vector3 corner,
+                Vector3 next, RainCornerExpansionResult result)
+            {
+                result.Expanded = corner;
+                float baselineClearance = MeasureWallClearance(corner, _ignoreRoot);
+                yield return 0;
+                float bestScore = baselineClearance * 3f;
+                const int directions = 12;
+                for (int ring = 0; ring < 2; ring++)
+                {
+                    float radius = RainCornerClearanceRadius + ring * 0.28f;
+                    for (int i = 0; i < directions; i++)
+                    {
+                        float angle = i * (360f / directions) * Mathf.Deg2Rad;
+                        Vector3 raw = corner + new Vector3(Mathf.Cos(angle), 0f,
+                            Mathf.Sin(angle)) * radius;
+                        Vector3 candidate;
+                        bool snapped = TrySnapToGroundNear(raw, corner.y, 1.25f,
+                            out candidate, false);
+                        yield return 0;
+                        if (!snapped) continue;
+                        bool onGraph = IsPointOnOwnedRainGraph(candidate, 1.0f);
+                        yield return 0;
+                        if (!onGraph) continue;
+                        bool standing = HasStandingSpace(candidate, _ignoreRoot);
+                        yield return 0;
+                        if (!standing) continue;
+
+                        DenseSegmentProbe incoming = new DenseSegmentProbe(previous,
+                            candidate, _ignoreRoot);
+                        while (!incoming.Complete)
+                        {
+                            incoming.Step();
+                            yield return 0;
+                        }
+                        if (!incoming.Success) continue;
+                        DenseSegmentProbe outgoing = new DenseSegmentProbe(candidate,
+                            next, _ignoreRoot);
+                        while (!outgoing.Complete)
+                        {
+                            outgoing.Step();
+                            yield return 0;
+                        }
+                        if (!outgoing.Success) continue;
+
+                        string compactDetail;
+                        bool compactIncoming = IsCompactWalkSegmentSafe(previous,
+                            candidate, out compactDetail);
+                        yield return 0;
+                        if (!compactIncoming) continue;
+                        bool compactOutgoing = IsCompactWalkSegmentSafe(candidate,
+                            next, out compactDetail);
+                        yield return 0;
+                        if (!compactOutgoing) continue;
+
+                        float clearance = MeasureWallClearance(candidate, _ignoreRoot);
+                        yield return 0;
+                        if (clearance < NavigationBodyRadius + 0.10f) continue;
+                        float detour = XZDistance(previous, candidate) +
+                            XZDistance(candidate, next) - XZDistance(previous, corner) -
+                            XZDistance(corner, next);
+                        float score = clearance * 3f - radius * 0.35f -
+                            Mathf.Max(0f, detour) * 0.18f;
+                        if (score <= bestScore + 0.12f) continue;
+                        bestScore = score;
+                        result.Expanded = candidate;
+                        result.Found = true;
+                    }
+                }
+            }
+
+            private IEnumerable<int> Validate()
+            {
+                _validatedJumpFlags = new List<bool>(_optimized.Count);
+                for (int i = 0; i < _optimized.Count; i++)
+                    _validatedJumpFlags.Add(false);
+                if (!IsFinite(_from))
+                {
+                    _validationDetail = "invalid_start";
+                    yield break;
+                }
+
+                Vector3 previous = _from;
+                int jumps = 0;
+                int compactFallbacks = 0;
+                int trustedCompactLinks = 0;
+                for (int i = 0; i < _optimized.Count; i++)
+                {
+                    _progress = "waypoint=" + i + "/" + _optimized.Count;
+                    Vector3 target = _optimized[i];
+                    if (!IsFinite(target))
+                    {
+                        _validationDetail = "invalid_waypoint=" + i;
+                        yield break;
+                    }
+                    float horizontal = XZDistance(previous, target);
+                    if (horizontal < 0.12f)
+                    {
+                        float vertical = Mathf.Abs(target.y - previous.y);
+                        if (vertical > SamePositionVerticalTolerance)
+                        {
+                            if (!_compactNavigationRequested)
+                            {
+                                _validationDetail = "vertical_transition waypoint=" + i +
+                                    " dy=" + vertical.ToString("0.00") +
+                                    " compact=inactive";
+                                yield break;
+                            }
+                            string compactStepDetail;
+                            bool compactSafe = IsCompactWalkSegmentSafe(previous, target,
+                                out compactStepDetail);
+                            yield return 0;
+                            if (!compactSafe)
+                            {
+                                _validationDetail = "vertical_transition waypoint=" + i +
+                                    " dy=" + vertical.ToString("0.00") +
+                                    " compact=" + compactStepDetail;
+                                yield break;
+                            }
+                            bool compactFallback = CanUseCompactCorridorFallback(target,
+                                _ignoreRoot);
+                            yield return 0;
+                            if (!compactFallback)
+                            {
+                                _validationDetail = "vertical_transition waypoint=" + i +
+                                    " dy=" + vertical.ToString("0.00") +
+                                    " compact=" + compactStepDetail;
+                                yield break;
+                            }
+                            compactFallbacks++;
+                        }
+                        previous = target;
+                        continue;
+                    }
+
+                    bool forcedJump = i < _rawFlags.Count && _rawFlags[i];
+                    if (forcedJump)
+                    {
+                        string compactWalkDetail;
+                        bool compactWalk = IsCompactWalkSegmentSafe(previous, target,
+                            out compactWalkDetail);
+                        yield return 0;
+                        bool walkable = false;
+                        if (compactWalk)
+                        {
+                            DenseSegmentProbe walkProbe = new DenseSegmentProbe(previous,
+                                target, _ignoreRoot);
+                            while (!walkProbe.Complete)
+                            {
+                                walkProbe.Step();
+                                yield return 0;
+                            }
+                            walkable = walkProbe.Success;
+                        }
+                        if (walkable)
+                        {
+                            previous = target;
+                            continue;
+                        }
+
+                        bool physicsLink = false;
+                        if (_capabilities.AllowJump)
+                        {
+                            physicsLink = TryJumpSegment(previous, target,
+                                _capabilities, _ignoreRoot);
+                            yield return 0;
+                        }
+                        bool compactLink = false;
+                        if (!physicsLink)
+                        {
+                            compactLink = CanUseCompactHardLink(previous, target,
+                                _capabilities, _ignoreRoot);
+                            yield return 0;
+                        }
+                        if (!physicsLink && !compactLink)
+                        {
+                            _validationDetail = "offmesh_invalid waypoint=" + i;
+                            yield break;
+                        }
+                        _validatedJumpFlags[i] = true;
+                        jumps++;
+                        if (compactLink) trustedCompactLinks++;
+                        previous = target;
+                        continue;
+                    }
+
+                    string compactSegmentDetail;
+                    bool safe = IsCompactWalkSegmentSafe(previous, target,
+                        out compactSegmentDetail);
+                    yield return 0;
+                    if (!safe)
+                    {
+                        _validationDetail = "aswnav_unsafe waypoint=" + i + " " +
+                            compactSegmentDetail;
+                        yield break;
+                    }
+                    DenseSegmentProbe dense = new DenseSegmentProbe(previous, target,
+                        _ignoreRoot);
+                    while (!dense.Complete)
+                    {
+                        dense.Step();
+                        yield return 0;
+                    }
+                    if (!dense.Success)
+                    {
+                        bool compactFallback = CanUseCompactCorridorFallback(target,
+                            _ignoreRoot);
+                        yield return 0;
+                        if (compactFallback)
+                        {
+                            compactFallbacks++;
+                            previous = target;
+                            continue;
+                        }
+                        Vector3 jumpDirection = target - previous;
+                        jumpDirection.y = 0f;
+                        float rise = target.y - previous.y;
+                        bool lowObstacle = ShouldJumpForwardObstacle(previous,
+                            jumpDirection, _ignoreRoot);
+                        yield return 0;
+                        bool jumpable = false;
+                        if (_capabilities.AllowJump && (rise > 0.62f || lowObstacle) &&
+                            horizontal <= 4.2f)
+                        {
+                            jumpable = TryJumpSegment(previous, target,
+                                _capabilities, _ignoreRoot);
+                            yield return 0;
+                        }
+                        if (!jumpable)
+                        {
+                            _validationDetail = "blocked_walk waypoint=" + i +
+                                " segment=" + dense.BlockedSegment + "/" +
+                                dense.SegmentCount;
+                            yield break;
+                        }
+                        _validatedJumpFlags[i] = true;
+                        jumps++;
+                    }
+                    previous = target;
+                }
+                _validationDetail = "ok jumps=" + jumps +
+                    " compactFallbacks=" + compactFallbacks +
+                    " trustedCompactLinks=" + trustedCompactLinks;
+                _validationSuccess = true;
+            }
+
+            private IEnumerable<int> Annotate(AutoBattleRouteResult route)
+            {
+                if (route == null || route.Corners.Count == 0) yield break;
+                Vector3 previous = _from;
+                int jumps = 0;
+                for (int i = 0; i < route.Corners.Count; i++)
+                {
+                    _progress = "waypoint=" + i + "/" + route.Corners.Count;
+                    Vector3 point = route.Corners[i];
+                    float horizontal = XZDistance(previous, point);
+                    DenseSegmentProbe dense = new DenseSegmentProbe(previous, point,
+                        _ignoreRoot);
+                    while (!dense.Complete)
+                    {
+                        dense.Step();
+                        yield return 0;
+                    }
+                    bool walkable = dense.Success;
+                    if (walkable)
+                    {
+                        string compactWalkDetail;
+                        walkable = IsCompactWalkSegmentSafe(previous, point,
+                            out compactWalkDetail);
+                        yield return 0;
+                    }
+                    float rise = point.y - previous.y;
+                    bool jump = i < route.JumpFlags.Count && route.JumpFlags[i];
+                    jump = jump && !walkable;
+                    if (!jump && _capabilities.AllowJump && !walkable &&
+                        rise > 0.72f && horizontal <= 4.2f)
+                    {
+                        jump = TryJumpSegment(previous, point, _capabilities,
+                            _ignoreRoot);
+                        yield return 0;
+                    }
+                    if (i < route.JumpFlags.Count) route.JumpFlags[i] = jump;
+                    if (jump) jumps++;
+                    previous = point;
+                }
+                if (jumps > 0) route.Detail += " inferredJumps=" + jumps;
+            }
+
+            private static AutoBattleRouteCapabilities CopyCapabilities(
+                AutoBattleRouteCapabilities capabilities)
+            {
+                AutoBattleRouteCapabilities source = capabilities ??
+                    new AutoBattleRouteCapabilities();
+                AutoBattleRouteCapabilities copy = new AutoBattleRouteCapabilities();
+                copy.JumpHeight = source.JumpHeight;
+                copy.JumpVelocity = source.JumpVelocity;
+                copy.RunSpeed = source.RunSpeed;
+                copy.AllowJump = source.AllowJump;
+                copy.RequireRainPath = source.RequireRainPath;
+                return copy;
+            }
+        }
+
+        private sealed class DenseSegmentProbe
+        {
+            private readonly Vector3 _from;
+            private readonly Vector3 _to;
+            private readonly Transform _ignoreRoot;
+            private Vector3 _segmentStart;
+            private int _nextSegment;
+
+            public readonly int SegmentCount;
+            public int BlockedSegment;
+            public bool Complete;
+            public bool Success;
+
+            public DenseSegmentProbe(Vector3 from, Vector3 to, Transform ignoreRoot)
+            {
+                _from = from;
+                _to = to;
+                _ignoreRoot = ignoreRoot;
+                float horizontal = XZDistance(from, to);
+                SegmentCount = Mathf.Clamp(Mathf.CeilToInt(horizontal / 0.9f), 1, 96);
+                _segmentStart = from;
+                _nextSegment = 1;
+                if (!IsPlausibleWalkTransition(from, to))
+                {
+                    BlockedSegment = 1;
+                    Complete = true;
+                }
+            }
+
+            public void Step()
+            {
+                if (Complete) return;
+                Vector3 segmentEnd = Vector3.Lerp(_from, _to,
+                    (float)_nextSegment / SegmentCount);
+                if (!CanFollowSegment(_segmentStart, segmentEnd, _ignoreRoot))
+                {
+                    BlockedSegment = _nextSegment;
+                    Complete = true;
+                    return;
+                }
+                _segmentStart = segmentEnd;
+                _nextSegment++;
+                if (_nextSegment > SegmentCount)
+                {
+                    Success = true;
+                    Complete = true;
+                }
+            }
+        }
+
+        private sealed class RainCornerExpansionResult
+        {
+            public bool Found;
+            public Vector3 Expanded;
         }
 
         private sealed class PhysicsSearchJob

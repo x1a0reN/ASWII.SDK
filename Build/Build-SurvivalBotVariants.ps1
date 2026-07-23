@@ -196,10 +196,22 @@ function Test-VariantAssembly {
         $compactRuntimeType = $types | Where-Object {
             $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.CompactNav.CompactRainNavRuntime'
         } | Select-Object -First 1
+        $routePlannerType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.AutoBattleRoutePlanner'
+        } | Select-Object -First 1
+        $routeFinalizeType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.AutoBattleRoutePlanner/RainRouteFinalizeJob'
+        } | Select-Object -First 1
+        $denseProbeType = $types | Where-Object {
+            $_.FullName -eq 'ASWDEBUG.Cheats.AutoBattle.AutoBattleRoutePlanner/DenseSegmentProbe'
+        } | Select-Object -First 1
         Assert-Condition ($null -ne $managerType) "$Edition is missing SurvivalBotManager"
         Assert-Condition ($null -ne $adapterType) "$Edition is missing SurvivalCombatAdapter"
         Assert-Condition ($null -ne $roleType) "$Edition is missing SurvivalRoleKind"
         Assert-Condition ($null -ne $compactRuntimeType) "$Edition is missing CompactRainNavRuntime"
+        Assert-Condition ($null -ne $routePlannerType) "$Edition is missing AutoBattleRoutePlanner"
+        Assert-Condition ($null -ne $routeFinalizeType) "$Edition is missing sliced route finalizer"
+        Assert-Condition ($null -ne $denseProbeType) "$Edition is missing sliced dense probe"
         $requiredManagerMethods = @(
             'TickRoleDirector',
             'TickGuardDirector',
@@ -228,6 +240,14 @@ function Test-VariantAssembly {
         $compactRuntimeMethodNames = @($compactRuntimeType.Methods | ForEach-Object { $_.Name })
         Assert-Condition ($compactRuntimeMethodNames -contains 'CollectNearbyBoundaries') `
             "$Edition is missing compact boundary lookup"
+        $routePlannerMethodNames = @($routePlannerType.Methods | ForEach-Object { $_.Name })
+        Assert-Condition ($routePlannerMethodNames -contains 'TickRainRouteFinalize') `
+            "$Edition is missing sliced route finalization entry"
+        $routeFinalizeMethodNames = @($routeFinalizeType.Methods | ForEach-Object { $_.Name })
+        foreach ($methodName in @('Tick', 'Optimize', 'Validate', 'Annotate')) {
+            Assert-Condition ($routeFinalizeMethodNames -contains $methodName) `
+                "$Edition is missing sliced finalizer method $methodName"
+        }
 
         if ($Edition -eq 'ReleaseA') {
             $forbiddenManagerMethods = @(
@@ -388,6 +408,7 @@ $manifest = [ordered]@{
             continuousCombatMovement = $true
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true
+            slicedExactRouteFinalization = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }
@@ -404,6 +425,7 @@ $manifest = [ordered]@{
             continuousCombatMovement = $true
             incrementalCliffSearch = $true
             compactBoundaryCliffSource = $true
+            slicedExactRouteFinalization = $true
             concealedRouteAudit = $true
             lethalCliffValidation = $true
         }
