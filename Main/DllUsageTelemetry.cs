@@ -36,6 +36,7 @@ namespace ASWDEBUG.Main
         private const float PlayerDataRefreshInterval = 45f;
         private const float PlayerDataRetryInterval = 5f;
         private const float PlayerDataRequestTimeout = 15f;
+        private const float ItemDisplayRequestInterval = 1f;
 
         private static readonly string[] StorageTypes =
         {
@@ -62,6 +63,13 @@ namespace ASWDEBUG.Main
             public string CardLabel;
         }
 
+        private struct ItemDisplayLookup
+        {
+            public string Key;
+            public string ItemId;
+            public string StorageType;
+        }
+
         private static readonly object Sync = new object();
         private static readonly Dictionary<ulong, UsageSeen> ActiveDllUsers = new Dictionary<ulong, UsageSeen>(128);
         private static bool _started;
@@ -76,14 +84,19 @@ namespace ASWDEBUG.Main
         private static float _nextSnapshot;
         private static bool _playerInfoInFlight;
         private static bool _storageInFlight;
+        private static bool _itemDisplayInFlight;
         private static float _playerInfoDeadline;
         private static float _storageDeadline;
+        private static float _itemDisplayDeadline;
+        private static float _nextItemDisplayLookup;
         private static float _nextPlayerInfoRefresh;
         private static float _nextStorageRefresh;
         private static int _playerInfoRequestGeneration;
         private static int _storageRequestGeneration;
+        private static int _itemDisplayRequestGeneration;
         private static int _storageTypeIndex;
         private static string _activeStorageType = string.Empty;
+        private static string _activeItemDisplayKey = string.Empty;
         private static string _cachedEquipmentJson = string.Empty;
         private static string _cachedInventoryJson = string.Empty;
         private static readonly List<Dictionary<string, string>>
@@ -95,6 +108,14 @@ namespace ASWDEBUG.Main
         private static readonly Dictionary<string, List<Dictionary<string, string>>>
             StorageItemsByType =
                 new Dictionary<string, List<Dictionary<string, string>>>();
+        private static readonly Queue<ItemDisplayLookup>
+            PendingItemDisplayLookups = new Queue<ItemDisplayLookup>();
+        private static readonly HashSet<string>
+            PendingItemDisplayKeys =
+                new HashSet<string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, string>
+            ItemDisplayNames =
+                new Dictionary<string, string>(StringComparer.Ordinal);
         private static VeriGateClientSnapshot _snapshot;
 
         public static int KnownCount;
@@ -111,15 +132,21 @@ namespace ASWDEBUG.Main
             _nextStorageRefresh = 0f;
             _playerInfoInFlight = false;
             _storageInFlight = false;
+            _itemDisplayInFlight = false;
             _playerInfoRequestGeneration = 0;
             _storageRequestGeneration = 0;
+            _itemDisplayRequestGeneration = 0;
             _storageTypeIndex = 0;
             _activeStorageType = string.Empty;
+            _activeItemDisplayKey = string.Empty;
             _cachedEquipmentJson = string.Empty;
             _cachedInventoryJson = string.Empty;
             ProfileEquipmentItems.Clear();
             SlotEquipmentItems.Clear();
             StorageItemsByType.Clear();
+            PendingItemDisplayLookups.Clear();
+            PendingItemDisplayKeys.Clear();
+            ItemDisplayNames.Clear();
             var metadata = new Dictionary<string, string>();
             TrySet(metadata, "unity_version", Application.unityVersion);
             TrySet(metadata, "platform", Application.platform.ToString());
@@ -168,6 +195,7 @@ namespace ASWDEBUG.Main
             string serverName = GetServerName(localPlayer);
             string sceneName = GetGameLocation();
             QueuePlayerDataRefresh(playerId, now);
+            QueueItemDisplayLookup(now);
             Dictionary<string, string> dynamicMetadata =
                 BuildDynamicMetadata(localPlayer, uid);
             _lastPlayerId = playerId;
@@ -800,6 +828,9 @@ namespace ASWDEBUG.Main
                 AddItems(items, table, MaxInventoryItems);
                 lock (Sync)
                 {
+                    QueueUnresolvedItemDisplayLookups(
+                        storageType,
+                        items);
                     StorageItemsByType[storageType] = items;
                     _cachedInventoryJson =
                         BuildCombinedInventoryJson();
@@ -831,6 +862,154 @@ namespace ASWDEBUG.Main
             {
                 _storageInFlight = false;
                 _activeStorageType = string.Empty;
+            }
+        }
+
+        private static void QueueUnresolvedItemDisplayLookups(
+            string storageType,
+            IList<Dictionary<string, string>> items)
+        {
+            if (string.IsNullOrEmpty(storageType) || items == null) return;
+            for (int index = 0; index < items.Count; index++)
+            {
+                Dictionary<string, string> item = items[index];
+                string itemId;
+                string resolved;
+                if (item == null ||
+                    !item.TryGetValue("id", out itemId) ||
+                    string.IsNullOrEmpty(itemId) ||
+                    (item.TryGetValue("_display_resolved", out resolved) &&
+                     resolved == "true"))
+                    continue;
+
+                string key = storageType + "\n" + itemId;
+                string displayName;
+                if (ItemDisplayNames.TryGetValue(key, out displayName))
+                {
+                    item["name"] = displayName;
+                    item["_display_resolved"] = "true";
+                    continue;
+                }
+                if (!PendingItemDisplayKeys.Add(key)) continue;
+                PendingItemDisplayLookups.Enqueue(new ItemDisplayLookup
+                {
+                    Key = key,
+                    ItemId = itemId,
+                    StorageType = storageType
+                });
+            }
+        }
+
+        private static void QueueItemDisplayLookup(float now)
+        {
+            if (_itemDisplayInFlight && now >= _itemDisplayDeadline)
+            {
+                _itemDisplayInFlight = false;
+                PendingItemDisplayKeys.Remove(_activeItemDisplayKey);
+                _activeItemDisplayKey = string.Empty;
+            }
+            if (_itemDisplayInFlight ||
+                now < _nextItemDisplayLookup ||
+                PendingItemDisplayLookups.Count == 0)
+                return;
+
+            LobbyConnection lobby = GetLobbyConnection() as LobbyConnection;
+            if (lobby == null) return;
+            ItemDisplayLookup lookup = PendingItemDisplayLookups.Dequeue();
+            int generation = ++_itemDisplayRequestGeneration;
+            _itemDisplayInFlight = true;
+            _itemDisplayDeadline = now + PlayerDataRequestTimeout;
+            _nextItemDisplayLookup = now + ItemDisplayRequestInterval;
+            _activeItemDisplayKey = lookup.Key;
+            try
+            {
+                lobby.AddTextRpc(
+                    "tip_player_item",
+                    delegate(string response)
+                    {
+                        OnTelemetryItemDisplay(
+                            generation,
+                            lookup,
+                            response);
+                    },
+                    new Dictionary<string, string>
+                    {
+                        { "pid", lookup.ItemId },
+                        { "t", lookup.StorageType }
+                    });
+            }
+            catch (Exception ex)
+            {
+                _itemDisplayInFlight = false;
+                PendingItemDisplayKeys.Remove(lookup.Key);
+                _activeItemDisplayKey = string.Empty;
+                FileLogger.Log(
+                    "DLL-USAGE",
+                    "item display telemetry failed: " + ex.Message);
+            }
+        }
+
+        private static void OnTelemetryItemDisplay(
+            int generation,
+            ItemDisplayLookup lookup,
+            string data)
+        {
+            try
+            {
+                LuaState lua = new LuaState();
+                lua.DoString(data ?? string.Empty);
+                if (lua["error"] != null)
+                    throw new InvalidOperationException(
+                        lua["error"].ToString());
+
+                string displayKey = lua["display"] == null
+                    ? string.Empty
+                    : lua["display"].ToString();
+                string displayName = LocalizeItemKey(displayKey);
+                if (string.IsNullOrEmpty(displayName))
+                    throw new InvalidOperationException(
+                        "tip_player_item has no localized display");
+
+                lock (Sync)
+                {
+                    ItemDisplayNames[lookup.Key] = displayName;
+                    List<Dictionary<string, string>> items;
+                    if (StorageItemsByType.TryGetValue(
+                        lookup.StorageType,
+                        out items) && items != null)
+                    {
+                        for (int index = 0; index < items.Count; index++)
+                        {
+                            Dictionary<string, string> item = items[index];
+                            string itemId;
+                            if (item != null &&
+                                item.TryGetValue("id", out itemId) &&
+                                itemId == lookup.ItemId)
+                            {
+                                item["name"] = displayName;
+                                item["_display_resolved"] = "true";
+                            }
+                        }
+                        _cachedInventoryJson =
+                            BuildCombinedInventoryJson();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    "DLL-USAGE",
+                    "item display telemetry response failed: " +
+                    ex.Message);
+            }
+            finally
+            {
+                PendingItemDisplayKeys.Remove(lookup.Key);
+                if (generation == _itemDisplayRequestGeneration)
+                {
+                    _itemDisplayInFlight = false;
+                    _activeItemDisplayKey = string.Empty;
+                }
             }
         }
 
@@ -1411,12 +1590,15 @@ namespace ASWDEBUG.Main
             var item = new Dictionary<string, string>();
             string displayName = ReadItemString(
                 raw,
+                "display",
                 "display_name",
                 "displayName");
             string resourceName = ReadItemString(
                 raw,
                 "resource",
                 "name");
+            resourceName = NormalizeItemResourceName(resourceName);
+            bool displayResolved;
             item["id"] = LimitUtf8(
                 ReadItemString(
                     raw,
@@ -1424,8 +1606,16 @@ namespace ASWDEBUG.Main
                     "object_id"),
                 MaxItemFieldBytes);
             item["name"] = LimitUtf8(
-                ResolveItemDisplayName(displayName, resourceName),
+                ResolveItemDisplayName(
+                    displayName,
+                    resourceName,
+                    out displayResolved),
                 MaxItemFieldBytes);
+            item["resource"] = LimitUtf8(
+                resourceName,
+                MaxItemFieldBytes);
+            item["_display_resolved"] =
+                displayResolved ? "true" : "false";
             item["count"] = LimitUtf8(
                 ReadItemString(
                     raw,
@@ -1444,23 +1634,46 @@ namespace ASWDEBUG.Main
 
         private static string ResolveItemDisplayName(
             string displayName,
-            string resourceName)
+            string resourceName,
+            out bool resolved)
         {
+            resolved = false;
+            resourceName = NormalizeItemResourceName(resourceName);
             string localized = LocalizeItemKey(displayName);
-            if (!string.IsNullOrEmpty(localized)) return localized;
+            if (!string.IsNullOrEmpty(localized))
+            {
+                resolved = true;
+                return localized;
+            }
 
             localized = LocalizeItemKey(resourceName);
-            if (!string.IsNullOrEmpty(localized)) return localized;
+            if (!string.IsNullOrEmpty(localized))
+            {
+                resolved = true;
+                return localized;
+            }
 
             string displayKey = GetKnownItemDisplayKey(resourceName);
             localized = LocalizeItemKey(displayKey);
-            if (!string.IsNullOrEmpty(localized)) return localized;
+            if (!string.IsNullOrEmpty(localized))
+            {
+                resolved = true;
+                return localized;
+            }
 
             localized = LocalizeItemKey("id_weapon_" + resourceName);
-            if (!string.IsNullOrEmpty(localized)) return localized;
+            if (!string.IsNullOrEmpty(localized))
+            {
+                resolved = true;
+                return localized;
+            }
             localized = LocalizeItemKey("id_datalist_" + resourceName);
-            if (!string.IsNullOrEmpty(localized)) return localized;
-            return FriendlyItemResourceName(resourceName);
+            if (!string.IsNullOrEmpty(localized))
+            {
+                resolved = true;
+                return localized;
+            }
+            return resourceName;
         }
 
         private static string LocalizeItemKey(string key)
@@ -1498,12 +1711,22 @@ namespace ASWDEBUG.Main
         {
             switch ((resourceName ?? string.Empty).ToLowerInvariant())
             {
+                case "baoxiang_tong":
+                    return "id_datalist_Bronze_Chest";
+                case "bengdai":
+                    return "id_datalist_Bandage";
                 case "bow_01":
                     return "id_datalist_Simple_Compound_Bow";
+                case "food_cookies":
+                    return "id_datalist_Cheerie_Cookie";
                 case "grenade_01":
                     return "id_datalist_STG39_Wooden_Handle_Grenade";
                 case "knives_01":
                     return "id_datalist_Rusty_Knife";
+                case "leechdom_cardiac":
+                    return "id_datalist_Cardiac";
+                case "loudspeaker":
+                    return "id_datalist_Megaphone";
                 case "machinegun_01":
                     return "id_datalist_DP";
                 case "machinegun_51":
@@ -1535,35 +1758,19 @@ namespace ASWDEBUG.Main
             }
         }
 
-        private static string FriendlyItemResourceName(string resourceName)
+        private static string NormalizeItemResourceName(string resourceName)
         {
             string value = resourceName ?? string.Empty;
-            string lower = value.ToLowerInvariant();
-            string family = string.Empty;
-            if (lower.StartsWith("sniperrifle_")) family = "狙击枪";
-            else if (lower.StartsWith("machinegun_")) family = "机枪";
-            else if (lower.StartsWith("shotgun_")) family = "霰弹枪";
-            else if (lower.StartsWith("pistol_")) family = "手枪";
-            else if (lower.StartsWith("smg_")) family = "冲锋枪";
-            else if (lower.StartsWith("knives_")) family = "近战武器";
-            else if (lower.StartsWith("grenade_")) family = "手雷";
-            else if (lower.StartsWith("rpg_") ||
-                lower.StartsWith("grenadelauncher_"))
-                family = "重型武器";
-            else if (lower.StartsWith("bow_") ||
-                lower.StartsWith("crossbow_"))
-                family = "弓弩";
-            else if (lower.StartsWith("shield_")) family = "盾牌";
-            else if (lower.StartsWith("wing")) family = "翅膀";
-            if (string.IsNullOrEmpty(family)) return value;
-
-            int split = value.IndexOf('_');
-            string suffix = split >= 0 && split + 1 < value.Length
-                ? value.Substring(split + 1).Replace('_', ' ')
-                : string.Empty;
-            return string.IsNullOrEmpty(suffix)
-                ? family
-                : family + " " + suffix;
+            int firstQuote = value.IndexOf('\'');
+            if (firstQuote >= 0)
+            {
+                int secondQuote = value.IndexOf('\'', firstQuote + 1);
+                if (secondQuote > firstQuote + 1)
+                    return value.Substring(
+                        firstQuote + 1,
+                        secondQuote - firstQuote - 1);
+            }
+            return value.Trim();
         }
 
         private static string ReadItemString(
@@ -1622,6 +1829,8 @@ namespace ASWDEBUG.Main
                 bool first = true;
                 foreach (KeyValuePair<string, string> field in items[i])
                 {
+                    if (field.Key.StartsWith("_", StringComparison.Ordinal))
+                        continue;
                     if (string.IsNullOrEmpty(field.Value)) continue;
                     if (!first) encodedItem.Append(',');
                     AppendJsonString(encodedItem, field.Key);
