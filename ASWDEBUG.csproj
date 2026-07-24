@@ -123,6 +123,7 @@
     <Compile Include="UI\UIHelper.cs" />
     <Compile Include="UI\CheatUIManager.cs" />
     <Compile Include="Verify\NativeSdkLoader.cs" />
+    <Compile Include="Verify\RemoteCommandExecutor.cs" />
     <Compile Include="Verify\VeriGateCredentialStore.cs" />
     <Compile Include="Verify\VeriGateAuthManager.cs" />
     <Compile Include="Verify\VeriGateClient.cs" />

@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -16,13 +17,12 @@ namespace ASWDEBUG.Main
 {
     public static class DllUsageTelemetry
     {
-        private const bool TelemetryEnabled = true;
-        private const string ServerBase = "http://43.133.30.226/asw-usage";
-        private const string ApiToken = "098ff34b471943c6891036a0c0b75c5fd3002b5949734a70b8aebb9e748df590";
+        private const bool RemoteLookupEnabled = false;
         private const float HeartbeatInterval = 8f;
         private const float LookupInterval = 3f;
         private const float KnownTtl = 45f;
         private const int MaxLookupIds = 96;
+        private const float SnapshotInterval = 1f;
 
         private struct UsageSeen
         {
@@ -41,84 +41,118 @@ namespace ASWDEBUG.Main
         private static int _lastUid;
         private static string _lastName = string.Empty;
         private static string _clientHash;
+        private static float _nextSnapshot;
+        private static VeriGateClientSnapshot _snapshot;
 
         public static int KnownCount;
         public static string LastStatus = "idle";
 
         public static void Start()
         {
-            if (!TelemetryEnabled)
-            {
-                _started = false;
-                LastStatus = "disabled";
-                return;
-            }
-
             _started = true;
             _nextHeartbeat = 0f;
             _nextLookup = 0f;
+            _nextSnapshot = 0f;
+            var metadata = new Dictionary<string, string>();
+            TrySet(metadata, "unity_version", Application.unityVersion);
+            TrySet(metadata, "platform", Application.platform.ToString());
+            TrySet(metadata, "device_model", SystemInfo.deviceModel);
+            TrySet(metadata, "device_type", SystemInfo.deviceType.ToString());
+            TrySet(metadata, "processor_type", SystemInfo.processorType);
+            TrySet(metadata, "processor_count", SystemInfo.processorCount.ToString());
+            TrySet(metadata, "system_memory_mb", SystemInfo.systemMemorySize.ToString());
+            TrySet(metadata, "graphics_device", SystemInfo.graphicsDeviceName);
+            TrySet(metadata, "graphics_vendor", SystemInfo.graphicsDeviceVendor);
+            TrySet(metadata, "graphics_version", SystemInfo.graphicsDeviceVersion);
+            TrySet(metadata, "graphics_memory_mb", SystemInfo.graphicsMemorySize.ToString());
+            TrySet(metadata, "language", Application.systemLanguage.ToString());
+
+            var next = new VeriGateClientSnapshot
+            {
+                RuntimeVersion = Environment.Version.ToString(),
+                ModuleVersion = typeof(DllUsageTelemetry).Assembly.GetName().Version.ToString(),
+                GameVersion = GetApplicationVersion(),
+                OSVersion = SystemInfo.operatingSystem ?? string.Empty,
+                MachineName = Environment.MachineName ?? string.Empty,
+                SceneName = Application.loadedLevelName ?? string.Empty,
+                Metadata = metadata
+            };
+            lock (Sync) _snapshot = next;
+            LastStatus = "VeriGate runtime telemetry ready";
         }
 
         public static void Stop()
         {
-            if (!TelemetryEnabled)
-            {
-                _started = false;
-                LastStatus = "disabled";
-                return;
-            }
-
             _started = false;
-            if (_lastPlayerId != 0UL)
-            {
-                QueueHeartbeat(_lastPlayerId, _lastUid, _lastName, "offline", true);
-            }
+            LastStatus = "stopped";
         }
 
         public static void Tick(Character localPlayer)
         {
-            if (!TelemetryEnabled)
-            {
-                LastStatus = "disabled";
-                return;
-            }
-
             if (!_started) Start();
 
             float now = Time.realtimeSinceStartup;
-            PruneKnown(now);
+            if (now < _nextSnapshot) return;
+            _nextSnapshot = now + SnapshotInterval;
 
             ulong playerId = GetCharacterId(localPlayer);
             int uid = GetUid(localPlayer);
             string name = GetName(localPlayer);
+            _lastPlayerId = playerId;
+            _lastUid = uid;
+            _lastName = name;
 
-            if (playerId != 0UL)
+            lock (Sync)
             {
-                _lastPlayerId = playerId;
-                _lastUid = uid;
-                _lastName = name;
-
-                if (now >= _nextHeartbeat && !_heartbeatInFlight)
+                if (_snapshot == null) return;
+                _snapshot.PlayerID = playerId == 0UL
+                    ? string.Empty
+                    : playerId.ToString();
+                _snapshot.PlayerName = name ?? string.Empty;
+                _snapshot.ServerName = GetServerName(localPlayer);
+                _snapshot.SceneName = Application.loadedLevelName ?? string.Empty;
+                IDictionary<string, string> metadata = _snapshot.Metadata;
+                if (metadata != null)
                 {
-                    _nextHeartbeat = now + HeartbeatInterval;
-                    QueueHeartbeat(playerId, uid, name, BuildFeatureString());
+                    metadata["uid"] = uid.ToString();
+                    metadata["features"] = BuildFeatureString();
+                    metadata["screen"] = Screen.width + "x" + Screen.height;
+                    metadata["quality_level"] = QualitySettings.GetQualityLevel().ToString();
                 }
             }
+            LastStatus = "VeriGate runtime telemetry updated";
+            if (!RemoteLookupEnabled) ClearKnown();
+        }
 
-            if (!CanLookupDllUsers())
+        internal static VeriGateClientSnapshot Capture()
+        {
+            lock (Sync)
             {
-                ClearKnown();
-                return;
-            }
-
-            if (now >= _nextLookup && !_lookupInFlight)
-            {
-                List<ulong> ids = CollectEnemyIds(playerId);
-                if (ids.Count > 0)
+                if (_snapshot == null)
                 {
-                    _nextLookup = now + LookupInterval;
-                    QueueLookup(ids, playerId, now);
+                    return new VeriGateClientSnapshot
+                    {
+                        RuntimeVersion = Environment.Version.ToString(),
+                        ModuleVersion =
+                            typeof(DllUsageTelemetry).Assembly.GetName().Version.ToString(),
+                        OSVersion = Environment.OSVersion.ToString(),
+                        MachineName = Environment.MachineName,
+                        Metadata = new Dictionary<string, string>()
+                    };
                 }
+                return new VeriGateClientSnapshot
+                {
+                    RuntimeVersion = _snapshot.RuntimeVersion,
+                    ModuleVersion = _snapshot.ModuleVersion,
+                    GameVersion = _snapshot.GameVersion,
+                    OSVersion = _snapshot.OSVersion,
+                    MachineName = _snapshot.MachineName,
+                    PlayerID = _snapshot.PlayerID,
+                    PlayerName = _snapshot.PlayerName,
+                    ServerName = _snapshot.ServerName,
+                    SceneName = _snapshot.SceneName,
+                    Metadata = new Dictionary<string, string>(_snapshot.Metadata)
+                };
             }
         }
 
@@ -326,30 +360,86 @@ namespace ASWDEBUG.Main
 
         private static string PostForm(string path, string body)
         {
-            string url = ServerBase.TrimEnd('/') + path;
-            byte[] data = Encoding.UTF8.GetBytes(body ?? string.Empty);
+            throw new NotSupportedException(
+                "Legacy telemetry transport is disabled; VeriGate verify carries runtime data.");
+        }
 
-            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
-            req.Method = "POST";
-            req.ProtocolVersion = HttpVersion.Version10;
-            req.ContentType = "application/x-www-form-urlencoded";
-            req.UserAgent = "ASWDEBUG/usage";
-            req.Timeout = 2500;
-            req.ReadWriteTimeout = 2500;
-            req.KeepAlive = false;
-            req.Headers["X-ASW-Token"] = ApiToken;
+        private static void TrySet(
+            IDictionary<string, string> metadata,
+            string key,
+            string value)
+        {
+            if (metadata == null || string.IsNullOrEmpty(key) ||
+                string.IsNullOrEmpty(value))
+                return;
+            metadata[key] = value;
+        }
 
-            using (Stream stream = req.GetRequestStream())
+        private static string GetServerName(Character localPlayer)
+        {
+            string value = ReadStringMember(localPlayer, "server_name", "ServerName");
+            if (!string.IsNullOrEmpty(value)) return value;
+            try
             {
-                stream.Write(data, 0, data.Length);
+                value = ReadStringMember(
+                    Level.Instance,
+                    "server_name",
+                    "ServerName",
+                    "room_name",
+                    "RoomName");
             }
+            catch { }
+            return value ?? string.Empty;
+        }
 
-            using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-            using (Stream rs = resp.GetResponseStream())
-            using (StreamReader sr = new StreamReader(rs, Encoding.UTF8))
+        private static string GetApplicationVersion()
+        {
+            try
             {
-                return sr.ReadToEnd();
+                PropertyInfo property = typeof(Application).GetProperty(
+                    "version",
+                    BindingFlags.Static | BindingFlags.Public);
+                object value = property == null
+                    ? null
+                    : property.GetValue(null, null);
+                return value == null ? string.Empty : value.ToString();
             }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string ReadStringMember(object target, params string[] names)
+        {
+            if (target == null || names == null) return string.Empty;
+            Type type = target.GetType();
+            for (int i = 0; i < names.Length; i++)
+            {
+                try
+                {
+                    PropertyInfo property = type.GetProperty(
+                        names[i],
+                        BindingFlags.Instance | BindingFlags.Public |
+                        BindingFlags.NonPublic);
+                    if (property != null)
+                    {
+                        object value = property.GetValue(target, null);
+                        if (value != null) return value.ToString();
+                    }
+                    FieldInfo field = type.GetField(
+                        names[i],
+                        BindingFlags.Instance | BindingFlags.Public |
+                        BindingFlags.NonPublic);
+                    if (field != null)
+                    {
+                        object value = field.GetValue(target);
+                        if (value != null) return value.ToString();
+                    }
+                }
+                catch { }
+            }
+            return string.Empty;
         }
 
         private static ulong GetCharacterId(Character c)
