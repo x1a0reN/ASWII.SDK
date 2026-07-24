@@ -1,8 +1,12 @@
 using System;
+#if !DOORSTOP_BUILD
 using System.Diagnostics;
+#endif
 using System.IO;
 using System.Reflection;
+#if !DOORSTOP_BUILD
 using System.Threading;
+#endif
 using Harmony;
 using UnityEngine;
 
@@ -14,18 +18,29 @@ namespace Doorstop
     /// </summary>
     public static class Entrypoint
     {
+#if DOORSTOP_BUILD
+        public const string BuildMode = "Doorstop";
+#else
+        public const string BuildMode = "InjectedRuntime";
+#endif
         private static readonly object PatchSync = new object();
         private static bool _patched;
         private static bool _assemblyLoadSubscribed;
         private static bool _bootstrapping;
         private static bool _bootstrapped;
+#if !DOORSTOP_BUILD
         private static bool _injectedLoad;
         private static bool _injectedBootstrapScheduled;
         private static EventWaitHandle _authorizationHandoff;
+#endif
 
         internal static bool IsInjectedLoad
         {
+#if DOORSTOP_BUILD
+            get { return false; }
+#else
             get { return _injectedLoad; }
+#endif
         }
 
         public static void Start()
@@ -52,6 +67,7 @@ namespace Doorstop
             }
         }
 
+#if !DOORSTOP_BUILD
         public static void StartInjected()
         {
             try
@@ -463,9 +479,13 @@ namespace Doorstop
                     "Failed to stop " + typeName + ": " + ex.Message);
             }
         }
+#endif
 
         internal static bool WaitForAuthorizationHandoff(int timeoutMilliseconds)
         {
+#if DOORSTOP_BUILD
+            return true;
+#else
             if (!_injectedLoad)
             {
                 return true;
@@ -495,6 +515,7 @@ namespace Doorstop
                 LogInfo("Authorization handoff received");
             }
             return signaled;
+#endif
         }
 
         private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
@@ -604,7 +625,11 @@ namespace Doorstop
             try
             {
                 LogInfo("Bootstrap: creating ConsoleManager");
+#if DOORSTOP_BUILD
+                host = new GameObject("__DoorstopBoot__");
+#else
                 host = new GameObject("__RuntimeInjectionBoot__");
+#endif
                 host.hideFlags = HideFlags.HideAndDontSave;
                 UnityEngine.Object.DontDestroyOnLoad(host);
                 host.AddComponent<ConsoleManager>();
@@ -637,6 +662,7 @@ namespace Doorstop
                 null);
         }
 
+#if !DOORSTOP_BUILD
         private static Assembly WaitForAssembly(
             string name,
             int timeoutMilliseconds)
@@ -650,6 +676,7 @@ namespace Doorstop
             }
             return assembly;
         }
+#endif
 
         private static Assembly FindAssembly(string name)
         {

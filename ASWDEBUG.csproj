@@ -40,6 +40,16 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'AuctionDoorstop|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\AuctionDoorstop\</OutputPath>
+    <AssemblyName>ASWDEBUG</AssemblyName>
+    <DefineConstants>TRACE;AUCTION_BUILD;DOORSTOP_BUILD</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
       <HintPath>Lib\0Harmony.dll</HintPath>
@@ -132,15 +142,22 @@
     <Compile Include="Verify\VeriGateException.cs" />
     <Compile Include="Verify\VeriGateOptions.cs" />
   </ItemGroup>
+  <ItemGroup Condition=" '$(Configuration)' == 'AuctionDoorstop' ">
+    <EmbeddedResource Include="Native\verigate_sdk.dll">
+      <LogicalName>ASWDEBUG.Native.verigate_sdk.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <Target Name="CreateRemotePayloadAlias" AfterTargets="Build">
+  <Target Name="CreateRemotePayloadAlias"
+          AfterTargets="Build"
+          Condition=" '$(Configuration)' != 'AuctionDoorstop' ">
     <Copy SourceFiles="$(TargetPath)"
           DestinationFiles="$(TargetDir)ASWDEBUG.dll" />
     <Copy SourceFiles="$(TargetDir)$(TargetName).pdb"
           DestinationFiles="$(TargetDir)ASWDEBUG.pdb"
           Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
   </Target>
-  <PropertyGroup Condition=" '$(Configuration)' != 'Auction' and '$(DeployToGame)' == 'true' ">
+  <PropertyGroup Condition=" '$(Configuration)' != 'Auction' and '$(Configuration)' != 'AuctionDoorstop' and '$(DeployToGame)' == 'true' ">
     <PostBuildEvent>copy /Y "$(ProjectDir)bin\$(Configuration)\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>
   </PropertyGroup>
 </Project>

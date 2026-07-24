@@ -1,6 +1,12 @@
 using System;
 using System.ComponentModel;
+#if DOORSTOP_BUILD
+using System.Diagnostics;
+#endif
 using System.IO;
+#if DOORSTOP_BUILD
+using System.Reflection;
+#endif
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
@@ -8,9 +14,14 @@ namespace ASWDEBUG.Verify
 {
     internal static class NativeSdkLoader
     {
+#if DOORSTOP_BUILD
+        private const string ResourceName =
+            "ASWDEBUG.Native.verigate_sdk.dll";
+#else
         private const string CurrentDigestFileName = "current.sha256";
         private const string FallbackDigest =
             "36d3db63260912db4372258b866bb43447c5cacff2853bfedb2b256a4bd454cf";
+#endif
         private static readonly object Sync = new object();
         private static IntPtr _module;
 
@@ -22,13 +33,17 @@ namespace ASWDEBUG.Verify
             {
                 if (_module != IntPtr.Zero) return;
 
-                string path = ResolveSharedImage();
+                string path = ResolveNativeImage();
                 _module = LoadLibrary(path);
                 if (_module == IntPtr.Zero)
                 {
                     throw new Win32Exception(
                         Marshal.GetLastWin32Error(),
+#if DOORSTOP_BUILD
+                        "无法加载内嵌的 VeriGate 客户端组件。");
+#else
                         "无法加载登录器提供的 VeriGate 客户端组件。");
+#endif
                 }
             }
         }
@@ -51,8 +66,36 @@ namespace ASWDEBUG.Verify
             return function;
         }
 
-        private static string ResolveSharedImage()
+        private static string ResolveNativeImage()
         {
+#if DOORSTOP_BUILD
+            byte[] image = ReadEmbeddedImage();
+            try
+            {
+                string digest = ComputeSha256(image);
+                string directory = Path.Combine(
+                    Path.Combine(
+                        Path.Combine(
+                            Path.Combine(
+                                Environment.GetFolderPath(
+                                    Environment.SpecialFolder.LocalApplicationData),
+                                "ASWII"),
+                            "VeriGate"),
+                        "Native"),
+                    digest);
+                Directory.CreateDirectory(directory);
+
+                string path = Path.Combine(
+                    directory,
+                    "verigate_sdk.dll");
+                EnsureImage(path, image, digest);
+                return path;
+            }
+            finally
+            {
+                Array.Clear(image, 0, image.Length);
+            }
+#else
             string root = Path.Combine(
                 Path.Combine(
                     Environment.GetFolderPath(
@@ -87,8 +130,10 @@ namespace ASWDEBUG.Verify
                         "登录器提供的 VeriGate 客户端组件校验失败。");
             }
             return path;
+#endif
         }
 
+#if !DOORSTOP_BUILD
         private static bool IsSha256(string value)
         {
             if (string.IsNullOrEmpty(value) || value.Length != 64)
@@ -102,6 +147,82 @@ namespace ASWDEBUG.Verify
             }
             return true;
         }
+#else
+        private static byte[] ReadEmbeddedImage()
+        {
+            Assembly assembly = Assembly.GetExecutingAssembly();
+            using (Stream stream =
+                assembly.GetManifestResourceStream(ResourceName))
+            {
+                if (stream == null)
+                {
+                    throw new InvalidOperationException(
+                        "ASWDEBUG.dll 中缺少 VeriGate 客户端组件。");
+                }
+
+                using (MemoryStream memory = new MemoryStream())
+                {
+                    byte[] buffer = new byte[81920];
+                    int read;
+                    while ((read = stream.Read(
+                        buffer,
+                        0,
+                        buffer.Length)) > 0)
+                    {
+                        memory.Write(buffer, 0, read);
+                    }
+                    return memory.ToArray();
+                }
+            }
+        }
+
+        private static void EnsureImage(
+            string path,
+            byte[] expected,
+            string expectedDigest)
+        {
+            if (File.Exists(path))
+            {
+                using (FileStream existing = File.OpenRead(path))
+                {
+                    if (ComputeSha256(existing) != expectedDigest)
+                    {
+                        throw new InvalidDataException(
+                            "VeriGate 客户端缓存文件校验失败。");
+                    }
+                }
+                return;
+            }
+
+            string temporary =
+                path + ".tmp." + Process.GetCurrentProcess().Id;
+            using (FileStream output = new FileStream(
+                temporary,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None))
+            {
+                output.Write(expected, 0, expected.Length);
+                output.Flush();
+            }
+
+            try
+            {
+                File.Move(temporary, path);
+            }
+            catch (IOException)
+            {
+                if (!File.Exists(path)) throw;
+                try { File.Delete(temporary); } catch { }
+            }
+        }
+
+        private static string ComputeSha256(byte[] value)
+        {
+            using (SHA256 algorithm = SHA256.Create())
+                return ToHex(algorithm.ComputeHash(value));
+        }
+#endif
 
         private static string ComputeSha256(Stream value)
         {
