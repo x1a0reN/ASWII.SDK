@@ -730,6 +730,9 @@ namespace ASWDEBUG.Main
                 {
                     ProfileEquipmentItems.Clear();
                     ProfileEquipmentItems.AddRange(items);
+                    QueueUnresolvedItemDisplayLookups(
+                        string.Empty,
+                        ProfileEquipmentItems);
                     _cachedEquipmentJson =
                         BuildCombinedEquipmentJson();
                 }
@@ -795,6 +798,9 @@ namespace ASWDEBUG.Main
                 {
                     SlotEquipmentItems.Clear();
                     SlotEquipmentItems.AddRange(items);
+                    QueueUnresolvedItemDisplayLookups(
+                        string.Empty,
+                        SlotEquipmentItems);
                     _cachedEquipmentJson =
                         BuildCombinedEquipmentJson();
                 }
@@ -882,7 +888,12 @@ namespace ASWDEBUG.Main
                      resolved == "true"))
                     continue;
 
-                string key = storageType + "\n" + itemId;
+                string itemStorageType = storageType;
+                if (string.IsNullOrEmpty(itemStorageType))
+                    item.TryGetValue("_tip_type", out itemStorageType);
+                if (string.IsNullOrEmpty(itemStorageType)) continue;
+
+                string key = itemStorageType + "\n" + itemId;
                 string displayName;
                 if (ItemDisplayNames.TryGetValue(key, out displayName))
                 {
@@ -895,7 +906,7 @@ namespace ASWDEBUG.Main
                 {
                     Key = key,
                     ItemId = itemId,
-                    StorageType = storageType
+                    StorageType = itemStorageType
                 });
             }
         }
@@ -978,21 +989,24 @@ namespace ASWDEBUG.Main
                         lookup.StorageType,
                         out items) && items != null)
                     {
-                        for (int index = 0; index < items.Count; index++)
-                        {
-                            Dictionary<string, string> item = items[index];
-                            string itemId;
-                            if (item != null &&
-                                item.TryGetValue("id", out itemId) &&
-                                itemId == lookup.ItemId)
-                            {
-                                item["name"] = displayName;
-                                item["_display_resolved"] = "true";
-                            }
-                        }
+                        ApplyItemDisplayName(
+                            items,
+                            lookup.ItemId,
+                            displayName);
                         _cachedInventoryJson =
                             BuildCombinedInventoryJson();
                     }
+                    bool equipmentUpdated = ApplyItemDisplayName(
+                        ProfileEquipmentItems,
+                        lookup.ItemId,
+                        displayName);
+                    equipmentUpdated = ApplyItemDisplayName(
+                        SlotEquipmentItems,
+                        lookup.ItemId,
+                        displayName) || equipmentUpdated;
+                    if (equipmentUpdated)
+                        _cachedEquipmentJson =
+                            BuildCombinedEquipmentJson();
                 }
             }
             catch (Exception ex)
@@ -1011,6 +1025,28 @@ namespace ASWDEBUG.Main
                     _activeItemDisplayKey = string.Empty;
                 }
             }
+        }
+
+        private static bool ApplyItemDisplayName(
+            IList<Dictionary<string, string>> items,
+            string itemId,
+            string displayName)
+        {
+            bool updated = false;
+            for (int index = 0; items != null && index < items.Count; index++)
+            {
+                Dictionary<string, string> item = items[index];
+                string currentItemId;
+                if (item != null &&
+                    item.TryGetValue("id", out currentItemId) &&
+                    currentItemId == itemId)
+                {
+                    item["name"] = displayName;
+                    item["_display_resolved"] = "true";
+                    updated = true;
+                }
+            }
+            return updated;
         }
 
         private static string BuildCombinedInventoryJson()
@@ -1616,6 +1652,9 @@ namespace ASWDEBUG.Main
                 MaxItemFieldBytes);
             item["_display_resolved"] =
                 displayResolved ? "true" : "false";
+            item["_tip_type"] = LimitUtf8(
+                ReadItemString(raw, "type"),
+                MaxItemFieldBytes);
             item["count"] = LimitUtf8(
                 ReadItemString(
                     raw,
