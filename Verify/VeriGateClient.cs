@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using ASWDEBUG.Logger;
 
 namespace ASWDEBUG.Verify
 {
@@ -57,6 +58,7 @@ namespace ASWDEBUG.Verify
 
     internal sealed class VeriGateClient : IDisposable
     {
+        private const int TransientAttemptCount = 3;
         private static readonly Mutex ProcessMutex =
             new Mutex(false, VeriGateOptions.ProcessMutexName);
         private readonly object _sync = new object();
@@ -114,28 +116,27 @@ namespace ASWDEBUG.Verify
             using (EnterProcessLock())
             {
                 EnsureNotDisposed();
-                string activation = CallJson(NativeMethods.vg_sdk_client_activate);
+                string activation = CallJsonWithRetry(
+                    "activate",
+                    NativeMethods.vg_sdk_client_activate);
                 string deviceID = ExtractString(activation, "device_id");
-                if (string.IsNullOrEmpty(deviceID)) throw new VeriGateException(9);
+                if (string.IsNullOrEmpty(deviceID))
+                    throw ProtocolFailure("activate.device_id");
 
-                string session;
-                try
-                {
-                    session = CallJson(NativeMethods.vg_sdk_client_refresh);
-                }
-                catch (VeriGateException error)
-                {
-                    if (!error.IsAuthenticationFailure) throw;
-                    session = CallJson(NativeMethods.vg_sdk_client_create_session);
-                }
+                // Every injected process uses a fresh session scope, so it cannot
+                // contain a refresh token. Avoid the guaranteed failed refresh.
+                string session = CallJsonWithRetry(
+                    "create_session",
+                    NativeMethods.vg_sdk_client_create_session);
 
                 VeriGateAuthorization authorization = VerifyCore(snapshot, null);
                 authorization.DeviceID = deviceID;
                 authorization.SessionID = ExtractString(session, "session_id");
                 authorization.SessionExpiresAt = ParseDate(
-                    ExtractString(session, "session_expires_at"));
+                    ExtractString(session, "session_expires_at"),
+                    "create_session.session_expires_at");
                 if (string.IsNullOrEmpty(authorization.SessionID))
-                    throw new VeriGateException(9);
+                    throw ProtocolFailure("create_session.session_id");
                 return authorization;
             }
         }
@@ -155,7 +156,9 @@ namespace ASWDEBUG.Verify
                 catch (VeriGateException error)
                 {
                     if (!error.IsAuthenticationFailure) throw;
-                    CallJson(NativeMethods.vg_sdk_client_refresh);
+                    CallJsonWithRetry(
+                        "heartbeat.refresh",
+                        NativeMethods.vg_sdk_client_refresh);
                     return VerifyCore(snapshot, commandResults);
                 }
             }
@@ -202,28 +205,17 @@ namespace ASWDEBUG.Verify
             IList<VeriGateCommandResult> commandResults)
         {
             string request = BuildVerifyRequest(snapshot, commandResults);
-
-            string response;
-            using (Utf8Slice requestSlice = new Utf8Slice(request, false))
-            {
-                NativeBuffer output;
-                uint result = NativeMethods.vg_sdk_client_verify(
-                    _context,
-                    requestSlice.Value,
-                    out output);
-                ThrowIfFailed(result);
-                response = ReadAndFree(output);
-            }
+            string response = VerifyWithRetry(request);
 
             string decision = FirstObject(ExtractContainer(response, "decisions", '[', ']'));
             bool allowed;
             if (string.IsNullOrEmpty(decision) ||
                 !TryExtractBoolean(decision, "allowed", out allowed))
-                throw new VeriGateException(9);
+                throw ProtocolFailure("verify.decisions");
             string reasonCode = ExtractString(decision, "reason_code");
             string expiresAt = ExtractString(decision, "expires_at");
             if (string.IsNullOrEmpty(reasonCode) || string.IsNullOrEmpty(expiresAt))
-                throw new VeriGateException(9);
+                throw ProtocolFailure("verify.decision_fields");
             if (!allowed) throw new VeriGateException(3);
 
             string control = ExtractContainer(response, "client_control", '{', '}');
@@ -235,7 +227,7 @@ namespace ASWDEBUG.Verify
             {
                 Allowed = true,
                 ReasonCode = reasonCode,
-                SessionExpiresAt = ParseDate(expiresAt),
+                SessionExpiresAt = ParseDate(expiresAt, "verify.expires_at"),
                 Terminate = terminate,
                 TerminationReason = string.IsNullOrEmpty(control)
                     ? null
@@ -358,7 +350,7 @@ namespace ASWDEBUG.Verify
                     string.IsNullOrEmpty(commandType) ||
                     string.IsNullOrEmpty(target) ||
                     string.IsNullOrEmpty(expiresAt))
-                    throw new VeriGateException(9);
+                    throw ProtocolFailure("verify.client_command_fields");
 
                 string payload;
                 try
@@ -369,7 +361,7 @@ namespace ASWDEBUG.Verify
                 }
                 catch
                 {
-                    throw new VeriGateException(9);
+                    throw ProtocolFailure("verify.client_command_payload");
                 }
                 commands.Add(new VeriGateRemoteCommand
                 {
@@ -377,29 +369,90 @@ namespace ASWDEBUG.Verify
                     CommandType = commandType,
                     Target = target,
                     Payload = payload,
-                    ExpiresAt = ParseDate(expiresAt)
+                    ExpiresAt = ParseDate(
+                        expiresAt,
+                        "verify.client_command_expires_at")
                 });
             }
             return commands.ToArray();
         }
 
-        private string CallJson(NativeJsonOperation operation)
+        private string CallJsonWithRetry(
+            string stage,
+            NativeJsonOperation operation)
         {
-            NativeBuffer output;
-            uint result = operation(_context, out output);
-            ThrowIfFailed(result);
-            return ReadAndFree(output);
+            for (int attempt = 1; attempt <= TransientAttemptCount; attempt++)
+            {
+                NativeBuffer output;
+                uint result = operation(_context, out output);
+                if (result == 0)
+                {
+                    return ReadAndFree(output, stage);
+                }
+
+                if (!IsTransientError(result) ||
+                    attempt == TransientAttemptCount)
+                {
+                    FileLogger.Log(
+                        "AUTH",
+                        "SDK stage failed: " + stage + " code=" + result +
+                        " attempt=" + attempt);
+                    throw new VeriGateException(result);
+                }
+
+                LogTransientRetry(stage, attempt, result);
+                SleepBeforeRetry(attempt);
+            }
+            throw ProtocolFailure(stage + ".retry_exhausted");
         }
 
-        private static string ReadAndFree(NativeBuffer output)
+        private string VerifyWithRetry(string request)
+        {
+            for (int attempt = 1; attempt <= TransientAttemptCount; attempt++)
+            {
+                using (Utf8Slice requestSlice = new Utf8Slice(request, false))
+                {
+                    NativeBuffer output;
+                    uint result = NativeMethods.vg_sdk_client_verify(
+                        _context,
+                        requestSlice.Value,
+                        out output);
+                    if (result == 0)
+                    {
+                        return ReadAndFree(output, "verify");
+                    }
+
+                    if (!IsTransientError(result) ||
+                        attempt == TransientAttemptCount)
+                    {
+                        FileLogger.Log(
+                            "AUTH",
+                            "SDK stage failed: verify code=" + result +
+                            " attempt=" + attempt);
+                        throw new VeriGateException(result);
+                    }
+                    LogTransientRetry("verify", attempt, result);
+                }
+                SleepBeforeRetry(attempt);
+            }
+            throw ProtocolFailure("verify.retry_exhausted");
+        }
+
+        private static string ReadAndFree(
+            NativeBuffer output,
+            string stage)
         {
             try
             {
                 ulong length = output.Length.ToUInt64();
                 if (output.Data == IntPtr.Zero || length == 0 || length > 1024 * 1024)
-                    throw new VeriGateException(9);
+                    throw ProtocolFailure(stage + ".buffer");
                 byte[] bytes = new byte[(int)length];
                 Marshal.Copy(output.Data, bytes, 0, bytes.Length);
+                FileLogger.Log(
+                    "AUTH",
+                    "SDK stage succeeded: " + stage + " response_bytes=" +
+                    bytes.Length);
                 return Encoding.UTF8.GetString(bytes);
             }
             finally
@@ -570,17 +623,154 @@ namespace ASWDEBUG.Verify
             return values;
         }
 
-        private static DateTime ParseDate(string value)
+        private static DateTime ParseDate(string value, string stage)
         {
             DateTime parsed;
             if (string.IsNullOrEmpty(value) ||
-                !DateTime.TryParse(
-                    value,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AdjustToUniversal,
-                    out parsed))
-                throw new VeriGateException(9);
+                (!TryParseRfc3339Utc(value, out parsed) &&
+                 !DateTime.TryParse(
+                     value,
+                     CultureInfo.InvariantCulture,
+                     DateTimeStyles.AdjustToUniversal,
+                     out parsed)))
+                throw ProtocolFailure(stage);
             return parsed.ToUniversalTime();
+        }
+
+        private static bool TryParseRfc3339Utc(
+            string value,
+            out DateTime parsed)
+        {
+            parsed = default(DateTime);
+            if (string.IsNullOrEmpty(value) || value.Length < 20 ||
+                value[4] != '-' || value[7] != '-' ||
+                (value[10] != 'T' && value[10] != 't') ||
+                value[13] != ':' || value[16] != ':')
+                return false;
+
+            int year;
+            int month;
+            int day;
+            int hour;
+            int minute;
+            int second;
+            if (!TryParseDigits(value, 0, 4, out year) ||
+                !TryParseDigits(value, 5, 2, out month) ||
+                !TryParseDigits(value, 8, 2, out day) ||
+                !TryParseDigits(value, 11, 2, out hour) ||
+                !TryParseDigits(value, 14, 2, out minute) ||
+                !TryParseDigits(value, 17, 2, out second))
+                return false;
+
+            int index = 19;
+            long fractionTicks = 0;
+            if (index < value.Length && value[index] == '.')
+            {
+                index++;
+                int digits = 0;
+                while (index < value.Length &&
+                    value[index] >= '0' && value[index] <= '9')
+                {
+                    if (digits < 7)
+                        fractionTicks =
+                            (fractionTicks * 10) + (value[index] - '0');
+                    digits++;
+                    index++;
+                }
+                if (digits == 0) return false;
+                for (int i = digits; i < 7; i++) fractionTicks *= 10;
+            }
+
+            int offsetMinutes = 0;
+            if (index < value.Length &&
+                (value[index] == 'Z' || value[index] == 'z'))
+            {
+                index++;
+            }
+            else
+            {
+                if (index + 6 != value.Length ||
+                    (value[index] != '+' && value[index] != '-') ||
+                    value[index + 3] != ':')
+                    return false;
+                int offsetHours;
+                int offsetMinutePart;
+                if (!TryParseDigits(value, index + 1, 2, out offsetHours) ||
+                    !TryParseDigits(value, index + 4, 2, out offsetMinutePart) ||
+                    offsetHours > 14 || offsetMinutePart > 59 ||
+                    (offsetHours == 14 && offsetMinutePart != 0))
+                    return false;
+                offsetMinutes = (offsetHours * 60) + offsetMinutePart;
+                if (value[index] == '-') offsetMinutes = -offsetMinutes;
+                index += 6;
+            }
+            if (index != value.Length) return false;
+
+            try
+            {
+                DateTime local = new DateTime(
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    DateTimeKind.Unspecified).AddTicks(fractionTicks);
+                parsed = DateTime.SpecifyKind(
+                    local.AddMinutes(-offsetMinutes),
+                    DateTimeKind.Utc);
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+        }
+
+        private static bool TryParseDigits(
+            string value,
+            int start,
+            int count,
+            out int parsed)
+        {
+            parsed = 0;
+            if (value == null || start < 0 || count <= 0 ||
+                start + count > value.Length)
+                return false;
+            for (int i = 0; i < count; i++)
+            {
+                char current = value[start + i];
+                if (current < '0' || current > '9') return false;
+                parsed = (parsed * 10) + (current - '0');
+            }
+            return true;
+        }
+
+        private static bool IsTransientError(uint errorCode)
+        {
+            return errorCode == 7 || errorCode == 9;
+        }
+
+        private static void LogTransientRetry(
+            string stage,
+            int attempt,
+            uint errorCode)
+        {
+            FileLogger.Log(
+                "AUTH",
+                "SDK transient failure: " + stage + " code=" + errorCode +
+                " attempt=" + attempt + "/" + TransientAttemptCount);
+        }
+
+        private static void SleepBeforeRetry(int attempt)
+        {
+            Thread.Sleep(400 * attempt);
+        }
+
+        private static VeriGateException ProtocolFailure(string stage)
+        {
+            FileLogger.Log("AUTH", "Protocol validation failed: " + stage);
+            return new VeriGateException(9);
         }
 
         private static string JsonEscape(string value)
@@ -674,43 +864,50 @@ namespace ASWDEBUG.Verify
 
         private static class NativeMethods
         {
-            private const string Library = "verigate_sdk.dll";
-
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern uint vg_sdk_windows_client_new(
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+            internal delegate uint WindowsClientNew(
                 NativeSlice configJson,
                 NativeSlice directCard,
                 out IntPtr output);
 
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern void vg_sdk_client_free(IntPtr context);
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+            internal delegate void ClientFree(IntPtr context);
 
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern uint vg_sdk_client_activate(
-                IntPtr context,
-                out NativeBuffer output);
-
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern uint vg_sdk_client_create_session(
-                IntPtr context,
-                out NativeBuffer output);
-
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern uint vg_sdk_client_refresh(
-                IntPtr context,
-                out NativeBuffer output);
-
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern uint vg_sdk_client_verify(
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+            internal delegate uint ClientVerify(
                 IntPtr context,
                 NativeSlice requestJson,
                 out NativeBuffer output);
 
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern uint vg_sdk_client_logout(IntPtr context);
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+            internal delegate uint ClientLogout(IntPtr context);
 
-            [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-            internal static extern void vg_sdk_buffer_free(NativeBuffer buffer);
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+            internal delegate void BufferFree(NativeBuffer buffer);
+
+            internal static readonly WindowsClientNew vg_sdk_windows_client_new =
+                NativeSdkLoader.GetFunction<WindowsClientNew>(
+                    "vg_sdk_windows_client_new");
+            internal static readonly ClientFree vg_sdk_client_free =
+                NativeSdkLoader.GetFunction<ClientFree>("vg_sdk_client_free");
+            internal static readonly NativeJsonOperation vg_sdk_client_activate =
+                NativeSdkLoader.GetFunction<NativeJsonOperation>(
+                    "vg_sdk_client_activate");
+            internal static readonly NativeJsonOperation vg_sdk_client_create_session =
+                NativeSdkLoader.GetFunction<NativeJsonOperation>(
+                    "vg_sdk_client_create_session");
+            internal static readonly NativeJsonOperation vg_sdk_client_refresh =
+                NativeSdkLoader.GetFunction<NativeJsonOperation>(
+                    "vg_sdk_client_refresh");
+            internal static readonly ClientVerify vg_sdk_client_verify =
+                NativeSdkLoader.GetFunction<ClientVerify>(
+                    "vg_sdk_client_verify");
+            internal static readonly ClientLogout vg_sdk_client_logout =
+                NativeSdkLoader.GetFunction<ClientLogout>(
+                    "vg_sdk_client_logout");
+            internal static readonly BufferFree vg_sdk_buffer_free =
+                NativeSdkLoader.GetFunction<BufferFree>(
+                    "vg_sdk_buffer_free");
         }
     }
 }

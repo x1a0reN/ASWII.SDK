@@ -9,7 +9,7 @@ using UnityEngine;
 namespace ASWDEBUG.UI
 {
     // 依赖：AuctionWatchList、GameApp.Instance.lobby_connection（AddTextRpc）
-    public static class AuctionMonitor
+    public static partial class AuctionMonitor
     {
 #if AUCTION_BUILD
         public static readonly bool FeatureEnabled = true;
@@ -24,8 +24,8 @@ namespace ASWDEBUG.UI
         private const int PurchasedTtlSec = 4;
         private const int FullTypeGapMs = 70;            // 三类全量扫描之间的间隔（毫秒）
 
-        // 全量兜底节流窗口（毫秒）：两次“全量兜底”之间的最小间隔，降低长跑累计压力
-        private static volatile int FULL_BURST_INTERVAL_MS = 1;
+        // 全量回包很大；定向查询负责低延迟，全量查询只做低频兜底。
+        private static int FULL_BURST_INTERVAL_MS = 30000;
 
         // 解析并发阈值（避免回调风暴造成后台排队膨胀）
         private const int MaxParseConcurrency = 2;
@@ -84,11 +84,14 @@ namespace ASWDEBUG.UI
 
         public static bool IsRunning { get { return FeatureEnabled && _running; } }
 
-        // 运行时调节全量兜底间隔（毫秒）。传 0 表示不节流（每轮都跑）
+        // 运行时调节全量兜底间隔。0 表示关闭；正数最小为 1 秒。
         public static void SetFullBurstIntervalMs(int ms)
         {
             if (ms < 0) ms = 0;
+            if (ms > 0 && ms < FullBurstMinimumIntervalMs)
+                ms = FullBurstMinimumIntervalMs;
             Interlocked.Exchange(ref FULL_BURST_INTERVAL_MS, ms);
+            SchedulerOnFullIntervalChanged(ms);
             FileLogger.Log("AuctionMonitor", $"FULL_BURST_INTERVAL_MS={FULL_BURST_INTERVAL_MS}");
         }
 
@@ -105,9 +108,7 @@ namespace ASWDEBUG.UI
                 if (_running) return;
                 _running = true;
                 _lastFullBurstUtc = DateTime.MinValue;
-                _parseInFlight = 0;
-                _worker = new Thread(WorkerLoop) { IsBackground = true, Name = "AuctionMonitorFast" };
-                _worker.Start();
+                SchedulerStart();
                 FileLogger.Log("AuctionMonitor", "START");
             }
         }
@@ -117,6 +118,7 @@ namespace ASWDEBUG.UI
             lock (_lock)
             {
                 _running = false;
+                SchedulerStop();
                 IsSingleMode = false;
                 SingleId = SingleName = null;
                 SingleWant = 0f;
@@ -127,8 +129,6 @@ namespace ASWDEBUG.UI
                     try { _worker.Interrupt(); } catch { }
                     _worker = null;
                 }
-                // 清空在途买标记
-                Interlocked.Exchange(ref _buyInFlight, 0);
                 _lastFullBurstUtc = DateTime.MinValue;
 
                 // 适度清理缓存，避免下次启动带着旧大表
@@ -369,13 +369,14 @@ namespace ASWDEBUG.UI
 
                 WatchEntry w = targets[i];
                 // ★ 物品：按历史类型提示，尽量只发 1 次；没有提示就发三类
-                TypeHint hint;
-                if (_typeHints.TryGetValue(w.Id, out hint))
+                int hintT;
+                int hintST;
+                if (TryGetTypeHint(w.Id, out hintT, out hintST))
                 {
-                    if (hint.T == 3 && hint.ST == 400)
+                    if (hintT == 3 && hintST == 400)
                         SendAuctionListAsync_Targeted(conn, 3, 400, w);
                     else
-                        SendAuctionListAsync_Targeted(conn, hint.T, -1, w);
+                        SendAuctionListAsync_Targeted(conn, hintT, -1, w);
                 }
                 else
                 {
@@ -541,8 +542,22 @@ namespace ASWDEBUG.UI
         // ========= 极速扫描解析 & 命中即买（每组 Top-K） =========
         private static void FastScanAndBuy(string data, DateTime reqStart, bool limitByGroupTopK)
         {
+            FastScanAndBuy(
+                data,
+                reqStart,
+                limitByGroupTopK,
+                ReadInt(ref _schedulerGeneration));
+        }
+
+        private static void FastScanAndBuy(
+            string data,
+            DateTime reqStart,
+            bool limitByGroupTopK,
+            int generation)
+        {
             if (string.IsNullOrEmpty(data)) return;
-            if (Interlocked.CompareExchange(ref _buyInFlight, 0, 0) > 0) return;
+            if (!IsSchedulerGenerationActive(generation)) return;
+            if (IsBuyInFlight()) return;
 
             // 找到 items 块
             int idxItems = data.IndexOf("items", StringComparison.Ordinal);
@@ -553,13 +568,17 @@ namespace ASWDEBUG.UI
             if (idxOpen < 0) return;
 
             Dictionary<string, int> groupSeen = limitByGroupTopK ? new Dictionary<string, int>(32) : null;
+            Dictionary<string, WatchItem> watched =
+                AuctionWatchList.GetSnapshotById();
 
             int i = idxOpen + 1;
             int depth = 1;
 
-            while (_running && i < data.Length && depth > 0)
+            while (IsSchedulerGenerationActive(generation) &&
+                   i < data.Length &&
+                   depth > 0)
             {
-                if (Interlocked.CompareExchange(ref _buyInFlight, 0, 0) > 0) return;
+                if (IsBuyInFlight()) return;
 
                 int nextOpen = data.IndexOf('{', i);
                 int nextClose = data.IndexOf('}', i);
@@ -574,30 +593,27 @@ namespace ASWDEBUG.UI
                     string id = ExtractQuotedValueAfterKey(data, "display", itemStart, itemEnd);
                     if (!string.IsNullOrEmpty(id))
                     {
-                        int tVal, stVal;
-                        if (TryParseInt(ExtractSimpleValueAfterKey(data, "type", itemStart, itemEnd), out tVal))
-                        {
-                            if (!TryParseInt(ExtractSimpleValueAfterKey(data, "subType", itemStart, itemEnd), out stVal)) stVal = -1;
-                            AddOrUpdateTypeHint(id, tVal, stVal);
-                        }
-
-                        if (groupSeen != null)
-                        {
-                            int c;
-                            if (!groupSeen.TryGetValue(id, out c)) c = 0;
-                            if (c >= GROUP_TOP_K)
-                            {
-                                i = itemEnd + 1;
-                                continue;
-                            }
-                            groupSeen[id] = c + 1;
-                        }
-
                         float want;
-                        if (TryGetWantedPrice(id, out want) && want > 0f)
+                        if (TryGetWantedPrice(id, watched, out want))
                         {
-                            // 单独监控时，用单独目标的 want 覆盖
-                            if (IsSingleMode && id == SingleId && SingleWant > 0f) want = SingleWant;
+                            int tVal, stVal;
+                            if (TryParseInt(ExtractSimpleValueAfterKey(data, "type", itemStart, itemEnd), out tVal))
+                            {
+                                if (!TryParseInt(ExtractSimpleValueAfterKey(data, "subType", itemStart, itemEnd), out stVal)) stVal = -1;
+                                AddOrUpdateTypeHint(id, tVal, stVal);
+                            }
+
+                            if (groupSeen != null)
+                            {
+                                int c;
+                                if (!groupSeen.TryGetValue(id, out c)) c = 0;
+                                if (c >= GROUP_TOP_K)
+                                {
+                                    i = itemEnd + 1;
+                                    continue;
+                                }
+                                groupSeen[id] = c + 1;
+                            }
 
                             float unitPrice = ParseUnitPrice(data, itemStart, itemEnd);
                             if (unitPrice >= 0f && unitPrice <= want)
@@ -605,26 +621,33 @@ namespace ASWDEBUG.UI
                                 string aid = ExtractQuotedValueAfterKey(data, "aid", itemStart, itemEnd);
                                 string auctioneerName = ExtractQuotedValueAfterKey(data, "auctioneerName", itemStart, itemEnd);
                                 string type = ExtractSimpleValueAfterKey(data, "type", itemStart, itemEnd);
-                                if (!string.IsNullOrEmpty(aid) && !string.IsNullOrEmpty(type) && MarkPurchasedOnce(aid))
+                                if (!string.IsNullOrEmpty(aid) &&
+                                    !string.IsNullOrEmpty(type))
                                 {
-                                    if (Interlocked.CompareExchange(ref _buyInFlight, 0, 0) > 0) return;
-
-                                    // 占位：标记“买在途”
-                                    Interlocked.Increment(ref _buyInFlight);
+                                    int buyToken;
+                                    if (!TryAcquireBuy(
+                                        generation,
+                                        out buyToken)) return;
+                                    if (!MarkPurchasedOnce(aid))
+                                    {
+                                        ReleaseBuy(buyToken);
+                                        i = itemEnd + 1;
+                                        continue;
+                                    }
 
                                     DateTime sendUtc = DateTime.UtcNow;
-                                    int cycleElapsedMs = (int)(sendUtc - _cycleStartUtc).TotalMilliseconds;
+                                    int cycleElapsedMs = (int)(sendUtc - reqStart).TotalMilliseconds;
                                     int reqElapsedMs = (int)(sendUtc - reqStart).TotalMilliseconds;
 
-                                    try
-                                    {
-                                        TryBuy(aid, auctioneerName, type, cycleElapsedMs, reqElapsedMs, sendUtc);
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        Interlocked.Decrement(ref _buyInFlight);
-                                        FileLogger.LogException("AuctionMonitor", ex.ToString());
-                                    }
+                                    QueueBuyRequest(
+                                        aid,
+                                        auctioneerName,
+                                        type,
+                                        cycleElapsedMs,
+                                        reqElapsedMs,
+                                        sendUtc,
+                                        buyToken,
+                                        generation);
 
                                     // 命中一笔后立即停止处理该回包
                                     return;
@@ -645,6 +668,17 @@ namespace ASWDEBUG.UI
 
         private static bool TryGetWantedPrice(string id, out float want)
         {
+            return TryGetWantedPrice(
+                id,
+                AuctionWatchList.GetSnapshotById(),
+                out want);
+        }
+
+        private static bool TryGetWantedPrice(
+            string id,
+            Dictionary<string, WatchItem> watched,
+            out float want)
+        {
             // 单独监控：优先使用单独 want
             if (IsSingleMode && id == SingleId && SingleWant > 0f)
             {
@@ -653,11 +687,18 @@ namespace ASWDEBUG.UI
             }
 
             want = 0f;
-            IList<WatchItem> list = AuctionWatchList.All;
-            for (int i = 0; i < list.Count; i++)
+            WatchItem item;
+            if (watched != null &&
+                watched.TryGetValue(id, out item) &&
+                item != null &&
+                item.Price > 0f &&
+                !string.Equals(
+                    item.Name,
+                    CURRENCY_NAME,
+                    StringComparison.Ordinal))
             {
-                var w = list[i];
-                if (w != null && w.Id == id && w.Price > 0f) { want = w.Price; return true; }
+                want = item.Price;
+                return true;
             }
             return false;
         }
@@ -748,10 +789,21 @@ namespace ASWDEBUG.UI
         }
 
         // === 下单 + 统计 & 日志（物品/金币复用） ===
-        private static void TryBuy(string aid, string name, string t, int cycleElapsedMs, int reqElapsedMs, DateTime sendUtc)
+        private static void TryBuy(
+            global::LobbyConnection conn,
+            string aid,
+            string name,
+            string t,
+            int cycleElapsedMs,
+            int reqElapsedMs,
+            DateTime sendUtc,
+            int buyToken)
         {
-            var conn = (global::GameApp.Instance != null) ? global::GameApp.Instance.lobby_connection : null;
-            if (conn == null) { Interlocked.Decrement(ref _buyInFlight); return; }
+            if (conn == null)
+            {
+                ReleaseBuy(buyToken);
+                return;
+            }
 
             var args = new Dictionary<string, string>(4);
             args["aid"] = aid;
@@ -759,39 +811,49 @@ namespace ASWDEBUG.UI
 
             try
             {
-                conn.AddTextRpc(
-                    "auction_buy",
-                    new global::LobbyConnection.RpcCallback(delegate (string data)
-                    {
-                        try
-                        {
-                            DateTime recvUtc = DateTime.UtcNow;
-                            int rttMs = (int)(recvUtc - sendUtc).TotalMilliseconds;
-                            int resultElapsedMs = (int)(recvUtc - _cycleStartUtc).TotalMilliseconds;
+                global::LobbyConnection.RpcRequest buyRequest =
+                    conn.AddTextRpc(
+                        "auction_buy",
+                        CreateMonitorRpcCallback(
+                            null,
+                            delegate(string data)
+                            {
+                                try
+                                {
+                                    DateTime recvUtc = DateTime.UtcNow;
+                                    int rttMs =
+                                        (int)(recvUtc - sendUtc)
+                                        .TotalMilliseconds;
+                                    int resultElapsedMs =
+                                        cycleElapsedMs + rttMs;
 
-                            FileLogger.Log(
-                                "AuctionMonitor",
-                                "BUY aid=" + aid +
-                                " name=" + name +
-                                " t=" + t +
-                                " cycle_elapsed_ms=" + cycleElapsedMs +
-                                " req_elapsed_ms=" + reqElapsedMs +
-                                " rtt_ms=" + rttMs +
-                                " result_elapsed_ms=" + resultElapsedMs +
-                                " data=" + (data ?? "null")
-                            );
-                        }
-                        finally
-                        {
-                            Interlocked.Decrement(ref _buyInFlight);
-                        }
-                    }),
-                    args
-                );
+                                    FileLogger.Log(
+                                        "AuctionMonitor",
+                                        "BUY aid=" + aid +
+                                        " name=" + name +
+                                        " t=" + t +
+                                        " cycle_elapsed_ms=" +
+                                        cycleElapsedMs +
+                                        " req_elapsed_ms=" +
+                                        reqElapsedMs +
+                                        " rtt_ms=" + rttMs +
+                                        " result_elapsed_ms=" +
+                                        resultElapsedMs +
+                                        " data=" + (data ?? "null")
+                                    );
+                                }
+                                finally
+                                {
+                                    ReleaseBuy(buyToken);
+                                }
+                            }),
+                        args
+                    );
+                PromoteRpcRequestNext(conn, buyRequest);
             }
             catch (Exception ex)
             {
-                Interlocked.Decrement(ref _buyInFlight);
+                ReleaseBuy(buyToken);
                 FileLogger.LogException("AuctionMonitor", ex.ToString());
             }
         }
@@ -801,9 +863,9 @@ namespace ASWDEBUG.UI
 
         private static List<WatchEntry> SnapshotTargetsDetailed()
         {
-            var list = new List<WatchEntry>(64);
-            IList<WatchItem> src = AuctionWatchList.All;
-            for (int i = 0; i < src.Count; i++)
+            WatchItem[] src = AuctionWatchList.GetSnapshot();
+            var list = new List<WatchEntry>(src.Length);
+            for (int i = 0; i < src.Length; i++)
             {
                 var w = src[i];
                 if (w == null || string.IsNullOrEmpty(w.Id) || w.Price <= 0f) continue;
@@ -825,8 +887,8 @@ namespace ASWDEBUG.UI
                 return true;
             }
 
-            IList<WatchItem> list = AuctionWatchList.All;
-            for (int i = 0; i < list.Count; i++)
+            WatchItem[] list = AuctionWatchList.GetSnapshot();
+            for (int i = 0; i < list.Length; i++)
             {
                 var w = list[i];
                 if (w != null &&
@@ -889,8 +951,22 @@ namespace ASWDEBUG.UI
         // ★ 解析货币列表并尝试购买：条件 singlePrice * 10000 <= want
         private static void FastScanAndBuyCurrency(string data, DateTime reqStart, float want)
         {
+            FastScanAndBuyCurrency(
+                data,
+                reqStart,
+                want,
+                ReadInt(ref _schedulerGeneration));
+        }
+
+        private static void FastScanAndBuyCurrency(
+            string data,
+            DateTime reqStart,
+            float want,
+            int generation)
+        {
             if (string.IsNullOrEmpty(data)) return;
-            if (Interlocked.CompareExchange(ref _buyInFlight, 0, 0) > 0) return;
+            if (!IsSchedulerGenerationActive(generation)) return;
+            if (IsBuyInFlight()) return;
 
             // items = { ... } 结构
             int idxItems = data.IndexOf("items", StringComparison.Ordinal);
@@ -903,9 +979,11 @@ namespace ASWDEBUG.UI
             int i = idxOpen + 1;
             int depth = 1;
 
-            while (_running && i < data.Length && depth > 0)
+            while (IsSchedulerGenerationActive(generation) &&
+                   i < data.Length &&
+                   depth > 0)
             {
-                if (Interlocked.CompareExchange(ref _buyInFlight, 0, 0) > 0) return;
+                if (IsBuyInFlight()) return;
 
                 int nextOpen = data.IndexOf('{', i);
                 int nextClose = data.IndexOf('}', i);
@@ -927,27 +1005,32 @@ namespace ASWDEBUG.UI
                         {
                             string aid = ExtractQuotedValueAfterKey(data, "aid", itemStart, itemEnd);
                             string auctioneerName = ExtractQuotedValueAfterKey(data, "auctioneerName", itemStart, itemEnd);
-                            if (!string.IsNullOrEmpty(aid) && MarkPurchasedOnce(aid))
+                            if (!string.IsNullOrEmpty(aid))
                             {
-                                if (Interlocked.CompareExchange(ref _buyInFlight, 0, 0) > 0) return;
-
-                                // 占位：标记“买在途”
-                                Interlocked.Increment(ref _buyInFlight);
+                                int buyToken;
+                                if (!TryAcquireBuy(
+                                    generation,
+                                    out buyToken)) return;
+                                if (!MarkPurchasedOnce(aid))
+                                {
+                                    ReleaseBuy(buyToken);
+                                    i = itemEnd + 1;
+                                    continue;
+                                }
 
                                 DateTime sendUtc = DateTime.UtcNow;
-                                int cycleElapsedMs = (int)(sendUtc - _cycleStartUtc).TotalMilliseconds;
+                                int cycleElapsedMs = (int)(sendUtc - reqStart).TotalMilliseconds;
                                 int reqElapsedMs = (int)(sendUtc - reqStart).TotalMilliseconds;
 
-                                try
-                                {
-                                    // ★ t 固定为 7
-                                    TryBuy(aid, CURRENCY_NAME, CURRENCY_T_FOR_BUY.ToString(CultureInfo.InvariantCulture), cycleElapsedMs, reqElapsedMs, sendUtc);
-                                }
-                                catch (Exception ex)
-                                {
-                                    Interlocked.Decrement(ref _buyInFlight);
-                                    FileLogger.LogException("AuctionMonitor", ex.ToString());
-                                }
+                                QueueBuyRequest(
+                                    aid,
+                                    CURRENCY_NAME,
+                                    CURRENCY_T_FOR_BUY.ToString(CultureInfo.InvariantCulture),
+                                    cycleElapsedMs,
+                                    reqElapsedMs,
+                                    sendUtc,
+                                    buyToken,
+                                    generation);
 
                                 return; // 命中一笔后即可结束
                             }
@@ -1166,12 +1249,17 @@ namespace ASWDEBUG.UI
                 _lastHealthLogTicks = nowTicks;
                 try
                 {
-                    var p = Process.GetCurrentProcess();
-                    FileLogger.Log("AuctionMonitor.Health",
-                        $"handles={p.HandleCount} threads={p.Threads.Count} " +
-                        $"wsMB={p.WorkingSet64 / 1048576} privMB={p.PrivateMemorySize64 / 1048576} " +
-                        $"gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} " +
-                        $"parseInFlight={_parseInFlight}");
+                    using (Process p = Process.GetCurrentProcess())
+                    {
+                        FileLogger.Log("AuctionMonitor.Health",
+                            $"handles={p.HandleCount} threads={p.Threads.Count} " +
+                            $"wsMB={p.WorkingSet64 / 1048576} privMB={p.PrivateMemorySize64 / 1048576} " +
+                            $"gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} " +
+                            $"rpcInFlight={GetMonitorRequestsInFlight()} " +
+                            $"parseInFlight={ReadInt(ref _parseInFlight)} " +
+                            $"buyInFlight={(IsBuyInFlight() ? 1 : 0)} " +
+                            $"droppedParse={ReadInt(ref _droppedParseResponses)}");
+                    }
                 }
                 catch { }
             }

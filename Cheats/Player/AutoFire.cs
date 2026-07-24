@@ -1,197 +1,279 @@
-﻿using ASWDEBUG.Global;
-using ASWDEBUG.Logger;
 using ASWDEBUG.Main;
-using PDE.Animation;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using UnityEngine;
 
 namespace ASWDEBUG.Cheats.Player
 {
     public class AutoFire
     {
-        public static bool Enabled;
+        private const float CastRadius = 0.05f;
+        private const float MaxCastDistance = 300f;
+        private const float KeyDownRepeatSeconds = 0.06f;
 
+        private static bool _wasAllowed;
+        private static float _nextKeyDownAt;
+        private static int _keyDownPulseFrame = -1;
+        private static bool _castMaskInitialized;
+        private static int _castMask;
+
+        public static bool Enabled;
         public static bool AutoFireAllowed;
+
+        public static bool WantsFire
+        {
+            get { return Enabled && AutoFireAllowed; }
+        }
+
         public static void Enable()
         {
-            if (CheatMain.CameraMain != null)
+            Level level = null;
+            Character player = null;
+            try
             {
-                Fire();
+                level = ASSingleton<Level>.Instance;
+                player = level != null ? level.GetPlayer() : null;
             }
+            catch
+            {
+            }
+
+            Tick(level, player, CheatMain.CameraMain != null
+                ? CheatMain.CameraMain
+                : Camera.main);
+        }
+
+        public static void Tick(Level level, Character player, Camera camera)
+        {
+            if (!Enabled || level == null || player == null || camera == null ||
+                player.IsDied || (player.Is_Viewer && !player.Is_GP))
+            {
+                SetAllowed(false);
+                return;
+            }
+
+            Character target;
+            bool allowed = TryGetCrosshairTarget(level, player, camera, out target);
+            SetAllowed(allowed);
         }
 
         public static void Toggle()
         {
             Enabled = !Enabled;
+            if (!Enabled) SetAllowed(false);
         }
+
+        public static void Reset()
+        {
+            SetAllowed(false);
+        }
+
         public static void ToggleAutoFireAllowed()
         {
-            AutoFireAllowed = !AutoFireAllowed;
+            SetAllowed(!AutoFireAllowed);
         }
-        /// <summary>
-        /// 完全复刻 Character.UpdateBloodBar 中“准星是否指到该敌人”的判定。
-        /// </summary>
-        public static bool IsCrosshairOnEnemyExact(Character target)
+
+        public static bool ShouldFireKeyDown()
         {
-            if (target == null) { Log("AF", "IsCrosshairOnEnemyExact: target=null"); return false; }
+            if (!WantsFire) return false;
 
-            var lvl = ASSingleton<Level>.Instance;
-            if (lvl == null) { Log("AF", "IsCrosshairOnEnemyExact: lvl=null"); return false; }
+            int frame = Time.frameCount;
+            if (_keyDownPulseFrame == frame) return true;
 
-            var player = lvl.GetPlayer();
-            if (player == null) { Log("AF", "IsCrosshairOnEnemyExact: player=null"); return false; }
+            float now = Time.unscaledTime;
+            if (now + 0.0001f < _nextKeyDownAt) return false;
 
-            // 同队/已死直接否
-            if (target.GetTeam() == player.GetTeam()) { Log("AF", $"IsCrosshairOnEnemyExact: same team ({target.baseName})"); return false; }
-            if (target.IsDied) { Log("AF", $"IsCrosshairOnEnemyExact: target died ({target.baseName})"); return false; }
-
-            // 观战但非GP时，不进行准星命中判断
-            if (player.Is_Viewer && !player.Is_GP)
-            {
-                Log("AF", "IsCrosshairOnEnemyExact: viewer && !GP => skip");
-                return false;
-            }
-
-            var cam = Camera.main;
-            if (cam == null) { Log("AF", "IsCrosshairOnEnemyExact: Camera.main=null"); return false; }
-
-            // ── 和原逻辑一致的 SphereCast ──
-            Ray ray = cam.ScreenPointToRay(new Vector3(Screen.width * 0.5f, Screen.height * 0.5f, 0f));
-            RaycastHit hit;
-            bool hitOk = Physics.SphereCast(ray, 0.05f, out hit, 100f, LayerMask.GetMask(new string[] { "kPlayer", "Terrarin" }));
-            if (!hitOk)
-            {
-                Log("AF", "IsCrosshairOnEnemyExact: SphereCast miss");
-                return false;
-            }
-
-            var root = (hit.transform != null) ? hit.transform.root : null;
-            string rootName = (root != null) ? root.name : "null";
-            Log("AF", $"IsCrosshairOnEnemyExact: SphereCast hit root='{rootName}' need='{target.baseName}'");
-
-            if (root == null || root.name != target.baseName)
-            {
-                Log("AF", "IsCrosshairOnEnemyExact: root name not match target.baseName");
-                return false;
-            }
-
-            // 可见度（与原逻辑一致）
-            float hpAlpha = 0f;
-            try
-            {
-                hpAlpha = (!target.GetHidden()) ? 1f : player.SeeEffect(target);
-            }
-            catch (Exception e)
-            {
-                Log("AF", $"IsCrosshairOnEnemyExact: SeeEffect error: {e}");
-                hpAlpha = 0f;
-            }
-
-            Log("AF", $"IsCrosshairOnEnemyExact: hpAlpha={hpAlpha:0.###}, playerHidden={player.GetHidden()}");
-
-            // hpAlpha 必须 == 1
-            if (hpAlpha != 1f)
-            {
-                Log("AF", "IsCrosshairOnEnemyExact: hpAlpha != 1 => false");
-                return false;
-            }
-
-            // 本地玩家处于隐身 => 不允许
-            if (player.GetHidden())
-            {
-                Log("AF", "IsCrosshairOnEnemyExact: local player hidden => false");
-                return false;
-            }
-
-            Log("AF", $"IsCrosshairOnEnemyExact: OK for '{target.baseName}'");
+            _keyDownPulseFrame = frame;
+            _nextKeyDownAt = now + KeyDownRepeatSeconds;
             return true;
         }
 
-        /// <summary>
-        /// 用“完全一致”的准星命中逻辑修复 Fire()；一次检测 + 匹配 baseName 的角色。
-        /// </summary>
-        public static void Fire()
+        public static bool IsCrosshairOnEnemyExact(Character target)
         {
-            AutoFireAllowed = false;
-            if (!Enabled) { Log("AF", "Fire: not enabled"); return; }
+            if (target == null) return false;
 
-            var lvl = ASSingleton<Level>.Instance;
-            if (lvl == null) { Log("AF", "Fire: lvl=null"); return; }
-
-            var player = lvl.GetPlayer();
-            if (player == null) { Log("AF", "Fire: player=null"); return; }
-
-            if (player.Is_Viewer && !player.Is_GP)
-            {
-                Log("AF", "Fire: viewer && !GP => skip");
-                return;
-            }
-
-            var cam = Camera.main;
-            if (cam == null) { Log("AF", "Fire: Camera.main=null"); return; }
-
-            // ── 和原逻辑一致：中心点 SphereCast ──
-            Ray ray = cam.ScreenPointToRay(new Vector3(Screen.width * 0.5f, Screen.height * 0.5f, 0f));
-            RaycastHit hit;
-            if (!Physics.SphereCast(ray, 0.05f, out hit, 100f, LayerMask.GetMask(new string[] { "kPlayer", "Terrarin" })))
-            {
-                Log("AF", "Fire: SphereCast miss");
-                return;
-            }
-
-            var root = (hit.transform != null) ? hit.transform.root : null;
-            string rootName = (root != null) ? root.name : "null";
-            Log("AF", $"Fire: SphereCast hit root='{rootName}'");
-
-            if (root == null)
-            {
-                Log("AF", "Fire: hit.root is null");
-                return;
-            }
-
-            // 在集合里找匹配 baseName 的角色
-            Character target = null;
+            Level level = null;
+            Character player = null;
+            Camera camera = CheatMain.CameraMain != null
+                ? CheatMain.CameraMain
+                : Camera.main;
             try
             {
-                foreach (var ch in CharacterManager.Instance.character_set)
-                {
-                    if (ch == null) continue;
-                    if (ch.baseName == root.name) { target = ch; break; }
-                }
-            }
-            catch (Exception e)
-            {
-                Log("AF", $"Fire: iterate character_set error: {e}");
-            }
-
-            if (target == null)
-            {
-                Log("AF", "Fire: no Character matched by baseName");
-                return;
-            }
-
-            bool ok = IsCrosshairOnEnemyExact(target);
-            AutoFireAllowed = ok;
-            Log("AF", $"Fire: AutoFireAllowed={AutoFireAllowed} target='{target.baseName}'");
-        }
-
-
-        private static void Log(string tag, string msg)
-        {
-            try
-            {
-                // 按你的要求：直接用这个函数体
-                //FileLogger.Log(tag, msg);
-                return;
+                level = ASSingleton<Level>.Instance;
+                player = level != null ? level.GetPlayer() : null;
             }
             catch
             {
-                // 如果 WriteLine 不可用，兜底到 Unity 日志，避免因日志崩溃
-                try { Debug.Log("[" + tag + "] " + msg); } catch { }
             }
+            if (level == null || player == null || camera == null) return false;
+
+            Character crosshairTarget;
+            return TryGetCrosshairTarget(level, player, camera, out crosshairTarget) &&
+                crosshairTarget == target;
+        }
+
+        public static void Fire()
+        {
+            Enable();
+        }
+
+        private static bool TryGetCrosshairTarget(Level level, Character player,
+            Camera camera, out Character target)
+        {
+            target = null;
+            if (level == null || player == null || camera == null) return false;
+            if (SafeGetHidden(player)) return false;
+
+            Ray ray = camera.ScreenPointToRay(new Vector3(
+                Screen.width * 0.5f,
+                Screen.height * 0.5f,
+                0f));
+
+            RaycastHit[] hits;
+            try
+            {
+                hits = Physics.SphereCastAll(ray, CastRadius, MaxCastDistance,
+                    GetCastMask());
+            }
+            catch
+            {
+                return false;
+            }
+            if (hits == null || hits.Length == 0) return false;
+
+            for (int n = 0; n < hits.Length; n++)
+            {
+                int nearestIndex = n;
+                for (int i = n + 1; i < hits.Length; i++)
+                {
+                    if (hits[i].distance < hits[nearestIndex].distance)
+                        nearestIndex = i;
+                }
+                if (nearestIndex != n)
+                {
+                    RaycastHit swap = hits[n];
+                    hits[n] = hits[nearestIndex];
+                    hits[nearestIndex] = swap;
+                }
+
+                Transform hitTransform = hits[n].transform;
+                if (hitTransform == null) continue;
+                Character hitCharacter = ResolveHitCharacter(hitTransform);
+                if (hitCharacter == player) continue;
+
+                // The first non-local collider is authoritative. Terrain, a teammate,
+                // or an invalid character must block a target behind it.
+                if (hitCharacter == null) return false;
+                if (!IsValidEnemy(level, player, hitCharacter)) return false;
+                if (!IsVisibleToPlayer(player, hitCharacter)) return false;
+
+                target = hitCharacter;
+                return true;
+            }
+            return false;
+        }
+
+        private static Character ResolveHitCharacter(Transform hitTransform)
+        {
+            CharacterManager manager = CharacterManager.Instance;
+            if (hitTransform == null || manager == null ||
+                manager.character_set == null)
+                return null;
+
+            Character rootCandidate = null;
+            int rootMatches = 0;
+            foreach (Character character in manager.character_set)
+            {
+                if (character == null || character.transform == null) continue;
+                Transform characterTransform = character.transform;
+                if (hitTransform == characterTransform ||
+                    hitTransform.IsChildOf(characterTransform))
+                    return character;
+
+                if (hitTransform.root == characterTransform.root)
+                {
+                    rootCandidate = character;
+                    rootMatches++;
+                }
+            }
+
+            return rootMatches == 1 ? rootCandidate : null;
+        }
+
+        private static bool IsValidEnemy(Level level, Character player,
+            Character target)
+        {
+            if (target == null || target == player || target.IsDied ||
+                target.Is_Viewer)
+                return false;
+
+            try
+            {
+                if (target.invincible_time > 0.03f) return false;
+                if (level.game_type == RoomInfo.GameType.kGameTypeChiji)
+                    return true;
+                return target.GetTeam() != player.GetTeam();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsVisibleToPlayer(Character player, Character target)
+        {
+            try
+            {
+                if (!target.GetHidden()) return true;
+                return player.SeeEffect(target) >= 0.999f;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool SafeGetHidden(Character player)
+        {
+            try
+            {
+                return player != null && player.GetHidden();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static int GetCastMask()
+        {
+            if (_castMaskInitialized) return _castMask;
+            _castMaskInitialized = true;
+            _castMask = LayerMask.GetMask(new[]
+            {
+                "kPlayer",
+                "kController",
+                "Terrarin",
+                "Terrain"
+            });
+            if (_castMask == 0) _castMask = -1;
+            return _castMask;
+        }
+
+        private static void SetAllowed(bool allowed)
+        {
+            if (allowed && !_wasAllowed)
+            {
+                _nextKeyDownAt = 0f;
+                _keyDownPulseFrame = -1;
+            }
+            else if (!allowed)
+            {
+                _nextKeyDownAt = 0f;
+                _keyDownPulseFrame = -1;
+            }
+
+            AutoFireAllowed = allowed;
+            _wasAllowed = allowed;
         }
     }
 }

@@ -2539,7 +2539,7 @@ namespace ASWDEBUG
                 // 读取游戏里配置的“开火键”
                 var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
 
-                if ((key == fireKey && AutoFire.AutoFireAllowed) || (key == fireKey && SpinTop.Enabled))
+                if ((key == fireKey && AutoFire.WantsFire) || (key == fireKey && SpinTop.Enabled))
                 {
                     __result = true;
                     return false; // 跳过原 Input.GetKey
@@ -2602,7 +2602,7 @@ namespace ASWDEBUG
                     }
 
                     var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
-                    if ((keyCode == fireKey && AutoFire.AutoFireAllowed) || (keyCode == fireKey && SpinTop.Enabled))
+                    if ((keyCode == fireKey && AutoFire.WantsFire) || (keyCode == fireKey && SpinTop.Enabled))
                     {
                         __result = true;
                         return false; // 跳过原 Input.GetKey(string)
@@ -2647,6 +2647,13 @@ namespace ASWDEBUG
                 {
                     return false;
                 }
+
+                var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
+                if (key == fireKey && AutoFire.ShouldFireKeyDown())
+                {
+                    __result = true;
+                    return false;
+                }
             }
             catch
             {
@@ -2688,6 +2695,13 @@ namespace ASWDEBUG
                 if (AutoBattleInput.TryParseKeyCode(name, out keyCode) &&
                     AutoBattleInput.TryGetKeyDown(keyCode, ref __result))
                 {
+                    return false;
+                }
+
+                var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
+                if (keyCode == fireKey && AutoFire.ShouldFireKeyDown())
+                {
+                    __result = true;
                     return false;
                 }
             }
@@ -2774,6 +2788,8 @@ namespace ASWDEBUG
     [HarmonyPatch]
     public static class Patch_LobbyConnection_rpcCallBack
     {
+        private static MethodInfo _runRpcRequestMethod;
+
         static MethodBase TargetMethod()
         {
             try
@@ -2797,67 +2813,81 @@ namespace ASWDEBUG
             }
         }
 
-        // 关键：通过 ref 参数拿到 func/callback/argument，交给 UI 侧处理（可改/包装）
         static bool Prefix(LobbyConnection __instance,
                            ref string data)
         {
+            global::LobbyConnection.RpcRequest request;
             try
             {
-                global::WaitingPanel.instance.SetActive(false);
-
-                if (AuctionMonitor.FeatureEnabled && AuctionMonitor.IsRunning)
-                {
-                    bool isMonitorList = (__instance.rpcRequest.func == "auction_list");
-                    if (isMonitorList)
-                    {
-                        if (__instance.rpcRequest.callback != null)
-                        {
-                            __instance.rpcRequest.callback(data);
-                        }
-                        __instance.rpcRequest = __instance.rpcRequest.chlid;
-                        Traverse.Create(__instance).Method("runRpcRequest").GetValue();
-
-                        return false;
-                    }
-
-                    if (__instance.rpcRequest.func == "auction_buy")
-                    {
-                        if (__instance.rpcRequest.callback != null)
-                        {
-                            __instance.rpcRequest.callback(data);
-                        }
-
-                        __instance.rpcRequest.callback = null;
-
-                        return true;
-                    }
-                }
-
-                data = data.Replace("\r", string.Empty);
-                UniLua.LuaState luaState = new UniLua.LuaState(null);
-                luaState.DoString(data);
-                bool flag = false;
-                if (luaState["error"] != null)
-                {
-                    string text = luaState["error"].ToString();
-                    if (text == "msgbox_common_num_1001" || text == "msgbox_common_conditionkey_001")
-                    {
-                        global::UITools.CheckError(text);
-                    }
-                    flag = global::UITools.CheckCurrency(text);
-                }
-                if (__instance.rpcRequest.callback != null)
-                {
-                    __instance.rpcRequest.callback(data);
-                }
-                __instance.rpcRequest = __instance.rpcRequest.chlid;
-                Traverse.Create(__instance).Method("runRpcRequest").GetValue();
+                request = __instance != null ? __instance.rpcRequest : null;
             }
             catch (Exception e)
             {
-                FileLogger.Log("PATCH", "[LobbyConnection.rpcCallBack] prefix error: " + e);
+                FileLogger.Log(
+                    "PATCH",
+                    "[LobbyConnection.rpcCallBack] inspect error: " + e);
+                return true;
             }
-            return false;
+
+            if (request == null ||
+                !AuctionMonitor.IsMonitorRpcCallback(request.callback))
+            {
+                return true;
+            }
+
+            try
+            {
+                if (global::WaitingPanel.instance != null)
+                    global::WaitingPanel.instance.SetActive(false);
+            }
+            catch { }
+
+            try
+            {
+                if (request.callback != null)
+                    request.callback(data);
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log(
+                    "PATCH",
+                    "[LobbyConnection.rpcCallBack] monitor callback error: " + e);
+            }
+
+            try
+            {
+                __instance.rpcRequest = request.chlid;
+                if (RunNextRpcRequest(__instance))
+                    return false;
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log(
+                    "PATCH",
+                    "[LobbyConnection.rpcCallBack] monitor advance error: " + e);
+            }
+
+            // 回退给原方法时恢复当前节点并清掉已调用的 callback，避免重复回调。
+            __instance.rpcRequest = request;
+            request.callback = null;
+            return true;
+        }
+
+        private static bool RunNextRpcRequest(
+            global::LobbyConnection connection)
+        {
+            MethodInfo method = _runRpcRequestMethod;
+            if (method == null)
+            {
+                method = AccessTools.Method(
+                    typeof(global::LobbyConnection),
+                    "runRpcRequest");
+                _runRpcRequestMethod = method;
+            }
+            if (method == null) return false;
+
+            method.Invoke(connection, null);
+            return true;
         }
 
         static Assembly GetAsm(string name)

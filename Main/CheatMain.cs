@@ -112,6 +112,8 @@ namespace ASWDEBUG.Main
 
         private void Update()
         {
+            AuctionMonitor.Tick();
+
             GameApp app = GameApp.Instance;
             inChannel = (app != null &&
                 app.lobby_connection != null &&
@@ -132,6 +134,8 @@ namespace ASWDEBUG.Main
             }
             catch { }
 
+            DllUsageTelemetry.Tick(player);
+
             try
             {
                 LocalBotManager.Tick(level, player);
@@ -144,8 +148,6 @@ namespace ASWDEBUG.Main
 
             if (CameraMain != null && level != null && player != null)
             {
-                DllUsageTelemetry.Tick(player);
-
                 try
                 {
                     AutoUseManager.Tick(level, player);
@@ -153,6 +155,16 @@ namespace ASWDEBUG.Main
                 catch (Exception e)
                 {
                     FileLogger.Log("CHEAT", "AutoUse tick failed: " + e.Message);
+                }
+
+                try
+                {
+                    AutoFire.Tick(level, player, CameraMain);
+                }
+                catch (Exception e)
+                {
+                    AutoFire.Reset();
+                    FileLogger.Log("CHEAT", "AutoFire tick failed: " + e.Message);
                 }
 
                 try
@@ -193,7 +205,6 @@ namespace ASWDEBUG.Main
             }
             else
             {
-                DllUsageTelemetry.Tick(null);
                 AutoBattleManager.Tick(null, null, null);
                 AutoAim.AimLocking = false;
                 AutoAim.bestTarget = null;
@@ -203,6 +214,7 @@ namespace ASWDEBUG.Main
                 AimTrack.currentTarget = null;
                 BossAutoAim.bestTarget = null;
                 BossAutoAim.currentTarget = null;
+                AutoFire.Reset();
             }
 
             if (EnableDebugUi && Input.GetKeyDown(KeyCode.Delete))

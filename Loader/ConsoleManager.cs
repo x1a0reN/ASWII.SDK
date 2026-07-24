@@ -72,6 +72,9 @@ public class ConsoleManager : MonoBehaviour
         try { pid = System.Diagnostics.Process.GetCurrentProcess().Id; } catch { }
         FileLogger.Init(Path.Combine(logDir, "ASW_App.pid" + pid + ".log"), rotate: true);
         FileLogger.Log("MARK", "Start() ENTER");
+        FileLogger.Log(
+            "MARK",
+            "Runtime assembly=" + typeof(ConsoleManager).Assembly.FullName);
 
         // 捕获 Unity 日志
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
@@ -117,6 +120,7 @@ public class ConsoleManager : MonoBehaviour
             return;
         }
 
+        DllUsageTelemetry.Start();
         mgr.RunAutoLogin((ok, err) =>
         {
             if (!ok)
