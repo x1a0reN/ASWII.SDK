@@ -79,6 +79,12 @@ namespace ASWDEBUG.Main
         private static string _activeStorageType = string.Empty;
         private static string _cachedEquipmentJson = string.Empty;
         private static string _cachedInventoryJson = string.Empty;
+        private static readonly List<Dictionary<string, string>>
+            ProfileEquipmentItems =
+                new List<Dictionary<string, string>>();
+        private static readonly List<Dictionary<string, string>>
+            SlotEquipmentItems =
+                new List<Dictionary<string, string>>();
         private static readonly Dictionary<string, List<Dictionary<string, string>>>
             StorageItemsByType =
                 new Dictionary<string, List<Dictionary<string, string>>>();
@@ -104,6 +110,8 @@ namespace ASWDEBUG.Main
             _activeStorageType = string.Empty;
             _cachedEquipmentJson = string.Empty;
             _cachedInventoryJson = string.Empty;
+            ProfileEquipmentItems.Clear();
+            SlotEquipmentItems.Clear();
             StorageItemsByType.Clear();
             var metadata = new Dictionary<string, string>();
             TrySet(metadata, "unity_version", Application.unityVersion);
@@ -641,8 +649,13 @@ namespace ASWDEBUG.Main
                     items,
                     player["equips"],
                     MaxEquipmentItems);
-                string encoded = BuildItemsJson(items, true);
-                lock (Sync) _cachedEquipmentJson = encoded;
+                lock (Sync)
+                {
+                    ProfileEquipmentItems.Clear();
+                    ProfileEquipmentItems.AddRange(items);
+                    _cachedEquipmentJson =
+                        BuildCombinedEquipmentJson();
+                }
             }
             catch (Exception ex)
             {
@@ -655,6 +668,67 @@ namespace ASWDEBUG.Main
             finally
             {
                 _playerInfoInFlight = false;
+                QueueTelemetrySlotInfo(requestGeneration);
+            }
+        }
+
+        private static void QueueTelemetrySlotInfo(int requestGeneration)
+        {
+            LobbyConnection lobby = GetLobbyConnection() as LobbyConnection;
+            if (lobby == null) return;
+            try
+            {
+                lobby.AddTextRpc(
+                    "slot_get",
+                    delegate(string response)
+                    {
+                        OnTelemetrySlotInfo(
+                            requestGeneration,
+                            response);
+                    },
+                    null);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    "DLL-USAGE",
+                    "slot_get telemetry failed: " + ex.Message);
+            }
+        }
+
+        private static void OnTelemetrySlotInfo(
+            int requestGeneration,
+            string data)
+        {
+            if (requestGeneration != _playerInfoRequestGeneration) return;
+            try
+            {
+                LuaState lua = new LuaState();
+                lua.DoString(data ?? string.Empty);
+                if (lua["error"] != null)
+                    throw new InvalidOperationException(
+                        lua["error"].ToString());
+
+                var items = new List<Dictionary<string, string>>();
+                AddItems(
+                    items,
+                    lua.GetTable("slots"),
+                    MaxEquipmentItems);
+                lock (Sync)
+                {
+                    SlotEquipmentItems.Clear();
+                    SlotEquipmentItems.AddRange(items);
+                    _cachedEquipmentJson =
+                        BuildCombinedEquipmentJson();
+                }
+            }
+            catch (Exception ex)
+            {
+                _nextPlayerInfoRefresh =
+                    Time.realtimeSinceStartup + PlayerDataRetryInterval;
+                FileLogger.Log(
+                    "DLL-USAGE",
+                    "slot_get telemetry response failed: " + ex.Message);
             }
         }
 
@@ -743,6 +817,47 @@ namespace ASWDEBUG.Main
                 }
             }
             return BuildItemsJson(combined, true);
+        }
+
+        private static string BuildCombinedEquipmentJson()
+        {
+            var combined = new List<Dictionary<string, string>>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            AddUniqueItems(
+                combined,
+                seen,
+                SlotEquipmentItems,
+                MaxEquipmentItems);
+            AddUniqueItems(
+                combined,
+                seen,
+                ProfileEquipmentItems,
+                MaxEquipmentItems);
+            return BuildItemsJson(combined, true);
+        }
+
+        private static void AddUniqueItems(
+            List<Dictionary<string, string>> target,
+            HashSet<string> seen,
+            IList<Dictionary<string, string>> source,
+            int maximum)
+        {
+            if (target == null || seen == null || source == null) return;
+            for (int index = 0;
+                index < source.Count && target.Count < maximum;
+                index++)
+            {
+                Dictionary<string, string> item = source[index];
+                if (item == null) continue;
+                string id;
+                string name;
+                item.TryGetValue("id", out id);
+                item.TryGetValue("name", out name);
+                string key = (id ?? string.Empty) + "\n" +
+                    (name ?? string.Empty);
+                if (key == "\n" || !seen.Add(key)) continue;
+                target.Add(item);
+            }
         }
 
         private static string GetGameLocation()
