@@ -1,6 +1,10 @@
 using ASWDEBUG.Cheats.AimTrack;
 using ASWDEBUG.Cheats.AutoAim;
+using ASWDEBUG.Cheats.AutoUse;
 using ASWDEBUG.Cheats.ESP;
+using ASWDEBUG.Cheats.Other;
+using ASWDEBUG.Cheats.Player;
+using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Verify;
 using System;
@@ -42,11 +46,14 @@ namespace ASWDEBUG.Main
         {
             "channel_state", "currency_coupon", "currency_gold",
             "currency_star", "equipment", "experience", "experience_next",
-            "fitness_value", "game_mode", "game_state", "guild_name",
-            "inventory", "job", "ladder_level", "lobby_state", "map_name",
-            "occupation", "player_level", "rank_level", "rank_type",
-            "room_name", "team_name", "uid", "unity_scene",
-            "venture_force", "vip_level"
+            "fitness_value", "game_mode", "game_mode_text", "game_state",
+            "game_state_text", "guild_name", "in_match", "inventory", "job",
+            "ladder_level", "lobby_state", "map_name",
+            "match_duration_seconds", "match_player_count", "match_players",
+            "occupation", "player_level", "presence_state", "presence_text",
+            "rank_level", "rank_type", "room_max_players",
+            "room_name", "room_player_count", "team_name", "uid",
+            "unity_scene", "venture_force", "vip_level"
         };
 
         private struct UsageSeen
@@ -488,19 +495,61 @@ namespace ASWDEBUG.Main
             object channel = GetChannelConnection();
             object roomInfo = GetRoomInfo(channel);
             object characterInfo = ReadMember(localPlayer, "character_info");
+            string lobbyState = ReadStringMember(lobby, "state");
+            string channelState = ReadStringMember(channel, "state");
+            string gameState = ReadStringMember(channel, "game_state");
+            string gameMode = FirstNonEmpty(
+                ReadStringMember(roomInfo, "game_mode_name"),
+                ReadStringMember(Level.Instance, "game_type"));
+            string presenceState = GetPresenceState(
+                lobbyState,
+                channelState,
+                gameState,
+                roomInfo);
+            bool inMatch = IsInMatch(presenceState);
 
             TrySet(metadata, "uid", uid.ToString());
             TrySet(metadata, "unity_scene", Application.loadedLevelName);
-            TrySet(metadata, "lobby_state", ReadStringMember(lobby, "state"));
-            TrySet(metadata, "channel_state", ReadStringMember(channel, "state"));
-            TrySet(metadata, "game_state", ReadStringMember(channel, "game_state"));
+            TrySet(metadata, "lobby_state", lobbyState);
+            TrySet(metadata, "channel_state", channelState);
+            TrySet(metadata, "game_state", gameState);
+            TrySet(metadata, "game_state_text", TranslateGameState(gameState));
+            TrySet(metadata, "presence_state", presenceState);
+            TrySet(metadata, "presence_text", TranslatePresence(presenceState));
+            TrySet(metadata, "in_match", inMatch ? "true" : "false");
             TrySet(metadata, "room_name", ReadStringMember(roomInfo, "room_name"));
             TrySet(metadata, "map_name", FirstNonEmpty(
                 ReadStringMember(Level.Instance, "map_name"),
                 ReadStringMember(roomInfo, "map_name")));
-            TrySet(metadata, "game_mode", FirstNonEmpty(
-                ReadStringMember(roomInfo, "game_mode_name"),
-                ReadStringMember(Level.Instance, "game_type")));
+            TrySet(metadata, "game_mode", gameMode);
+            TrySet(metadata, "game_mode_text", TranslateGameMode(gameMode));
+            TrySet(metadata, "room_player_count", ReadStringMember(
+                roomInfo,
+                "current_client_num"));
+            TrySet(metadata, "room_max_players", ReadStringMember(
+                roomInfo,
+                "max_client_num"));
+            TrySet(metadata, "match_duration_seconds", ReadStringMember(
+                channel,
+                "game_time"));
+
+            if (inMatch || presenceState == "matching" ||
+                presenceState == "room" || presenceState == "loading" ||
+                presenceState == "post_game" || presenceState == "replay")
+            {
+                int matchPlayerCount;
+                string matchPlayers = BuildMatchPlayersJson(
+                    localPlayer,
+                    out matchPlayerCount);
+                if (matchPlayerCount > 0)
+                {
+                    TrySet(
+                        metadata,
+                        "match_player_count",
+                        matchPlayerCount.ToString());
+                    TrySet(metadata, "match_players", matchPlayers);
+                }
+            }
 
             TrySet(metadata, "player_level", FirstNonEmpty(
                 ReadStringMember(characterInfo, "character_level"),
@@ -864,27 +913,207 @@ namespace ASWDEBUG.Main
         {
             object channel = GetChannelConnection();
             object roomInfo = GetRoomInfo(channel);
+            string lobbyState = ReadStringMember(GetLobbyConnection(), "state");
+            string channelState = ReadStringMember(channel, "state");
+            string gameState = ReadStringMember(channel, "game_state");
+            string presence = GetPresenceState(
+                lobbyState,
+                channelState,
+                gameState,
+                roomInfo);
+            string presenceText = TranslatePresence(presence);
             string roomName = ReadStringMember(roomInfo, "room_name");
             string mapName = FirstNonEmpty(
                 ReadStringMember(Level.Instance, "map_name"),
                 ReadStringMember(roomInfo, "map_name"));
-            string gameMode = ReadStringMember(roomInfo, "game_mode_name");
-            if (!string.IsNullOrEmpty(mapName))
+            string gameMode = TranslateGameMode(FirstNonEmpty(
+                ReadStringMember(roomInfo, "game_mode_name"),
+                ReadStringMember(Level.Instance, "game_type")));
+            if (IsInMatch(presence) || presence == "room" ||
+                presence == "matching" || presence == "loading" ||
+                presence == "post_game" || presence == "replay")
             {
-                if (!string.IsNullOrEmpty(roomName))
-                    return roomName + " / " + mapName;
-                return mapName;
+                string detail = FirstNonEmpty(gameMode, mapName, roomName);
+                if (!string.IsNullOrEmpty(mapName) && detail != mapName)
+                    detail += " · " + mapName;
+                if (!string.IsNullOrEmpty(roomName) &&
+                    detail != roomName && detail.IndexOf(roomName) < 0)
+                    detail += " · " + roomName;
+                return string.IsNullOrEmpty(detail)
+                    ? presenceText
+                    : presenceText + " · " + detail;
             }
-            if (!string.IsNullOrEmpty(roomName))
-                return string.IsNullOrEmpty(gameMode)
-                    ? roomName
-                    : roomName + " / " + gameMode;
+            return FirstNonEmpty(presenceText, Application.loadedLevelName);
+        }
 
-            string lobbyState = ReadStringMember(GetLobbyConnection(), "state");
-            if (!string.IsNullOrEmpty(lobbyState)) return lobbyState;
-            string channelState = ReadStringMember(channel, "state");
-            if (!string.IsNullOrEmpty(channelState)) return channelState;
-            return Application.loadedLevelName ?? string.Empty;
+        private static string GetPresenceState(
+            string lobbyState,
+            string channelState,
+            string gameState,
+            object roomInfo)
+        {
+            if (EqualsState(channelState, "kInReplay")) return "replay";
+            if (EqualsState(channelState, "kInBalance") ||
+                EqualsState(gameState, "kGameEnd") ||
+                EqualsState(gameState, "kGameLeaving"))
+                return "post_game";
+            if (EqualsState(channelState, "kInGame") ||
+                EqualsState(lobbyState, "kInGame"))
+                return "in_game";
+            if (EqualsState(gameState, "kLoading") ||
+                EqualsState(channelState, "kInInitialized"))
+                return "loading";
+            if (EqualsState(channelState, "kInRoom"))
+            {
+                string matching = ReadStringMember(roomInfo, "is_matching");
+                return IsTrue(matching) ? "matching" : "room";
+            }
+            if (EqualsState(channelState, "kInChannel") ||
+                EqualsState(lobbyState, "kInChannel"))
+                return "channel";
+            if (EqualsState(lobbyState, "kInLobby")) return "lobby";
+            if (EqualsState(lobbyState, "kInLogin") ||
+                EqualsState(lobbyState, "kAuthentication") ||
+                EqualsState(lobbyState, "kInitialized") ||
+                EqualsState(lobbyState, "kConnected"))
+                return "login";
+            if (EqualsState(lobbyState, "kDisconnected"))
+                return "disconnected";
+            return "unknown";
+        }
+
+        private static bool IsInMatch(string presenceState)
+        {
+            return presenceState == "in_game" || presenceState == "replay";
+        }
+
+        private static bool EqualsState(string value, string expected)
+        {
+            return string.Equals(
+                value,
+                expected,
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTrue(string value)
+        {
+            return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "1", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string TranslatePresence(string value)
+        {
+            switch (value)
+            {
+                case "disconnected": return "未连接游戏";
+                case "login": return "登录中";
+                case "lobby": return "游戏大厅";
+                case "channel": return "频道中";
+                case "matching": return "匹配中";
+                case "room": return "对局房间";
+                case "loading": return "加载对局";
+                case "in_game": return "对局中";
+                case "post_game": return "结算中";
+                case "replay": return "观看回放";
+                default: return "状态未知";
+            }
+        }
+
+        private static string TranslateGameState(string value)
+        {
+            switch (value)
+            {
+                case "kAuthentication": return "认证中";
+                case "kLoading": return "加载中";
+                case "kWaiting": return "等待开始";
+                case "kInitialized": return "初始化完成";
+                case "kAlive": return "存活";
+                case "kDied": return "已阵亡";
+                case "kGameEnd": return "对局结束";
+                case "kGameLeaving": return "离开对局";
+                default: return string.Empty;
+            }
+        }
+
+        private static string TranslateGameMode(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            if (value.IndexOf("Contention", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "争夺模式";
+            if (value.IndexOf("Occupy", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "占领模式";
+            if (value.IndexOf("Snatch", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "抢夺模式";
+            if (value.IndexOf("TeamDead", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "团队竞技";
+            if (value.IndexOf("Hero", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "英雄模式";
+            if (value.IndexOf("Round", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "回合模式";
+            if (value.IndexOf("Novice", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "新手模式";
+            if (value.IndexOf("Blast", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "爆破模式";
+            if (value.IndexOf("Boss", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "BOSS 模式";
+            if (value.IndexOf("BiocheHunter", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "生化猎场";
+            if (value.IndexOf("Bioche", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "生化模式";
+            if (value.IndexOf("KillAll", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "歼灭模式";
+            if (value.IndexOf("Werewolf", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "狼人模式";
+            if (value.IndexOf("Chiji", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "吃鸡模式";
+            if (value.IndexOf("Random", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "随机模式";
+            if (value.IndexOf("None", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "未知模式";
+            return value;
+        }
+
+        private static string BuildMatchPlayersJson(
+            Character localPlayer,
+            out int playerCount)
+        {
+            playerCount = 0;
+            var players = new List<Dictionary<string, string>>();
+            try
+            {
+                CharacterManager manager = CharacterManager.Instance;
+                if (manager == null || manager.character_set == null)
+                    return string.Empty;
+
+                ulong localPlayerId = GetCharacterId(localPlayer);
+                foreach (Character character in manager.character_set)
+                {
+                    if (character == null) continue;
+                    var item = new Dictionary<string, string>();
+                    ulong characterId = GetCharacterId(character);
+                    item["id"] = characterId == 0UL
+                        ? string.Empty
+                        : characterId.ToString();
+                    item["name"] = LimitUtf8(
+                        GetName(character),
+                        MaxItemFieldBytes);
+                    item["team"] = character.GetTeam().ToString();
+                    item["alive"] = character.IsDied ? "false" : "true";
+                    item["bot"] = character.IsRobot ? "true" : "false";
+                    item["self"] =
+                        localPlayerId != 0UL && characterId == localPlayerId
+                            ? "true"
+                            : "false";
+                    item["level"] = ReadStringMember(
+                        ReadMember(character, "character_info"),
+                        "character_level");
+                    players.Add(item);
+                    playerCount++;
+                    if (players.Count >= 24) break;
+                }
+            }
+            catch { }
+            return BuildItemsJson(players, playerCount > 0);
         }
 
         private static object GetLobbyConnection()
@@ -1180,6 +1409,14 @@ namespace ASWDEBUG.Main
         {
             if (items == null || raw == null) return;
             var item = new Dictionary<string, string>();
+            string displayName = ReadItemString(
+                raw,
+                "display_name",
+                "displayName");
+            string resourceName = ReadItemString(
+                raw,
+                "resource",
+                "name");
             item["id"] = LimitUtf8(
                 ReadItemString(
                     raw,
@@ -1187,9 +1424,7 @@ namespace ASWDEBUG.Main
                     "object_id"),
                 MaxItemFieldBytes);
             item["name"] = LimitUtf8(
-                ReadItemString(
-                    raw,
-                    "display_name", "displayName", "name", "resource"),
+                ResolveItemDisplayName(displayName, resourceName),
                 MaxItemFieldBytes);
             item["count"] = LimitUtf8(
                 ReadItemString(
@@ -1205,6 +1440,130 @@ namespace ASWDEBUG.Main
             if (!string.IsNullOrEmpty(item["id"]) ||
                 !string.IsNullOrEmpty(item["name"]))
                 items.Add(item);
+        }
+
+        private static string ResolveItemDisplayName(
+            string displayName,
+            string resourceName)
+        {
+            string localized = LocalizeItemKey(displayName);
+            if (!string.IsNullOrEmpty(localized)) return localized;
+
+            localized = LocalizeItemKey(resourceName);
+            if (!string.IsNullOrEmpty(localized)) return localized;
+
+            string displayKey = GetKnownItemDisplayKey(resourceName);
+            localized = LocalizeItemKey(displayKey);
+            if (!string.IsNullOrEmpty(localized)) return localized;
+
+            localized = LocalizeItemKey("id_weapon_" + resourceName);
+            if (!string.IsNullOrEmpty(localized)) return localized;
+            localized = LocalizeItemKey("id_datalist_" + resourceName);
+            if (!string.IsNullOrEmpty(localized)) return localized;
+            return FriendlyItemResourceName(resourceName);
+        }
+
+        private static string LocalizeItemKey(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return string.Empty;
+            try
+            {
+                TableManager manager = TableManager.Instance;
+                string localized = manager == null
+                    ? string.Empty
+                    : manager.GetLabelText(key);
+                if (!string.IsNullOrEmpty(localized) &&
+                    !string.Equals(
+                        localized,
+                        key,
+                        StringComparison.OrdinalIgnoreCase))
+                    return localized;
+            }
+            catch { }
+            try
+            {
+                string localized = key.valueByThisKey();
+                if (!string.IsNullOrEmpty(localized) &&
+                    !string.Equals(
+                        localized,
+                        key,
+                        StringComparison.OrdinalIgnoreCase))
+                    return localized;
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private static string GetKnownItemDisplayKey(string resourceName)
+        {
+            switch ((resourceName ?? string.Empty).ToLowerInvariant())
+            {
+                case "bow_01":
+                    return "id_datalist_Simple_Compound_Bow";
+                case "grenade_01":
+                    return "id_datalist_STG39_Wooden_Handle_Grenade";
+                case "knives_01":
+                    return "id_datalist_Rusty_Knife";
+                case "machinegun_01":
+                    return "id_datalist_DP";
+                case "machinegun_51":
+                    return "id_weapon_machinegun_51";
+                case "pistol_01":
+                    return "id_datalist_TARGET";
+                case "rpg_01":
+                    return "id_datalist_Recoilless_Artillery";
+                case "shield_01":
+                    return "id_datalist_Buckler_Bat";
+                case "shotgun_01":
+                    return "id_datalist_M37";
+                case "smg_01":
+                    return "id_datalist_AK74";
+                case "smg_51":
+                    return "id_weapon_smg_51";
+                case "sniperrifle_01":
+                    return "id_datalist_M200";
+                case "sniperrifle_51":
+                    return "id_weapon_sniperrifle_51";
+                case "wing03":
+                case "wing03_indie":
+                    return "id_common_name_wing_03";
+                case "wing35":
+                case "wing35_indie":
+                    return "id_weapon_wing35_indie";
+                default:
+                    return string.Empty;
+            }
+        }
+
+        private static string FriendlyItemResourceName(string resourceName)
+        {
+            string value = resourceName ?? string.Empty;
+            string lower = value.ToLowerInvariant();
+            string family = string.Empty;
+            if (lower.StartsWith("sniperrifle_")) family = "狙击枪";
+            else if (lower.StartsWith("machinegun_")) family = "机枪";
+            else if (lower.StartsWith("shotgun_")) family = "霰弹枪";
+            else if (lower.StartsWith("pistol_")) family = "手枪";
+            else if (lower.StartsWith("smg_")) family = "冲锋枪";
+            else if (lower.StartsWith("knives_")) family = "近战武器";
+            else if (lower.StartsWith("grenade_")) family = "手雷";
+            else if (lower.StartsWith("rpg_") ||
+                lower.StartsWith("grenadelauncher_"))
+                family = "重型武器";
+            else if (lower.StartsWith("bow_") ||
+                lower.StartsWith("crossbow_"))
+                family = "弓弩";
+            else if (lower.StartsWith("shield_")) family = "盾牌";
+            else if (lower.StartsWith("wing")) family = "翅膀";
+            if (string.IsNullOrEmpty(family)) return value;
+
+            int split = value.IndexOf('_');
+            string suffix = split >= 0 && split + 1 < value.Length
+                ? value.Substring(split + 1).Replace('_', ' ')
+                : string.Empty;
+            return string.IsNullOrEmpty(suffix)
+                ? family
+                : family + " " + suffix;
         }
 
         private static string ReadItemString(
@@ -1395,15 +1754,41 @@ namespace ASWDEBUG.Main
 
         private static string BuildFeatureString()
         {
-            StringBuilder sb = new StringBuilder(64);
+            StringBuilder sb = new StringBuilder(256);
             AppendFeature(sb, "DLL");
             if (ESP.Enabled) AppendFeature(sb, "ESP");
             if (ESP.InfoEsp) AppendFeature(sb, "ESP_INFO");
             if (ESP.D3BoxEsp) AppendFeature(sb, "ESP_BOX");
+            if (ESP.CrossEsp) AppendFeature(sb, "ESP_CROSS");
+            if (ESP.CircleEsp) AppendFeature(sb, "ESP_CIRCLE");
             if (ESP.LineEsp) AppendFeature(sb, "ESP_LINE");
             if (AutoAim.Enabled) AppendFeature(sb, "AUTO_AIM");
             if (BossAutoAim.Enabled) AppendFeature(sb, "BOSS_AIM");
             if (AimTrack.Enabled) AppendFeature(sb, "AIM_TRACK");
+            if (AimTrack.Wall) AppendFeature(sb, "AIM_TRACK_WALL");
+            if (AimTrack.Shield) AppendFeature(sb, "AIM_TRACK_SHIELD");
+            if (AimTrack.Hidden) AppendFeature(sb, "AIM_TRACK_HIDDEN");
+            if (WeaponNotCD.Enabled) AppendFeature(sb, "WEAPON_NO_CD");
+            if (BulletNoRecoil.Enabled) AppendFeature(sb, "NO_RECOIL");
+            if (HealthBarDisplay.Enabled) AppendFeature(sb, "HEALTH_BAR");
+            if (AutoLockHP.Enabled) AppendFeature(sb, "AUTO_LOCK_HP");
+            if (GrenadeHalfHurt.Enabled) AppendFeature(sb, "GRENADE_HALF_HURT");
+            if (GrenadeNotHurt.Enabled) AppendFeature(sb, "GRENADE_NO_HURT");
+            if (NotKick.Enabled) AppendFeature(sb, "ANTI_KICK");
+            if (Aike.Enabled) AppendFeature(sb, "AIKE");
+            if (AutoFire.Enabled) AppendFeature(sb, "AUTO_FIRE");
+            if (SpinTop.Enabled) AppendFeature(sb, "SPIN_TOP");
+            if (HookMsgbox.Enabled) AppendFeature(sb, "HOOK_MESSAGE");
+            if (AutoKick.Enabled) AppendFeature(sb, "AUTO_KICK");
+            if (OtherC.Enabled) AppendFeature(sb, "OTHER_C");
+            if (OtherC.EnabledVeryify) AppendFeature(sb, "OTHER_VERIFY");
+            if (OtherC.BossEnabled) AppendFeature(sb, "OTHER_BOSS");
+            if (OtherC.KnifeEnabled) AppendFeature(sb, "OTHER_KNIFE");
+            if (AutoInterface.Enabled) AppendFeature(sb, "AUTO_INTERFACE");
+            if (AutoInterface.BlackListEnabled)
+                AppendFeature(sb, "AUTO_INTERFACE_BLACKLIST");
+            if (AutoUseManager.Enabled) AppendFeature(sb, "AUTO_USE");
+            if (Settings.AutoBattleEnabled) AppendFeature(sb, "AUTO_BATTLE");
             return sb.ToString();
         }
 
