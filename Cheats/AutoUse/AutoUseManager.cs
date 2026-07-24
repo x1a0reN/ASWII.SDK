@@ -110,7 +110,7 @@ namespace ASWDEBUG.Cheats.AutoUse
 
         public static string VariableHelp =
             "总开关关闭时不会执行任何规则；每条规则还可以单独启用/停用。\n" +
-            "常用: hp/max_hp/hp_pct/shield/shield_pct/alive/dead/clip/clip_max/clip_pct/reloading/weapon_slot/can_fire/is_ground/is_crouch/speed/ping\n" +
+            "常用: hp/max_hp/hp_pct/shield/shield_pct/alive/dead/clip/clip_max/clip_pct/reloading/weapon_slot/can_fire/heal_action_ready/is_ground/is_crouch/speed/ping\n" +
             "地图/状态: in_game/in_channel/in_room/channel_state/game_state/game_type/map_id/team_type/level_state/special_pickup_active/special_lay_mines_active\n" +
             "战术: danger_score/combat_pressure/need_escape/need_speed/need_chase/traveling/auto_battle_state/enemy_los_count/enemy_aiming_count\n" +
             "敌人/队友: enemy_alive_count/enemy_low_hp_25_count/enemy_min_hp_pct/enemy_nearest_hp_pct/enemy_near_5/10/20/30/enemy_near_dist/ally_alive_count/ally_low_hp_50_count\n" +
@@ -660,9 +660,9 @@ namespace ASWDEBUG.Cheats.AutoUse
             SkillInfo skill = info as SkillInfo;
             if (skill != null)
             {
-                return TryUseObject(skill, out result);
+                return TryUseObject(context, skill, out result);
             }
-            return TryUseObject(info, out result);
+            return TryUseObject(context, info, out result);
         }
 
         private static bool TryUseFirstMatching(AutoUseContext context, AutoUseRule rule, out string result)
@@ -678,7 +678,7 @@ namespace ASWDEBUG.Cheats.AutoUse
                 SkillInfo skill = info as SkillInfo;
                 if (skill != null)
                 {
-                    return TryUseObject(skill, out result);
+                    return TryUseObject(context, skill, out result);
                 }
                 result = "指定槽位当前不是技能 slot=" + rule.Slot;
                 return false;
@@ -715,7 +715,7 @@ namespace ASWDEBUG.Cheats.AutoUse
                     if (n.IndexOf(rule.NameContains, StringComparison.OrdinalIgnoreCase) < 0) continue;
                 }
 
-                if (TryUseObject(info, out result)) return true;
+                if (TryUseObject(context, info, out result)) return true;
             }
 
             result = "没有可用匹配对象 type=" + rule.TypeFilter + " subtype=" + rule.SubTypeFilter;
@@ -753,7 +753,7 @@ namespace ASWDEBUG.Cheats.AutoUse
                 return false;
             }
 
-            bool ok = TryUseObject(selected, out result);
+            bool ok = TryUseObject(context, selected, out result);
             result = result + " selected_skill=" + GetSkillTypeName(selected.sub_type);
             return ok;
         }
@@ -766,7 +766,7 @@ namespace ASWDEBUG.Cheats.AutoUse
                 return false;
             }
 
-            return TryUseObject(skill, out result);
+            return TryUseObject(context, skill, out result);
         }
 
         private static bool TryUseBestHealItem(AutoUseContext context, out string result)
@@ -795,7 +795,7 @@ namespace ASWDEBUG.Cheats.AutoUse
                 {
                     ItemInfo item = slots[i] as ItemInfo;
                     if (item == null || item.sub_type != (byte)wanted) continue;
-                    if (TryUseObject(item, out result)) return true;
+                    if (TryUseObject(context, item, out result)) return true;
                 }
             }
 
@@ -803,7 +803,8 @@ namespace ASWDEBUG.Cheats.AutoUse
             return false;
         }
 
-        private static bool TryUseObject(ObjectBaseInfo info, out string result)
+        private static bool TryUseObject(AutoUseContext context, ObjectBaseInfo info,
+            out string result)
         {
             result = string.Empty;
             if (info == null)
@@ -823,6 +824,14 @@ namespace ASWDEBUG.Cheats.AutoUse
                 if ((float)item.cooling > 0f)
                 {
                     result = "物品冷却中 slot=" + info.slot;
+                    return false;
+                }
+                string unavailableReason;
+                if (IsHealItemSubType(item.sub_type) &&
+                    !CanUseHealItemNow(context, out unavailableReason))
+                {
+                    result = "heal_item_blocked=" + unavailableReason +
+                        " slot=" + info.slot;
                     return false;
                 }
             }
@@ -1391,14 +1400,21 @@ namespace ASWDEBUG.Cheats.AutoUse
             int[] itemReadyBySubType = new int[12];
             int[] itemCountBySubType = new int[12];
             int[] skillReadyBySubType = new int[64];
+            string healUnavailableReason;
+            bool healActionReady = CanUseHealItemNow(c, out healUnavailableReason);
+            c.Set("heal_action_ready", healActionReady ? 1 : 0);
 
             for (int i = 1; i <= 36; i++)
             {
                 ObjectBaseInfo info = slots != null && i <= slots.Length ? slots[i - 1] : null;
                 string p = "slot" + i.ToString(CultureInfo.InvariantCulture);
+                ItemInfo item = info as ItemInfo;
+                bool objectReady = IsObjectReady(info) &&
+                    !(item != null && IsHealItemSubType(item.sub_type) &&
+                      !healActionReady);
 
                 c.Set(p + "_exists", info != null ? 1 : 0);
-                c.Set(p + "_ready", IsObjectReady(info) ? 1 : 0);
+                c.Set(p + "_ready", objectReady ? 1 : 0);
                 c.Set(p + "_type", info != null ? info.type : 0);
                 c.Set(p + "_subtype", info != null ? info.sub_type : 0);
                 c.Set(p + "_cooling", info != null ? (float)info.cooling : 0f);
@@ -1406,12 +1422,11 @@ namespace ASWDEBUG.Cheats.AutoUse
                 c.Set(p + "_is_skill", info is SkillInfo ? 1 : 0);
                 c.Set(p + "_is_item", info is ItemInfo ? 1 : 0);
 
-                ItemInfo item = info as ItemInfo;
                 int count = item != null ? (short)item.count : 0;
                 c.Set(p + "_count", count);
                 itemTotalCount += count;
 
-                if (info is SkillInfo && IsObjectReady(info))
+                if (info is SkillInfo && objectReady)
                 {
                     skillReady++;
                     if (info.sub_type < skillReadyBySubType.Length)
@@ -1421,7 +1436,7 @@ namespace ASWDEBUG.Cheats.AutoUse
                 {
                     if (item.sub_type < itemCountBySubType.Length)
                         itemCountBySubType[item.sub_type] += count;
-                    if (IsObjectReady(info))
+                    if (objectReady)
                     {
                         itemReady++;
                         if (item.sub_type < itemReadyBySubType.Length)
@@ -1786,6 +1801,68 @@ namespace ASWDEBUG.Cheats.AutoUse
             {
                 return null;
             }
+        }
+
+        private static bool CanUseHealItemNow(AutoUseContext context,
+            out string reason)
+        {
+            reason = string.Empty;
+            Character player = context != null ? context.Player : null;
+            if (context == null || context.Get("in_game") < 0.5d)
+            {
+                reason = "not_in_game";
+                return false;
+            }
+            if (player == null)
+            {
+                reason = "player_null";
+                return false;
+            }
+            if (player.IsDied)
+            {
+                reason = "player_dead";
+                return false;
+            }
+            if (player.Is_Viewer && !player.Is_GP)
+            {
+                reason = "viewer";
+                return false;
+            }
+
+            try
+            {
+                if (player.IsFlying())
+                {
+                    reason = "flying";
+                    return false;
+                }
+            }
+            catch
+            {
+                reason = "flying_state_unknown";
+                return false;
+            }
+
+            try
+            {
+                if (player.motor1 != null && !player.motor1.canControl)
+                {
+                    reason = "movement_control_locked";
+                    return false;
+                }
+                if (player.special_action_on)
+                {
+                    reason = "special_action";
+                    return false;
+                }
+            }
+            catch
+            {
+                reason = "action_state_unknown";
+                return false;
+            }
+
+            return true;
         }
 
         private static bool IsObjectReady(ObjectBaseInfo info)

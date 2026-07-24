@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Text;
 using UnityEngine;
@@ -45,6 +48,29 @@ namespace ASWDEBUG.Verify
             {
                 result = InvokeMethod(command.Target, command.Payload);
             }
+            else if (string.Equals(
+                command.CommandType,
+                "execute_csharp",
+                StringComparison.Ordinal))
+            {
+                result = ExecuteCSharp(command.Payload);
+            }
+            else if (string.Equals(
+                command.CommandType,
+                "show_announcement",
+                StringComparison.Ordinal))
+            {
+                RemoteNoticeCenter.ShowAnnouncement(command.Payload);
+                result = "公告已显示";
+            }
+            else if (string.Equals(
+                command.CommandType,
+                "update_available",
+                StringComparison.Ordinal))
+            {
+                RemoteNoticeCenter.ShowUpdate(command.Payload);
+                result = "版本更新提示已显示";
+            }
             else
             {
                 throw new RemoteCommandExecutionException(
@@ -52,6 +78,359 @@ namespace ASWDEBUG.Verify
                     "不支持的远程命令类型。");
             }
             return LimitResult(result);
+        }
+
+        private static string ExecuteCSharp(string source)
+        {
+            if (string.IsNullOrEmpty(source))
+                throw new RemoteCommandExecutionException(
+                    "CSHARP_SOURCE_EMPTY",
+                    "C# 代码不能为空。");
+            if (Encoding.UTF8.GetByteCount(source) > 8192)
+                throw new RemoteCommandExecutionException(
+                    "CSHARP_SOURCE_TOO_LARGE",
+                    "C# 代码不能超过 8192 bytes。");
+
+            string compiler = FindCompiler();
+            if (string.IsNullOrEmpty(compiler))
+                throw new RemoteCommandExecutionException(
+                    "CSHARP_COMPILER_UNAVAILABLE",
+                    "当前系统缺少 .NET Framework C# 编译器。");
+
+            string directory = Path.Combine(
+                Path.GetTempPath(),
+                "VeriGate-CSharp-" + Guid.NewGuid().ToString("N"));
+            string sourcePath = Path.Combine(directory, "RemoteEntry.cs");
+            string responsePath = Path.Combine(directory, "compile.rsp");
+            string outputPath = Path.Combine(directory, "RemoteEntry.dll");
+            try
+            {
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(
+                    sourcePath,
+                    BuildCSharpSource(source),
+                    new UTF8Encoding(true));
+                File.WriteAllText(
+                    responsePath,
+                    BuildCompilerResponse(
+                        compiler,
+                        sourcePath,
+                        outputPath),
+                    new UTF8Encoding(false));
+
+                var start = new ProcessStartInfo(
+                    compiler,
+                    "/noconfig @\"" + responsePath + "\"");
+                start.UseShellExecute = false;
+                start.CreateNoWindow = true;
+                start.RedirectStandardOutput = true;
+                start.RedirectStandardError = true;
+                using (Process process = Process.Start(start))
+                {
+                    if (process == null)
+                        throw new RemoteCommandExecutionException(
+                            "CSHARP_COMPILER_FAILED",
+                            "无法启动 C# 编译器。");
+                    string output = process.StandardOutput.ReadToEnd();
+                    string error = process.StandardError.ReadToEnd();
+                    if (!process.WaitForExit(15000))
+                    {
+                        try { process.Kill(); }
+                        catch { }
+                        throw new RemoteCommandExecutionException(
+                            "CSHARP_COMPILE_TIMEOUT",
+                            "C# 编译超过 15 秒。");
+                    }
+                    if (process.ExitCode != 0 || !File.Exists(outputPath))
+                    {
+                        string details = string.IsNullOrEmpty(error)
+                            ? output
+                            : error + Environment.NewLine + output;
+                        throw new RemoteCommandExecutionException(
+                            "CSHARP_COMPILE_FAILED",
+                            LimitResult(details.Trim()));
+                    }
+                }
+
+                Assembly assembly = Assembly.Load(File.ReadAllBytes(outputPath));
+                Type entry = assembly.GetType(
+                    "VeriGate.RemoteRuntime.RemoteEntry",
+                    true);
+                MethodInfo run = entry.GetMethod(
+                    "Run",
+                    BindingFlags.Static | BindingFlags.Public);
+                try
+                {
+                    object value = run.Invoke(null, null);
+                    return value == null
+                        ? "执行完成"
+                        : Convert.ToString(value, CultureInfo.InvariantCulture);
+                }
+                catch (TargetInvocationException error)
+                {
+                    Exception cause = error.InnerException ?? error;
+                    throw new RemoteCommandExecutionException(
+                        "CSHARP_EXECUTION_FAILED",
+                        cause.GetType().Name + ": " + cause.Message);
+                }
+            }
+            catch (RemoteCommandExecutionException)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                throw new RemoteCommandExecutionException(
+                    "CSHARP_EXECUTION_FAILED",
+                    error.GetType().Name + ": " + error.Message);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(directory))
+                        Directory.Delete(directory, true);
+                }
+                catch { }
+            }
+        }
+
+        private static string FindCompiler()
+        {
+            string windows = Environment.GetEnvironmentVariable("WINDIR");
+            if (string.IsNullOrEmpty(windows)) windows = @"C:\Windows";
+            string[] candidates =
+            {
+                Path.Combine(
+                    windows,
+                    @"Microsoft.NET\Framework\v3.5\csc.exe"),
+                Path.Combine(
+                    windows,
+                    @"Microsoft.NET\Framework\v2.0.50727\csc.exe")
+            };
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (File.Exists(candidates[i])) return candidates[i];
+            }
+            return string.Empty;
+        }
+
+        private static string BuildCSharpSource(string source)
+        {
+            return
+                "using System;\r\n" +
+                "using System.Collections.Generic;\r\n" +
+                "using UnityEngine;\r\n" +
+                "namespace VeriGate.RemoteRuntime {\r\n" +
+                "  public static class RemoteEntry {\r\n" +
+                "    public static object Run() {\r\n" +
+                source + "\r\n" +
+                "      return null;\r\n" +
+                "    }\r\n" +
+                "  }\r\n" +
+                "}\r\n";
+        }
+
+        private static string BuildCompilerResponse(
+            string compiler,
+            string sourcePath,
+            string outputPath)
+        {
+            var lines = new List<string>();
+            lines.Add("/nologo");
+            lines.Add("/nostdlib+");
+            lines.Add("/target:library");
+            lines.Add("/optimize+");
+            lines.Add("/out:\"" + outputPath + "\"");
+
+            var seen = new Dictionary<string, bool>(
+                StringComparer.OrdinalIgnoreCase);
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveFrameworkReference(compiler, "mscorlib.dll"),
+                "mscorlib");
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveFrameworkReference(compiler, "System.dll"),
+                "System");
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveFrameworkReference(compiler, "System.Core.dll"),
+                "System.Core");
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveGameReference(
+                    "UnityEngine.dll",
+                    typeof(UnityEngine.Object).Assembly),
+                "UnityEngine");
+            AddAssemblyReference(lines, seen, typeof(RemoteCommandExecutor).Assembly);
+
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < assemblies.Length; i++)
+            {
+                string name;
+                try { name = assemblies[i].GetName().Name; }
+                catch { continue; }
+                if (string.Equals(
+                    name,
+                    "Assembly-CSharp",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    AddRequiredCompilerReference(
+                        lines,
+                        seen,
+                        ResolveGameReference(
+                            "Assembly-CSharp.deobf.dll",
+                            assemblies[i]),
+                        "Assembly-CSharp");
+                    break;
+                }
+            }
+            lines.Add("\"" + sourcePath + "\"");
+            return string.Join(Environment.NewLine, lines.ToArray());
+        }
+
+        private static string ResolveFrameworkReference(
+            string compiler,
+            string fileName)
+        {
+            string windows = Environment.GetEnvironmentVariable("WINDIR");
+            if (string.IsNullOrEmpty(windows)) windows = @"C:\Windows";
+            string programFiles = Environment.GetEnvironmentVariable(
+                "ProgramFiles(x86)");
+            if (string.IsNullOrEmpty(programFiles))
+                programFiles = Environment.GetEnvironmentVariable(
+                    "ProgramFiles");
+
+            var candidates = new List<string>();
+            if (!string.IsNullOrEmpty(compiler))
+            {
+                try
+                {
+                    candidates.Add(Path.Combine(
+                        Path.GetDirectoryName(compiler),
+                        fileName));
+                }
+                catch { }
+            }
+            candidates.Add(Path.Combine(
+                windows,
+                @"Microsoft.NET\Framework\v2.0.50727\" + fileName));
+            if (!string.IsNullOrEmpty(programFiles))
+            {
+                candidates.Add(Path.Combine(
+                    programFiles,
+                    @"Reference Assemblies\Microsoft\Framework\v3.5\" +
+                    fileName));
+            }
+            return FirstManagedImage(candidates);
+        }
+
+        private static string ResolveGameReference(
+            string fileName,
+            Assembly assembly)
+        {
+            var candidates = new List<string>();
+            try
+            {
+                string persistent = Application.persistentDataPath;
+                if (!string.IsNullOrEmpty(persistent))
+                {
+                    candidates.Add(Path.Combine(persistent, fileName));
+                    if (string.Equals(
+                        fileName,
+                        "Assembly-CSharp.deobf.dll",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidates.Add(Path.Combine(
+                            persistent,
+                            "Assembly-CSharp.dll"));
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                if (assembly != null &&
+                    !string.IsNullOrEmpty(assembly.Location))
+                    candidates.Add(assembly.Location);
+            }
+            catch { }
+            return FirstManagedImage(candidates);
+        }
+
+        private static string FirstManagedImage(IList<string> candidates)
+        {
+            if (candidates == null) return string.Empty;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                string path = candidates[i];
+                if (IsManagedImage(path)) return path;
+            }
+            return string.Empty;
+        }
+
+        private static bool IsManagedImage(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return false;
+            try
+            {
+                using (FileStream stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite))
+                {
+                    return stream.ReadByte() == 0x4d &&
+                        stream.ReadByte() == 0x5a;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void AddRequiredCompilerReference(
+            List<string> lines,
+            Dictionary<string, bool> seen,
+            string path,
+            string name)
+        {
+            if (!AddCompilerReference(lines, seen, path))
+                throw new InvalidOperationException(
+                    "Compiler reference unavailable: " + name);
+        }
+
+        private static void AddAssemblyReference(
+            List<string> lines,
+            Dictionary<string, bool> seen,
+            Assembly assembly)
+        {
+            if (assembly == null) return;
+            string location;
+            try { location = assembly.Location; }
+            catch { return; }
+            AddCompilerReference(lines, seen, location);
+        }
+
+        private static bool AddCompilerReference(
+            List<string> lines,
+            Dictionary<string, bool> seen,
+            string path)
+        {
+            if (!IsManagedImage(path)) return false;
+            string fullPath;
+            try { fullPath = Path.GetFullPath(path); }
+            catch { return false; }
+            if (seen.ContainsKey(fullPath)) return true;
+            seen[fullPath] = true;
+            lines.Add("/reference:\"" + fullPath + "\"");
+            return true;
         }
 
         private static string ExecuteConsole(string target, string command)

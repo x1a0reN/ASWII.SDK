@@ -217,6 +217,11 @@ namespace ASWDEBUG.Patch
 
             if (ExcludedFeaturePatchTypeNames.Contains(t.Name))
             {
+                if (t.Name == "Patch_LobbyConnection_rpcCallBack" &&
+                    AuctionMonitor.FeatureEnabled)
+                {
+                    return true;
+                }
                 return false;
             }
 
@@ -451,6 +456,10 @@ namespace ASWDEBUG.Patch
             TryPatch(harmony, asm, "LobbyConnection", "RequestShutdown",
                 new Type[] { typeof(string) },
                 "Protection_BlockRequestShutdownPrefix");
+
+            TryPatch(harmony, asm, "LobbyConnection", "RequestKeepAlive",
+                Type.EmptyTypes,
+                "Protection_ClearPendingInjectionSignalPrefix");
 
             TryPatch(harmony, asm, "LobbyConnection", "ForceDisconnect",
                 Type.EmptyTypes,
@@ -2029,6 +2038,33 @@ namespace ASWDEBUG.Patch
             return false;
         }
 
+        private static bool Protection_ClearPendingInjectionSignalPrefix()
+        {
+            try
+            {
+                global::GameApp gameApp = global::GameApp.Instance;
+                if (gameApp != null &&
+                    gameApp.pendingInjectionType != byte.MaxValue)
+                {
+                    byte previous = gameApp.pendingInjectionType;
+                    gameApp.pendingInjectionType = byte.MaxValue;
+                    FileLogger.Log(
+                        "NET-AUDIT",
+                        "[ACTK] cleared pending injection signal before keep-alive" +
+                        " previous=" + previous);
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    "NET-AUDIT",
+                    "[ACTK] pending injection signal cleanup error: " +
+                    ex.Message);
+            }
+
+            return true;
+        }
+
         private static bool Protection_BlockLobbyForceDisconnectPrefix(global::LobbyConnection __instance)
         {
             bool block = false;
@@ -2985,8 +3021,21 @@ namespace ASWDEBUG.Patch
             {
                 string caller = CaptureCaller();
                 _multiOpenLastErrorCode = __0;
+                string rawReason = string.Empty;
+                try
+                {
+                    if (__instance != null &&
+                        __instance.error_message != null)
+                    {
+                        rawReason = __instance.error_message;
+                    }
+                }
+                catch
+                {
+                }
                 FileLogger.Log("NET-AUDIT",
                     "[ERROR-MSG] code=" + __0 +
+                    " raw=" + TrimLog(rawReason, 120) +
                     " caller=" + caller);
 
                 if (Settings.MultiOpenEnabled && __0 != 0)
