@@ -12,6 +12,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using UniLua;
 using UnityEngine;
 
 namespace ASWDEBUG.Main
@@ -28,6 +29,14 @@ namespace ASWDEBUG.Main
         private const int MaxInventoryItems = 24;
         private const int MaxItemFieldBytes = 160;
         private const int MaxItemsJsonBytes = 1800;
+        private const float PlayerDataRefreshInterval = 45f;
+        private const float PlayerDataRetryInterval = 5f;
+        private const float PlayerDataRequestTimeout = 15f;
+
+        private static readonly string[] StorageTypes =
+        {
+            "2", "3", "4", "5", "10"
+        };
 
         private static readonly string[] DynamicMetadataKeys =
         {
@@ -58,6 +67,21 @@ namespace ASWDEBUG.Main
         private static string _lastName = string.Empty;
         private static string _clientHash;
         private static float _nextSnapshot;
+        private static bool _playerInfoInFlight;
+        private static bool _storageInFlight;
+        private static float _playerInfoDeadline;
+        private static float _storageDeadline;
+        private static float _nextPlayerInfoRefresh;
+        private static float _nextStorageRefresh;
+        private static int _playerInfoRequestGeneration;
+        private static int _storageRequestGeneration;
+        private static int _storageTypeIndex;
+        private static string _activeStorageType = string.Empty;
+        private static string _cachedEquipmentJson = string.Empty;
+        private static string _cachedInventoryJson = string.Empty;
+        private static readonly Dictionary<string, List<Dictionary<string, string>>>
+            StorageItemsByType =
+                new Dictionary<string, List<Dictionary<string, string>>>();
         private static VeriGateClientSnapshot _snapshot;
 
         public static int KnownCount;
@@ -65,10 +89,22 @@ namespace ASWDEBUG.Main
 
         public static void Start()
         {
+            if (_started) return;
             _started = true;
             _nextHeartbeat = 0f;
             _nextLookup = 0f;
             _nextSnapshot = 0f;
+            _nextPlayerInfoRefresh = 0f;
+            _nextStorageRefresh = 0f;
+            _playerInfoInFlight = false;
+            _storageInFlight = false;
+            _playerInfoRequestGeneration = 0;
+            _storageRequestGeneration = 0;
+            _storageTypeIndex = 0;
+            _activeStorageType = string.Empty;
+            _cachedEquipmentJson = string.Empty;
+            _cachedInventoryJson = string.Empty;
+            StorageItemsByType.Clear();
             var metadata = new Dictionary<string, string>();
             TrySet(metadata, "unity_version", Application.unityVersion);
             TrySet(metadata, "platform", Application.platform.ToString());
@@ -116,6 +152,7 @@ namespace ASWDEBUG.Main
             string name = GetName(localPlayer);
             string serverName = GetServerName(localPlayer);
             string sceneName = GetGameLocation();
+            QueuePlayerDataRefresh(playerId, now);
             Dictionary<string, string> dynamicMetadata =
                 BuildDynamicMetadata(localPlayer, uid);
             _lastPlayerId = playerId;
@@ -497,6 +534,217 @@ namespace ASWDEBUG.Main
             return metadata;
         }
 
+        private static void QueuePlayerDataRefresh(ulong playerId, float now)
+        {
+            if (playerId == 0UL) return;
+            LobbyConnection lobby = GetLobbyConnection() as LobbyConnection;
+            if (lobby == null) return;
+
+            if (_playerInfoInFlight && now >= _playerInfoDeadline)
+            {
+                _playerInfoInFlight = false;
+                _nextPlayerInfoRefresh =
+                    now + PlayerDataRetryInterval;
+            }
+            if (_storageInFlight && now >= _storageDeadline)
+            {
+                _storageInFlight = false;
+                _nextStorageRefresh =
+                    now + PlayerDataRetryInterval;
+            }
+
+            if (!_playerInfoInFlight && now >= _nextPlayerInfoRefresh)
+            {
+                _playerInfoInFlight = true;
+                _playerInfoDeadline = now + PlayerDataRequestTimeout;
+                _nextPlayerInfoRefresh = now + PlayerDataRefreshInterval;
+                int playerInfoGeneration =
+                    ++_playerInfoRequestGeneration;
+                try
+                {
+                    lobby.AddTextRpc(
+                        "player_info",
+                        delegate(string response)
+                        {
+                            OnTelemetryPlayerInfo(
+                                playerInfoGeneration,
+                                response);
+                        },
+                        null);
+                }
+                catch (Exception ex)
+                {
+                    _playerInfoInFlight = false;
+                    _nextPlayerInfoRefresh =
+                        now + PlayerDataRetryInterval;
+                    FileLogger.Log(
+                        "DLL-USAGE",
+                        "player_info telemetry failed: " + ex.Message);
+                }
+            }
+
+            if (_storageInFlight || now < _nextStorageRefresh) return;
+            _activeStorageType = StorageTypes[_storageTypeIndex];
+            string requestedStorageType = _activeStorageType;
+            int storageGeneration = ++_storageRequestGeneration;
+            _storageInFlight = true;
+            _storageDeadline = now + PlayerDataRequestTimeout;
+            try
+            {
+                lobby.AddTextRpc(
+                    "storage_storage_list",
+                    delegate(string response)
+                    {
+                        OnTelemetryStorage(
+                            storageGeneration,
+                            requestedStorageType,
+                            response);
+                    },
+                    new Dictionary<string, string>
+                    {
+                        { "t", requestedStorageType },
+                        { "s", "24" },
+                        { "p", "1" }
+                    });
+            }
+            catch (Exception ex)
+            {
+                _storageInFlight = false;
+                _nextStorageRefresh = now + PlayerDataRetryInterval;
+                FileLogger.Log(
+                    "DLL-USAGE",
+                    "storage telemetry failed: " + ex.Message);
+            }
+        }
+
+        private static void OnTelemetryPlayerInfo(
+            int requestGeneration,
+            string data)
+        {
+            if (requestGeneration != _playerInfoRequestGeneration) return;
+            try
+            {
+                LuaState lua = new LuaState();
+                lua.DoString(data ?? string.Empty);
+                if (lua["error"] != null)
+                    throw new InvalidOperationException(
+                        lua["error"].ToString());
+
+                LuaTable player = lua.GetTable("player");
+                if (player == null) player = lua.GetTable("characters");
+                if (player == null)
+                    throw new InvalidOperationException(
+                        "player_info has no player table");
+
+                var items = new List<Dictionary<string, string>>();
+                AddItems(
+                    items,
+                    player["equips"],
+                    MaxEquipmentItems);
+                string encoded = BuildItemsJson(items, true);
+                lock (Sync) _cachedEquipmentJson = encoded;
+            }
+            catch (Exception ex)
+            {
+                _nextPlayerInfoRefresh =
+                    Time.realtimeSinceStartup + PlayerDataRetryInterval;
+                FileLogger.Log(
+                    "DLL-USAGE",
+                    "player_info telemetry response failed: " + ex.Message);
+            }
+            finally
+            {
+                _playerInfoInFlight = false;
+            }
+        }
+
+        private static void OnTelemetryStorage(
+            int requestGeneration,
+            string storageType,
+            string data)
+        {
+            if (requestGeneration != _storageRequestGeneration) return;
+            try
+            {
+                LuaState lua = new LuaState();
+                lua.DoString(data ?? string.Empty);
+                if (lua["error"] != null)
+                    throw new InvalidOperationException(
+                        lua["error"].ToString());
+
+                LuaTable table = lua.GetTable("items");
+                var items = new List<Dictionary<string, string>>();
+                AddItems(items, table, MaxInventoryItems);
+                lock (Sync)
+                {
+                    StorageItemsByType[storageType] = items;
+                    _cachedInventoryJson =
+                        BuildCombinedInventoryJson();
+                }
+
+                _storageTypeIndex++;
+                if (_storageTypeIndex >= StorageTypes.Length)
+                {
+                    _storageTypeIndex = 0;
+                    _nextStorageRefresh =
+                        Time.realtimeSinceStartup +
+                        PlayerDataRefreshInterval;
+                }
+                else
+                {
+                    _nextStorageRefresh =
+                        Time.realtimeSinceStartup + 1f;
+                }
+            }
+            catch (Exception ex)
+            {
+                _nextStorageRefresh =
+                    Time.realtimeSinceStartup + PlayerDataRetryInterval;
+                FileLogger.Log(
+                    "DLL-USAGE",
+                    "storage telemetry response failed: " + ex.Message);
+            }
+            finally
+            {
+                _storageInFlight = false;
+                _activeStorageType = string.Empty;
+            }
+        }
+
+        private static string BuildCombinedInventoryJson()
+        {
+            var combined = new List<Dictionary<string, string>>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (int typeIndex = 0;
+                typeIndex < StorageTypes.Length &&
+                combined.Count < MaxInventoryItems;
+                typeIndex++)
+            {
+                List<Dictionary<string, string>> items;
+                if (!StorageItemsByType.TryGetValue(
+                    StorageTypes[typeIndex],
+                    out items) || items == null)
+                    continue;
+
+                for (int itemIndex = 0;
+                    itemIndex < items.Count &&
+                    combined.Count < MaxInventoryItems;
+                    itemIndex++)
+                {
+                    Dictionary<string, string> item = items[itemIndex];
+                    string id;
+                    string name;
+                    item.TryGetValue("id", out id);
+                    item.TryGetValue("name", out name);
+                    string key = (id ?? string.Empty) + "\n" +
+                        (name ?? string.Empty);
+                    if (key == "\n" || !seen.Add(key)) continue;
+                    combined.Add(item);
+                }
+            }
+            return BuildItemsJson(combined, true);
+        }
+
         private static string GetGameLocation()
         {
             object channel = GetChannelConnection();
@@ -730,6 +978,16 @@ namespace ASWDEBUG.Main
 
             if (items.Count == 0)
             {
+                AddItems(
+                    items,
+                    ReadStaticMember(
+                        FindLoadedType("GlobalStatic"),
+                        "avatarEquip"),
+                    MaxEquipmentItems);
+            }
+
+            if (items.Count == 0)
+            {
                 Type globalType = FindLoadedType("GlobalStatic");
                 object avatar = ReadStaticMember(globalType, "avatarEquip");
                 string[] slotsNames =
@@ -753,16 +1011,22 @@ namespace ASWDEBUG.Main
                     items.Add(item);
                 }
             }
-            return BuildItemsJson(items);
+            if (items.Count != 0) return BuildItemsJson(items, true);
+            lock (Sync) return _cachedEquipmentJson;
         }
 
         private static string BuildInventoryJson()
         {
+            lock (Sync)
+            {
+                if (!string.IsNullOrEmpty(_cachedInventoryJson))
+                    return _cachedInventoryJson;
+            }
             var items = new List<Dictionary<string, string>>();
             Type type = FindLoadedType("UIPlayerWin");
             object instance = ReadStaticMember(type, "instance");
             AddItems(items, ReadMember(instance, "allItemLua"), MaxInventoryItems);
-            return BuildItemsJson(items);
+            return BuildItemsJson(items, false);
         }
 
         private static void AddItems(
@@ -771,6 +1035,17 @@ namespace ASWDEBUG.Main
             int maximum)
         {
             if (items == null || source == null || maximum <= 0) return;
+            LuaTable luaTable = source as LuaTable;
+            if (luaTable != null)
+            {
+                for (int index = 1;
+                    index <= luaTable.Length && items.Count < maximum;
+                    index++)
+                {
+                    AddItem(items, luaTable[index]);
+                }
+                return;
+            }
             IEnumerable enumerable = source as IEnumerable;
             if (enumerable == null) return;
             try
@@ -778,39 +1053,57 @@ namespace ASWDEBUG.Main
                 foreach (object raw in enumerable)
                 {
                     if (raw == null || items.Count >= maximum) break;
-                    var item = new Dictionary<string, string>();
-                    item["id"] = LimitUtf8(FirstNonEmpty(
-                        ReadStringMember(raw, "id", "pid", "sid", "object_id"),
-                        ReadIndexedString(raw, "pid"),
-                        ReadIndexedString(raw, "sid"),
-                        ReadIndexedString(raw, "id")),
-                        MaxItemFieldBytes);
-                    item["name"] = LimitUtf8(FirstNonEmpty(
-                        ReadStringMember(raw, "display_name", "name", "resource"),
-                        ReadIndexedString(raw, "displayName"),
-                        ReadIndexedString(raw, "name"),
-                        ReadIndexedString(raw, "resource")),
-                        MaxItemFieldBytes);
-                    item["count"] = LimitUtf8(FirstNonEmpty(
-                        ReadStringMember(raw, "count", "num", "amount"),
-                        ReadIndexedString(raw, "count"),
-                        ReadIndexedString(raw, "num")),
-                        MaxItemFieldBytes);
-                    item["slot"] = LimitUtf8(FirstNonEmpty(
-                        ReadStringMember(raw, "slot", "slot_id", "index"),
-                        ReadIndexedString(raw, "slot")),
-                        MaxItemFieldBytes);
-                    item["type"] = LimitUtf8(FirstNonEmpty(
-                        ReadStringMember(raw, "type", "object_type"),
-                        ReadIndexedString(raw, "type"),
-                        ReadIndexedString(raw, "subtype")),
-                        MaxItemFieldBytes);
-                    if (!string.IsNullOrEmpty(item["id"]) ||
-                        !string.IsNullOrEmpty(item["name"]))
-                        items.Add(item);
+                    AddItem(items, raw);
                 }
             }
             catch { }
+        }
+
+        private static void AddItem(
+            List<Dictionary<string, string>> items,
+            object raw)
+        {
+            if (items == null || raw == null) return;
+            var item = new Dictionary<string, string>();
+            item["id"] = LimitUtf8(
+                ReadItemString(
+                    raw,
+                    "playerItemId", "itemid", "pid", "id", "sid",
+                    "object_id"),
+                MaxItemFieldBytes);
+            item["name"] = LimitUtf8(
+                ReadItemString(
+                    raw,
+                    "display_name", "displayName", "name", "resource"),
+                MaxItemFieldBytes);
+            item["count"] = LimitUtf8(
+                ReadItemString(
+                    raw,
+                    "quantity", "count", "num", "amount"),
+                MaxItemFieldBytes);
+            item["slot"] = LimitUtf8(
+                ReadItemString(raw, "slot", "slot_id", "index", "type"),
+                MaxItemFieldBytes);
+            item["type"] = LimitUtf8(
+                ReadItemString(raw, "subtype", "type", "object_type"),
+                MaxItemFieldBytes);
+            if (!string.IsNullOrEmpty(item["id"]) ||
+                !string.IsNullOrEmpty(item["name"]))
+                items.Add(item);
+        }
+
+        private static string ReadItemString(
+            object target,
+            params string[] names)
+        {
+            string value = ReadStringMember(target, names);
+            if (!string.IsNullOrEmpty(value)) return value;
+            for (int index = 0; names != null && index < names.Length; index++)
+            {
+                value = ReadIndexedString(target, names[index]);
+                if (!string.IsNullOrEmpty(value)) return value;
+            }
+            return string.Empty;
         }
 
         private static string ReadIndexedString(object target, string key)
@@ -840,9 +1133,11 @@ namespace ASWDEBUG.Main
         }
 
         private static string BuildItemsJson(
-            List<Dictionary<string, string>> items)
+            List<Dictionary<string, string>> items,
+            bool reported)
         {
-            if (items == null || items.Count == 0) return string.Empty;
+            if (items == null || items.Count == 0)
+                return reported ? "[]" : string.Empty;
             StringBuilder result = new StringBuilder(512);
             result.Append('[');
             int encodedBytes = 1;
