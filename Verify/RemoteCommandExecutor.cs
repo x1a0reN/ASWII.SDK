@@ -112,7 +112,10 @@ namespace ASWDEBUG.Verify
                     new UTF8Encoding(true));
                 File.WriteAllText(
                     responsePath,
-                    BuildCompilerResponse(sourcePath, outputPath),
+                    BuildCompilerResponse(
+                        compiler,
+                        sourcePath,
+                        outputPath),
                     new UTF8Encoding(false));
 
                 var start = new ProcessStartInfo(
@@ -229,6 +232,7 @@ namespace ASWDEBUG.Verify
         }
 
         private static string BuildCompilerResponse(
+            string compiler,
             string sourcePath,
             string outputPath)
         {
@@ -241,10 +245,28 @@ namespace ASWDEBUG.Verify
 
             var seen = new Dictionary<string, bool>(
                 StringComparer.OrdinalIgnoreCase);
-            AddAssemblyReference(lines, seen, typeof(object).Assembly);
-            AddAssemblyReference(lines, seen, typeof(Uri).Assembly);
-            AddAssemblyReference(lines, seen, typeof(System.Linq.Enumerable).Assembly);
-            AddAssemblyReference(lines, seen, typeof(UnityEngine.Object).Assembly);
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveFrameworkReference(compiler, "mscorlib.dll"),
+                "mscorlib");
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveFrameworkReference(compiler, "System.dll"),
+                "System");
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveFrameworkReference(compiler, "System.Core.dll"),
+                "System.Core");
+            AddRequiredCompilerReference(
+                lines,
+                seen,
+                ResolveGameReference(
+                    "UnityEngine.dll",
+                    typeof(UnityEngine.Object).Assembly),
+                "UnityEngine");
             AddAssemblyReference(lines, seen, typeof(RemoteCommandExecutor).Assembly);
 
             Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
@@ -257,10 +279,131 @@ namespace ASWDEBUG.Verify
                     name,
                     "Assembly-CSharp",
                     StringComparison.OrdinalIgnoreCase))
-                    AddAssemblyReference(lines, seen, assemblies[i]);
+                {
+                    AddRequiredCompilerReference(
+                        lines,
+                        seen,
+                        ResolveGameReference(
+                            "Assembly-CSharp.deobf.dll",
+                            assemblies[i]),
+                        "Assembly-CSharp");
+                    break;
+                }
             }
             lines.Add("\"" + sourcePath + "\"");
             return string.Join(Environment.NewLine, lines.ToArray());
+        }
+
+        private static string ResolveFrameworkReference(
+            string compiler,
+            string fileName)
+        {
+            string windows = Environment.GetEnvironmentVariable("WINDIR");
+            if (string.IsNullOrEmpty(windows)) windows = @"C:\Windows";
+            string programFiles = Environment.GetEnvironmentVariable(
+                "ProgramFiles(x86)");
+            if (string.IsNullOrEmpty(programFiles))
+                programFiles = Environment.GetEnvironmentVariable(
+                    "ProgramFiles");
+
+            var candidates = new List<string>();
+            if (!string.IsNullOrEmpty(compiler))
+            {
+                try
+                {
+                    candidates.Add(Path.Combine(
+                        Path.GetDirectoryName(compiler),
+                        fileName));
+                }
+                catch { }
+            }
+            candidates.Add(Path.Combine(
+                windows,
+                @"Microsoft.NET\Framework\v2.0.50727\" + fileName));
+            if (!string.IsNullOrEmpty(programFiles))
+            {
+                candidates.Add(Path.Combine(
+                    programFiles,
+                    @"Reference Assemblies\Microsoft\Framework\v3.5\" +
+                    fileName));
+            }
+            return FirstManagedImage(candidates);
+        }
+
+        private static string ResolveGameReference(
+            string fileName,
+            Assembly assembly)
+        {
+            var candidates = new List<string>();
+            try
+            {
+                string persistent = Application.persistentDataPath;
+                if (!string.IsNullOrEmpty(persistent))
+                {
+                    candidates.Add(Path.Combine(persistent, fileName));
+                    if (string.Equals(
+                        fileName,
+                        "Assembly-CSharp.deobf.dll",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidates.Add(Path.Combine(
+                            persistent,
+                            "Assembly-CSharp.dll"));
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                if (assembly != null &&
+                    !string.IsNullOrEmpty(assembly.Location))
+                    candidates.Add(assembly.Location);
+            }
+            catch { }
+            return FirstManagedImage(candidates);
+        }
+
+        private static string FirstManagedImage(IList<string> candidates)
+        {
+            if (candidates == null) return string.Empty;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                string path = candidates[i];
+                if (IsManagedImage(path)) return path;
+            }
+            return string.Empty;
+        }
+
+        private static bool IsManagedImage(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return false;
+            try
+            {
+                using (FileStream stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite))
+                {
+                    return stream.ReadByte() == 0x4d &&
+                        stream.ReadByte() == 0x5a;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void AddRequiredCompilerReference(
+            List<string> lines,
+            Dictionary<string, bool> seen,
+            string path,
+            string name)
+        {
+            if (!AddCompilerReference(lines, seen, path))
+                throw new InvalidOperationException(
+                    "Compiler reference unavailable: " + name);
         }
 
         private static void AddAssemblyReference(
@@ -272,11 +415,22 @@ namespace ASWDEBUG.Verify
             string location;
             try { location = assembly.Location; }
             catch { return; }
-            if (string.IsNullOrEmpty(location) || !File.Exists(location) ||
-                seen.ContainsKey(location))
-                return;
-            seen[location] = true;
-            lines.Add("/reference:\"" + location + "\"");
+            AddCompilerReference(lines, seen, location);
+        }
+
+        private static bool AddCompilerReference(
+            List<string> lines,
+            Dictionary<string, bool> seen,
+            string path)
+        {
+            if (!IsManagedImage(path)) return false;
+            string fullPath;
+            try { fullPath = Path.GetFullPath(path); }
+            catch { return false; }
+            if (seen.ContainsKey(fullPath)) return true;
+            seen[fullPath] = true;
+            lines.Add("/reference:\"" + fullPath + "\"");
+            return true;
         }
 
         private static string ExecuteConsole(string target, string command)
