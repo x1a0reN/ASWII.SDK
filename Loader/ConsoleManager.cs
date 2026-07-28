@@ -20,7 +20,6 @@ public class ConsoleManager : MonoBehaviour
     // work has no place in the game's long-lived 32-bit process.
     private static readonly bool AutoDumpProtectedAssemblies = false;
     private static readonly bool TelemetryOnlyMode = false;
-    private static readonly bool NetworkAuthEnabled = true;
 
     
     public static ConsoleManager Instance
@@ -94,14 +93,6 @@ public class ConsoleManager : MonoBehaviour
             StartStructuredDump();
             StartCoroutine(DeobfRepackRoutine());
             FileLogger.Log("MARK", "Auto game assembly dump armed.");
-        }
-
-        if (!NetworkAuthEnabled)
-        {
-            FileLogger.Log("AUTH", "Network auth disabled. Booting CheatMain directly.");
-            BootCheatMain();
-            FileLogger.Log("MARK", "Auth bypassed. CheatMain started; patches were already active.");
-            return;
         }
 
         // 网络验证通过后，再启用具体功能和菜单。

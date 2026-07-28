@@ -1,0 +1,26 @@
+name: protected-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+    paths:
+      - '**/*.cs'
+      - 'ASWDEBUG.csproj'
+      - 'Build/**'
+      - '.config/dotnet-tools.json'
+      - '.github/workflows/protected-release.yml'
+
+jobs:
+  verify-protected-release:
+    runs-on: [self-hosted, Windows, X64, aswdebug-build]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build, obfuscate, and verify
+        shell: powershell
+        run: '& .\Build\Build-ProtectedRelease.ps1'
