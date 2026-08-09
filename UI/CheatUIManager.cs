@@ -31,7 +31,6 @@ namespace ASWDEBUG.UI
         private static readonly bool ShowAuctionUi = false;
         private static readonly bool ShowLocalBotUi = false;
         private static readonly bool ShowMultiOpenUi = false;
-        private static readonly bool UseTacticalUi = true;
         private static string _autoBattleDropdownId = string.Empty;
         private static Vector2 _autoBattleDropdownScroll;
 
@@ -75,11 +74,6 @@ namespace ASWDEBUG.UI
         static Transform _cardIconRoot;
         static Rect _cardAreaLast;
         static bool _cardAreaValid;
-        static Texture2D _cardOverlayBackground;
-        static Texture2D _cardOverlayAccent;
-        static GUIStyle _cardOverlayPanelStyle;
-        static GUIStyle _cardOverlayTitleStyle;
-        static GUIStyle _cardOverlayMetaStyle;
 
         // 布局：每行 3 个
         const int ICONS_PER_ROW = 3;
@@ -104,148 +98,14 @@ namespace ASWDEBUG.UI
             _cardAreaValid = false;
         }
 
-        static void DisplayTacticalCardOverlay(EventType eventType)
-        {
-            bool canShow = CheatMain.inChannel && OtherC.Enabled && CardIconsEnabled;
-            if (eventType == EventType.Layout)
-            {
-                _cardSnapshotInfo.Clear();
-                if (canShow && CheatMain.CardData != null)
-                {
-                    _cardSnapshotInfo.AddRange(CheatMain.CardData);
-                }
-                else
-                {
-                    HideAllCardIcons();
-                }
-            }
-
-            if (!canShow)
-            {
-                HideAllCardIcons();
-                return;
-            }
-
-            EnsureCardOverlayStyles();
-            int count = _cardSnapshotInfo.Count;
-            int visibleCount = Mathf.Min(count, 12);
-            int rows = Mathf.Max(1, Mathf.CeilToInt(visibleCount / (float)ICONS_PER_ROW));
-            float blockHeight = rows * CELL_SIZE + (rows - 1) * CELL_GAP;
-            float panelWidth = 248f;
-            float panelHeight = 64f + blockHeight + 14f;
-            float x = Mathf.Max(12f, Screen.width - panelWidth - 18f);
-            float y = Mathf.Clamp(72f, 12f, Mathf.Max(12f, Screen.height - panelHeight - 12f));
-            Rect panel = new Rect(x, y, panelWidth, panelHeight);
-
-            Color oldColor = GUI.color;
-            Color oldContent = GUI.contentColor;
-            Color oldBackground = GUI.backgroundColor;
-            GUI.Box(panel, GUIContent.none, _cardOverlayPanelStyle);
-            GUI.DrawTexture(new Rect(panel.x, panel.y, 3f, panel.height), _cardOverlayAccent);
-            GUI.Label(
-                new Rect(panel.x + 16f, panel.y + 10f, panel.width - 32f, 22f),
-                "CARD REVEAL",
-                _cardOverlayTitleStyle);
-            GUI.Label(
-                new Rect(panel.x + 16f, panel.y + 34f, panel.width - 32f, 18f),
-                count > 0
-                    ? count + " rewards captured" + (count > visibleCount ? " / first 12 shown" : string.Empty)
-                    : "waiting for reward data",
-                _cardOverlayMetaStyle);
-            GUI.color = oldColor;
-            GUI.contentColor = oldContent;
-            GUI.backgroundColor = oldBackground;
-
-            if (visibleCount <= 0)
-            {
-                HideAllCardIcons();
-                return;
-            }
-
-            Rect area = new Rect(
-                panel.x + 12f,
-                panel.y + 62f,
-                panel.width - 24f,
-                blockHeight);
-            if (eventType == EventType.Layout)
-            {
-                EnsureCardIconRoot();
-                EnsureWidgetPool(visibleCount);
-                for (int i = 0; i < _cardWidgets.Count; i++)
-                {
-                    bool active = i < visibleCount;
-                    SetCardWidgetActive(_cardWidgets[i], active);
-                    if (active)
-                    {
-                        UpdateWidgetFromInfo(_cardWidgets[i], _cardSnapshotInfo[i]);
-                    }
-                }
-                _cardAreaLast = area;
-                _cardAreaValid = true;
-            }
-
-            if (eventType == EventType.Repaint && _cardAreaValid)
-            {
-                LayoutWidgetsInArea(_cardAreaLast);
-            }
-        }
-
-        static void EnsureCardOverlayStyles()
-        {
-            if (_cardOverlayPanelStyle != null) return;
-
-            _cardOverlayBackground = new Texture2D(1, 1, TextureFormat.ARGB32, false);
-            _cardOverlayBackground.hideFlags = HideFlags.HideAndDontSave;
-            _cardOverlayBackground.SetPixel(0, 0, new Color(0.035f, 0.055f, 0.072f, 0.96f));
-            _cardOverlayBackground.Apply();
-
-            _cardOverlayAccent = new Texture2D(1, 1, TextureFormat.ARGB32, false);
-            _cardOverlayAccent.hideFlags = HideFlags.HideAndDontSave;
-            _cardOverlayAccent.SetPixel(0, 0, new Color(0.215f, 0.81f, 0.76f, 1f));
-            _cardOverlayAccent.Apply();
-
-            _cardOverlayPanelStyle = new GUIStyle(GUI.skin.box);
-            _cardOverlayPanelStyle.normal.background = _cardOverlayBackground;
-            _cardOverlayPanelStyle.border = new RectOffset(0, 0, 0, 0);
-
-            _cardOverlayTitleStyle = new GUIStyle(GUI.skin.label);
-            _cardOverlayTitleStyle.fontSize = 14;
-            _cardOverlayTitleStyle.fontStyle = FontStyle.Bold;
-            _cardOverlayTitleStyle.normal.textColor = new Color(0.91f, 0.95f, 0.97f, 1f);
-
-            _cardOverlayMetaStyle = new GUIStyle(GUI.skin.label);
-            _cardOverlayMetaStyle.fontSize = 11;
-            _cardOverlayMetaStyle.normal.textColor = new Color(0.58f, 0.68f, 0.72f, 1f);
-        }
-
 
         public static void Display()
         {
             var et = Event.current != null ? Event.current.type : EventType.Repaint;
 
-            if (ESP.Enabled || (AimTrack.Enabled && AimTrack.DrawFovCircle))
-            {
-                ESP.Enable();
-            }
-            else
-            {
-                ESP.Disable();
-            }
-
-            if (UseTacticalUi)
-            {
-                DisplayTacticalCardOverlay(et);
-            }
+            if (ESP.Enabled){ ESP.Enable(); } else{ESP.Disable();}
 
             if (!MenuVisible) return;
-
-            if (UseTacticalUi)
-            {
-                TacticalConsoleUI.Display();
-                AutoUseConfigPanel.Display();
-                if (ShowLocalBotUi) LocalBotPanel.Display();
-                return;
-            }
 
             GUI.color = Color.white;
 

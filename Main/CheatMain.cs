@@ -6,7 +6,6 @@ using ASWDEBUG.Cheats.LocalBot;
 using ASWDEBUG.Cheats.ESP;
 using ASWDEBUG.Cheats.Other;
 using ASWDEBUG.Cheats.Player;
-using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Patch;
 using ASWDEBUG.UI;
@@ -54,7 +53,6 @@ namespace ASWDEBUG.Main
         private void Start()
         {
             FileLogger.Log("CHEAT", "Start");
-            FeatureConfigStore.LoadOnce();
             CheatUIManager.MenuVisible = EnableDebugUi;
             CheatUIManager.SpriteMenuVisible = false;
             RpcLabUI.Visible = false;
@@ -115,25 +113,6 @@ namespace ASWDEBUG.Main
 
         private void Update()
         {
-            FeatureConfigStore.Tick();
-            try
-            {
-                OtherC.Update();
-            }
-            catch (Exception e)
-            {
-                FileLogger.Log("CHEAT", "Game utility tick failed: " + e.Message);
-            }
-
-            try
-            {
-                AutoKick.Update();
-            }
-            catch (Exception e)
-            {
-                FileLogger.Log("CHEAT", "Auto anti-kick tick failed: " + e.Message);
-            }
-
             GameApp app = GameApp.Instance;
             inChannel = (app != null &&
                 app.lobby_connection != null &&
@@ -197,6 +176,16 @@ namespace ASWDEBUG.Main
 
                 try
                 {
+                    AutoFire.Tick(level, player, CameraMain);
+                }
+                catch (Exception e)
+                {
+                    AutoFire.Reset();
+                    FileLogger.Log("CHEAT", "AutoFire tick failed: " + e.Message);
+                }
+
+                try
+                {
                     AutoAim.Enable();
                 }
                 catch (Exception e)
@@ -253,6 +242,7 @@ namespace ASWDEBUG.Main
                 BossAutoAim.bestTarget = null;
                 BossAutoAim.currentTarget = null;
                 MotherBossAutoClear.Tick(null, null);
+                AutoFire.Reset();
             }
 
             if (EnableDebugUi && Input.GetKeyDown(KeyCode.Delete))
@@ -265,9 +255,9 @@ namespace ASWDEBUG.Main
         void OnDestroy()
         {
             if (Instance == this) Instance = null;
-            try { FeatureConfigStore.SaveNow(); } catch { }
             try { LocalBotManager.RemoveAll("shutdown"); } catch { }
             try { FlightMode.Shutdown(); } catch { }
+            try { AutoFire.Reset(); } catch { }
             try
             {
                 DllUsageTelemetry.Stop();

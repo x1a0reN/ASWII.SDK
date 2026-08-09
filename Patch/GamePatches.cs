@@ -75,40 +75,6 @@ namespace ASWDEBUG
 
     [HarmonyPatch]
     [Obfuscation(
-        Exclude = true,
-        ApplyToMembers = true,
-        Feature = "-rename",
-        StripAfterObfuscation = false
-    )]
-    public static class Patch_Character_GetSpread_SpreadControl
-    {
-        static MethodBase TargetMethod()
-        {
-            return AccessTools.Method(
-                typeof(Character),
-                "GetSpread",
-                new Type[] { typeof(float) });
-        }
-
-        static void Prefix(Character __instance, ref float shot_spread)
-        {
-            if (!BulletNoRecoil.Enabled || __instance == null) return;
-
-            Character player = null;
-            try
-            {
-                Level level = ASSingleton<Level>.Instance;
-                player = level == null ? null : level.GetPlayer();
-            }
-            catch { }
-            if (player == null || __instance != player) return;
-
-            shot_spread = BulletNoRecoil.ScaleNativeSpread(shot_spread);
-        }
-    }
-
-    [HarmonyPatch]
-    [Obfuscation(
     Exclude = true,                 // 排除本类型
     ApplyToMembers = true,          // 并排除所有成员
     Feature = "-rename",            // 重点：不要重命名（有的混淆器也接受 "rename(false)" 或 "renaming")
@@ -1917,7 +1883,7 @@ namespace ASWDEBUG
         /// </summary>
         public static bool CameraStraightForGunBase(object self, ref Ray ray, ref RaycastHit hit)
         {
-            if (!BulletNoRecoil.RequiresStraightRayFallback) return false;
+            if (!BulletNoRecoil.Enabled) return false;
 
             var inst = self as GunBaseController; // __instance
             if (inst == null || inst.owner == null) return false;
@@ -2185,7 +2151,7 @@ namespace ASWDEBUG
     {
         public static bool CameraStraightBranch(object self, ref Ray ray, ref RaycastHit hit)
         {
-            if (!BulletNoRecoil.RequiresStraightRayFallback)
+            if (!BulletNoRecoil.Enabled)
                 return false;
 
             Ray preBnrRay = ray;
@@ -2348,56 +2314,31 @@ namespace ASWDEBUG
             aimTrackTargetUid = 0;
             try
             {
-                if (!AimTrack.Enabled || hitMessage == null) return false;
-
-                // A native hit already owns this shot. Probability tracking is only
-                // evaluated for an actual miss, so ordinary aiming never conflicts.
-                if (!HasField(hitMessage, "uid")) return false;
-                if (ReadIntField(hitMessage, "uid") != 0)
-                {
-                    AimTrack.LastProbabilityRoll = -1f;
-                    AimTrack.LastProbabilityAccepted = false;
-                    AimTrack.LastDecision = "NATIVE_HIT";
+                if (!AimTrack.Enabled || hitMessage == null || AimTrack.currentTarget == null)
                     return false;
-                }
 
                 Character player = global::ASSingleton<global::Level>.Instance.GetPlayer();
-                if (player == null || IsAimTrackExcludedWeapon(player.mWeapon)) return false;
+                if (player == null || player.mWeapon is KnifeBaseController) return false;
 
-                Character target;
-                Vector3 hitPoint;
-                byte hitPart;
-                float probabilityRoll;
-                if (!AimTrack.TryResolveTrackedMiss(
-                    shotOrigin,
-                    out target,
-                    out hitPoint,
-                    out hitPart,
-                    out probabilityRoll))
-                {
-                    return false;
-                }
-
-                aimTrackTargetUid = target.uid;
+                aimTrackTargetUid = AimTrack.currentTarget.uid;
                 int targetUid = aimTrackTargetUid ^ player.currentSpreadIndex;
-                float worldDistance = Vector3.Distance(shotOrigin, hitPoint);
-                if (float.IsNaN(worldDistance) || float.IsInfinity(worldDistance) ||
-                    worldDistance < 0f)
-                {
-                    return false;
-                }
-                short distance = (short)Mathf.Clamp(
-                    Mathf.FloorToInt(worldDistance),
-                    0,
-                    short.MaxValue);
 
                 TrySetHitField(hitMessage, "uid", targetUid);
-                TrySetHitField(hitMessage, "part", hitPart);
+                TrySetHitField(hitMessage, "part", 4);
                 TrySetHitField(hitMessage, "aim_hit_geometry_state", (byte)1);
-                TrySetHitField(hitMessage, "position", hitPoint);
-                TrySetHitField(hitMessage, "distance", distance);
-                SynchronizeAimTrackEnc(hitMessage);
-                direction = hitPoint;
+
+                Vector3 hitPoint;
+                short distance;
+                if (TryResolveAimTrackHitPoint(
+                    AimTrack.currentTarget,
+                    shotOrigin,
+                    out hitPoint,
+                    out distance))
+                {
+                    TrySetHitField(hitMessage, "position", hitPoint);
+                    TrySetHitField(hitMessage, "distance", distance);
+                    direction = hitPoint;
+                }
                 return true;
             }
             catch (Exception e)
@@ -2405,23 +2346,6 @@ namespace ASWDEBUG
                 FileLogger.Log("PATCH", "[ChannelConnection.Shoot] aim track compat error: " + e.Message);
                 return false;
             }
-        }
-
-        private static bool IsAimTrackExcludedWeapon(WeaponBase weapon)
-        {
-            return weapon == null ||
-                   weapon is KnifeBaseController ||
-                   weapon is BowController ||
-                   weapon is RPGController;
-        }
-
-        private static void SynchronizeAimTrackEnc(object hitMessage)
-        {
-            // The redirected endpoint is exactly collinear with the second-stage
-            // shot origin, so retain native angular evidence and clear stale
-            // low-word geometry error from the original miss.
-            int enc = ReadIntField(hitMessage, "enc");
-            TrySetHitField(hitMessage, "enc", enc & unchecked((int)0xFFFF0000));
         }
 
         private static bool TryResolveAimTrackHitPoint(
@@ -2727,7 +2651,7 @@ namespace ASWDEBUG
                 // 读取游戏里配置的“开火键”
                 var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
 
-                if ((key == fireKey && AutoFire.AutoFireAllowed) || (key == fireKey && SpinTop.Enabled))
+                if ((key == fireKey && AutoFire.WantsFire) || (key == fireKey && SpinTop.Enabled))
                 {
                     __result = true;
                     return false; // 跳过原 Input.GetKey
@@ -2790,7 +2714,7 @@ namespace ASWDEBUG
                     }
 
                     var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
-                    if ((keyCode == fireKey && AutoFire.AutoFireAllowed) || (keyCode == fireKey && SpinTop.Enabled))
+                    if ((keyCode == fireKey && AutoFire.WantsFire) || (keyCode == fireKey && SpinTop.Enabled))
                     {
                         __result = true;
                         return false; // 跳过原 Input.GetKey(string)
@@ -2835,6 +2759,13 @@ namespace ASWDEBUG
                 {
                     return false;
                 }
+
+                var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
+                if (key == fireKey && AutoFire.ShouldFireKeyDown())
+                {
+                    __result = true;
+                    return false;
+                }
             }
             catch
             {
@@ -2876,6 +2807,13 @@ namespace ASWDEBUG
                 if (AutoBattleInput.TryParseKeyCode(name, out keyCode) &&
                     AutoBattleInput.TryGetKeyDown(keyCode, ref __result))
                 {
+                    return false;
+                }
+
+                var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
+                if (keyCode == fireKey && AutoFire.ShouldFireKeyDown())
+                {
+                    __result = true;
                     return false;
                 }
             }

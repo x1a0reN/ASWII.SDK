@@ -78,10 +78,6 @@ internal static class ProtectedReleaseVerifier
             VerifyAimReportV9Protection(protectedAssembly, "protected");
             VerifyCurrentAimTrack(raw, "raw", true);
             VerifyCurrentAimTrack(protectedAssembly, "protected", false);
-            VerifyPrecisionTracker(raw, "raw", true);
-            VerifyPrecisionTracker(protectedAssembly, "protected", false);
-            VerifyUtilityFeatureWiring(raw, "raw", true);
-            VerifyUtilityFeatureWiring(protectedAssembly, "protected", false);
             VerifyCurrentDetectionProtection(raw, "raw");
             VerifyCurrentDetectionProtection(protectedAssembly, "protected");
             VerifyPendingInjectionReset(raw, "raw");
@@ -201,7 +197,55 @@ internal static class ProtectedReleaseVerifier
         TypeDefinition autoFire = FindType(
             assembly.MainModule,
             "ASWDEBUG.Cheats.Player.AutoFire");
+        TypeDefinition cheatMain = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Main.CheatMain");
+        TypeDefinition keyCodeGetKeyPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKey_KeyCode_Prefix");
+        TypeDefinition stringGetKeyPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKey_String_Prefix");
+        TypeDefinition keyCodeGetKeyDownPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKeyDown_KeyCode_Prefix");
+        TypeDefinition stringGetKeyDownPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKeyDown_String_Prefix");
+
         Require(autoFire != null, label + " AutoFire type is missing.");
+
+        MethodDefinition tick = autoFire == null
+            ? null
+            : FindMethod(autoFire, "Tick");
+        MethodDefinition reset = autoFire == null
+            ? null
+            : FindMethod(autoFire, "Reset");
+        MethodDefinition wantsFire = autoFire == null
+            ? null
+            : FindMethod(autoFire, "get_WantsFire");
+        MethodDefinition shouldFireKeyDown = autoFire == null
+            ? null
+            : FindMethod(autoFire, "ShouldFireKeyDown");
+        MethodDefinition update = cheatMain == null
+            ? null
+            : FindMethod(cheatMain, "Update");
+        MethodDefinition keyCodeGetKeyPrefix = keyCodeGetKeyPatch == null
+            ? null
+            : FindMethod(keyCodeGetKeyPatch, "Prefix");
+        MethodDefinition stringGetKeyPrefix = stringGetKeyPatch == null
+            ? null
+            : FindMethod(stringGetKeyPatch, "Prefix");
+        MethodDefinition keyCodeGetKeyDownPrefix = keyCodeGetKeyDownPatch == null
+            ? null
+            : FindMethod(keyCodeGetKeyDownPatch, "Prefix");
+        MethodDefinition stringGetKeyDownPrefix = stringGetKeyDownPatch == null
+            ? null
+            : FindMethod(stringGetKeyDownPatch, "Prefix");
+        FieldDefinition keyDownRepeat = autoFire == null
+            ? null
+            : FindField(autoFire, "KeyDownRepeatSeconds");
+
         Require(
             FindMethod(autoFire, "Toggle") != null,
             label + " automatic-trigger toggle is missing.");
@@ -210,9 +254,40 @@ internal static class ProtectedReleaseVerifier
             FindMethod(autoFire, "Fire") != null &&
             FindMethod(autoFire, "IsCrosshairOnEnemyExact") != null &&
             FindMethod(autoFire, "ToggleAutoFireAllowed") != null &&
+            tick != null &&
+            reset != null &&
+            wantsFire != null &&
+            shouldFireKeyDown != null &&
             FindField(autoFire, "Enabled") != null &&
             FindField(autoFire, "AutoFireAllowed") != null,
             label + " automatic-trigger runtime contract is incomplete.");
+        Require(
+            update != null &&
+            CallsMethod(update, tick) &&
+            CallsMethod(update, reset),
+            label + " CheatMain does not tick and reset AutoFire.");
+        Require(
+            keyCodeGetKeyPrefix != null &&
+            stringGetKeyPrefix != null &&
+            CallsMethod(keyCodeGetKeyPrefix, wantsFire) &&
+            CallsMethod(stringGetKeyPrefix, wantsFire) &&
+            !MethodReferencesField(keyCodeGetKeyPrefix, "AutoFireAllowed") &&
+            !MethodReferencesField(stringGetKeyPrefix, "AutoFireAllowed"),
+            label + " held-fire patches are not wired to AutoFire.WantsFire.");
+        Require(
+            keyCodeGetKeyDownPrefix != null &&
+            stringGetKeyDownPrefix != null &&
+            CallsMethod(keyCodeGetKeyDownPrefix, shouldFireKeyDown) &&
+            CallsMethod(stringGetKeyDownPrefix, shouldFireKeyDown),
+            label + " semi-auto fire patches are not wired to AutoFire key-down pulses.");
+        Require(
+            FindReachableMethodCalling(tick, "SphereCastAll", 3) != null,
+            label + " AutoFire crosshair collider scan is missing.");
+        Require(
+            keyDownRepeat != null &&
+            keyDownRepeat.HasConstant &&
+            Math.Abs(Convert.ToSingle(keyDownRepeat.Constant) - 0.06f) < 0.0001f,
+            label + " AutoFire key-down repeat interval is invalid.");
     }
 
     private static void VerifyRemoteCSharpIsolation(
@@ -1038,303 +1113,13 @@ internal static class ProtectedReleaseVerifier
         }
 
         MethodDefinition track = FindMethod(aimTrack, "Track");
-        MethodDefinition excluded = FindMethod(aimTrack, "IsExcludedWeapon");
         Require(
             track != null &&
-            excluded != null &&
             CallsMethod(enable, track) &&
             CallsMethod(track, screenTarget) &&
             CallsMethod(track, worldTarget) &&
-            CallsMethod(track, excluded) &&
-            MethodReferencesType(excluded, "KnifeBaseController") &&
-            MethodReferencesType(excluded, "BowController") &&
-            MethodReferencesType(excluded, "RPGController"),
+            MethodReferencesType(track, "KnifeBaseController"),
             label + " AimTrack target-selection pipeline is incomplete.");
-    }
-
-    private static void VerifyPrecisionTracker(
-        AssemblyDefinition assembly,
-        string label,
-        bool inspectPrivate)
-    {
-        TypeDefinition aimTrack = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Cheats.AimTrack.AimTrack");
-        TypeDefinition spread = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Cheats.Player.BulletNoRecoil");
-        TypeDefinition spreadPatch = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Patch_Character_GetSpread_SpreadControl");
-        TypeDefinition shootPatch = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Patch_ChannelConnection_Shoot_Prefix");
-
-        MethodDefinition resolveMiss = aimTrack == null
-            ? null
-            : FindMethod(aimTrack, "TryResolveTrackedMiss");
-        MethodDefinition scaleSpread = spread == null
-            ? null
-            : FindMethod(spread, "ScaleNativeSpread");
-        MethodDefinition setSpread = spread == null
-            ? null
-            : FindMethod(spread, "set_SpreadScale");
-        MethodDefinition spreadPrefix = spreadPatch == null
-            ? null
-            : FindMethod(spreadPatch, "Prefix");
-        MethodDefinition spreadTarget = spreadPatch == null
-            ? null
-            : FindMethod(spreadPatch, "TargetMethod");
-        MethodDefinition rewrite = shootPatch == null
-            ? null
-            : FindMethod(shootPatch, "ApplyAimTrackShotCompat");
-
-        Require(
-            aimTrack != null &&
-            resolveMiss != null &&
-            FindField(aimTrack, "RadiusPixels") != null &&
-            FindField(aimTrack, "TrackingProbability") != null &&
-            FindField(aimTrack, "DrawFovCircle") != null,
-            label + " precision-tracking public contract is incomplete.");
-        Require(
-            spread != null &&
-            scaleSpread != null &&
-            FindMethod(spread, "get_SpreadScale") != null &&
-            setSpread != null &&
-            MethodCallsNamed(setSpread, "System.Single", "IsNaN") &&
-            MethodCallsNamed(setSpread, "System.Single", "IsInfinity") &&
-            FindMethod(spread, "get_RequiresStraightRayFallback") != null,
-            label + " adjustable-spread public contract is incomplete.");
-        Require(
-            spreadTarget != null &&
-            spreadPrefix != null &&
-            MethodHasString(spreadTarget, "GetSpread") &&
-            CallsMethod(spreadPrefix, scaleSpread),
-            label + " local Character.GetSpread patch is incomplete.");
-        Require(
-            rewrite != null &&
-            MethodHasString(rewrite, "uid") &&
-            CallsMethod(rewrite, resolveMiss) &&
-            HasEarlyReturnGuardBeforeCall(rewrite, resolveMiss, "uid") &&
-            MethodHasString(rewrite, "part") &&
-            MethodHasString(rewrite, "position") &&
-            MethodHasString(rewrite, "distance") &&
-            MethodHasString(rewrite, "aim_hit_geometry_state"),
-            label + " miss-only tracking rewrite is incomplete.");
-
-        if (!inspectPrivate)
-        {
-            return;
-        }
-
-        TypeDefinition pipeline = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Cheats.AimTrack.PrecisionTracking");
-        TypeDefinition config = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Global.FeatureConfigStore");
-        TypeDefinition cheatMain = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Main.CheatMain");
-        MethodDefinition pipelineResolve = pipeline == null
-            ? null
-            : FindMethod(pipeline, "TryResolveTrackedMiss");
-        MethodDefinition targetPoint = pipeline == null
-            ? null
-            : FindMethod(pipeline, "TryResolveTargetPoint");
-        MethodDefinition selectFromOrigin = pipeline == null
-            ? null
-            : FindMethod(pipeline, "SelectBestTargetFromOrigin");
-        MethodDefinition rayToTarget = pipeline == null
-            ? null
-            : FindMethod(pipeline, "TryRayToTarget");
-        MethodDefinition evaluatePoint = pipeline == null
-            ? null
-            : FindMethod(pipeline, "EvaluatePoint");
-        MethodDefinition probability = pipeline == null
-            ? null
-            : FindMethod(pipeline, "NextProbabilityRoll");
-        MethodDefinition loadConfig = config == null
-            ? null
-            : FindMethod(config, "LoadOnce");
-        MethodDefinition tickConfig = config == null
-            ? null
-            : FindMethod(config, "Tick");
-        MethodDefinition saveConfig = config == null
-            ? null
-            : FindMethod(config, "SaveNow");
-        MethodDefinition readConfigFloat = config == null
-            ? null
-            : FindMethod(config, "ReadFloat");
-        MethodDefinition startMain = cheatMain == null
-            ? null
-            : FindMethod(cheatMain, "Start");
-        MethodDefinition updateMain = cheatMain == null
-            ? null
-            : FindMethod(cheatMain, "Update");
-        MethodDefinition destroyMain = cheatMain == null
-            ? null
-            : FindMethod(cheatMain, "OnDestroy");
-        Require(
-            pipelineResolve != null &&
-            selectFromOrigin != null &&
-            targetPoint != null &&
-            evaluatePoint != null &&
-            rayToTarget != null &&
-            probability != null &&
-            FindField(pipeline, "PartPriority") != null &&
-            CallsMethod(pipelineResolve, selectFromOrigin) &&
-            CallsMethod(pipelineResolve, probability) &&
-            CallsMethod(selectFromOrigin, targetPoint) &&
-            CallsMethod(targetPoint, evaluatePoint) &&
-            CallsMethod(evaluatePoint, rayToTarget) &&
-            MethodCallsNamed(rayToTarget, "UnityEngine.Physics", "Raycast") &&
-            MethodCallsNamed(
-                probability,
-                "System.Security.Cryptography.RandomNumberGenerator",
-                "GetBytes"),
-            label + " multi-point LOS/probability pipeline is incomplete.");
-        Require(
-            loadConfig != null &&
-            tickConfig != null &&
-            saveConfig != null &&
-            readConfigFloat != null &&
-            startMain != null &&
-            updateMain != null &&
-            destroyMain != null &&
-            CallsMethod(startMain, loadConfig) &&
-            CallsMethod(updateMain, tickConfig) &&
-            CallsMethod(destroyMain, saveConfig) &&
-            MethodCallsNamed(readConfigFloat, "System.Single", "IsNaN") &&
-            MethodCallsNamed(readConfigFloat, "System.Single", "IsInfinity") &&
-            MethodHasString(saveConfig, "ballistics.spread_scale") &&
-            MethodHasString(saveConfig, "tracking.probability") &&
-            MethodHasString(saveConfig, "automation.auto_use"),
-            label + " precision profile persistence is incomplete.");
-
-        TypeDefinition tacticalUi = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.UI.TacticalConsoleUI");
-        MethodDefinition display = tacticalUi == null
-            ? null
-            : FindMethod(tacticalUi, "Display");
-        Require(
-            display != null &&
-            HasStringLiteral(assembly, "NATIVE SPREAD PIPELINE") &&
-            HasStringLiteral(assembly, "MISS-ONLY REDIRECTION") &&
-            HasStringLiteral(assembly, "FAIL-CLOSED ACCESS"),
-            label + " tactical precision UI is incomplete.");
-    }
-
-    private static void VerifyUtilityFeatureWiring(
-        AssemblyDefinition assembly,
-        string label,
-        bool inspectPrivate)
-    {
-        TypeDefinition cheatMain = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Main.CheatMain");
-        TypeDefinition autoKick = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Cheats.Other.AutoKick");
-        TypeDefinition other = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Cheats.Other.OtherC");
-        TypeDefinition matchPatch = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Cheats.Other.Patch_NewUIRoom_OpenMatchCheck");
-        TypeDefinition cardPatch = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Patch_UITakeCardManager_ref_Prefix");
-        TypeDefinition config = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.Global.FeatureConfigStore");
-
-        MethodDefinition mainUpdate = cheatMain == null
-            ? null
-            : FindMethod(cheatMain, "Update");
-        MethodDefinition antiKickUpdate = autoKick == null
-            ? null
-            : FindMethod(autoKick, "Update");
-        MethodDefinition utilityUpdate = other == null
-            ? null
-            : FindMethod(other, "Update");
-        MethodDefinition matchPrefix = matchPatch == null
-            ? null
-            : FindMethod(matchPatch, "Prefix");
-        MethodDefinition cardPostfix = cardPatch == null
-            ? null
-            : FindMethod(cardPatch, "Postfix");
-        MethodDefinition saveConfig = config == null
-            ? null
-            : FindMethod(config, "SaveNow");
-
-        Require(
-            mainUpdate != null &&
-            antiKickUpdate != null &&
-            utilityUpdate != null &&
-            FindField(autoKick, "Enabled") != null &&
-            FindField(other, "Enabled") != null &&
-            FindField(other, "EnabledVeryify") != null &&
-            CallsMethod(mainUpdate, antiKickUpdate) &&
-            CallsMethod(mainUpdate, utilityUpdate),
-            label + " card-reveal/anti-kick runtime ticks are incomplete.");
-        Require(
-            matchPrefix != null &&
-            MethodReferencesField(matchPrefix, "EnabledVeryify") &&
-            MethodHasString(matchPrefix, "[MATCH-CHECK] challenge skipped"),
-            label + " game match-check override patch is incomplete.");
-        Require(
-            cardPostfix != null &&
-            MethodReferencesField(cardPostfix, "CardData") &&
-            MethodReferencesField(cardPostfix, "stageQuitData"),
-            label + " card reward capture patch is incomplete.");
-        bool profilePersistenceValid = inspectPrivate
-            ? saveConfig != null &&
-              MethodHasString(saveConfig, "utility.card_reveal") &&
-              MethodHasString(saveConfig, "utility.auto_anti_kick") &&
-              MethodHasString(saveConfig, "utility.ignore_match_validation")
-            : HasStringLiteral(assembly, "utility.card_reveal") &&
-              HasStringLiteral(assembly, "utility.auto_anti_kick") &&
-              HasStringLiteral(assembly, "utility.ignore_match_validation");
-        Require(
-            profilePersistenceValid,
-            label + " utility profile persistence is incomplete.");
-        Require(
-            HasStringLiteral(assembly, "CARD REVEAL") &&
-            HasStringLiteral(assembly, "MATCH INTELLIGENCE") &&
-            HasStringLiteral(assembly, "AUTH BOUNDARY"),
-            label + " utility controls are incomplete.");
-
-        if (!inspectPrivate)
-        {
-            return;
-        }
-
-        TypeDefinition ui = FindType(
-            assembly.MainModule,
-            "ASWDEBUG.UI.CheatUIManager");
-        MethodDefinition display = ui == null
-            ? null
-            : FindMethod(ui, "Display");
-        MethodDefinition cardOverlay = ui == null
-            ? null
-            : FindMethod(ui, "DisplayTacticalCardOverlay");
-        MethodDefinition updateWidget = ui == null
-            ? null
-            : FindMethod(ui, "UpdateWidgetFromInfo");
-        MethodDefinition layoutWidgets = ui == null
-            ? null
-            : FindMethod(ui, "LayoutWidgetsInArea");
-        Require(
-            display != null &&
-            cardOverlay != null &&
-            updateWidget != null &&
-            layoutWidgets != null &&
-            CallsMethod(display, cardOverlay) &&
-            CallsMethod(cardOverlay, updateWidget) &&
-            CallsMethod(cardOverlay, layoutWidgets),
-            label + " tactical card-reveal overlay is not wired to the captured rewards.");
     }
 
     private static void VerifyCurrentAutoAim(
@@ -2158,67 +1943,6 @@ internal static class ProtectedReleaseVerifier
                     StringComparison.Ordinal))
             {
                 return true;
-            }
-        }
-        return false;
-    }
-
-    private static bool HasEarlyReturnGuardBeforeCall(
-        MethodDefinition caller,
-        MethodDefinition target,
-        string guardedField)
-    {
-        if (caller == null || target == null || !caller.HasBody)
-        {
-            return false;
-        }
-
-        Mono.Collections.Generic.Collection<Instruction> instructions =
-            caller.Body.Instructions;
-        int callIndex = -1;
-        for (int i = 0; i < instructions.Count; i++)
-        {
-            MethodReference reference = instructions[i].Operand as MethodReference;
-            if (reference != null && string.Equals(
-                reference.FullName,
-                target.FullName,
-                StringComparison.Ordinal))
-            {
-                callIndex = i;
-                break;
-            }
-        }
-        if (callIndex < 0) return false;
-
-        for (int literalIndex = 0; literalIndex < callIndex; literalIndex++)
-        {
-            string literal = instructions[literalIndex].Operand as string;
-            if (!string.Equals(literal, guardedField, StringComparison.Ordinal))
-                continue;
-
-            for (int branchIndex = literalIndex + 1;
-                 branchIndex < callIndex;
-                 branchIndex++)
-            {
-                Instruction branch = instructions[branchIndex];
-                if (branch.OpCode.FlowControl != FlowControl.Cond_Branch)
-                    continue;
-
-                Instruction continuation = branch.Operand as Instruction;
-                int continuationIndex = continuation == null
-                    ? -1
-                    : instructions.IndexOf(continuation);
-                if (continuationIndex <= branchIndex || continuationIndex >= callIndex)
-                    continue;
-
-                for (int guardedIndex = branchIndex + 1;
-                     guardedIndex < continuationIndex;
-                     guardedIndex++)
-                {
-                    Code code = instructions[guardedIndex].OpCode.Code;
-                    if (code == Code.Ret || code == Code.Leave || code == Code.Leave_S)
-                        return true;
-                }
             }
         }
         return false;

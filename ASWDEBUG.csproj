@@ -88,7 +88,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Cheats\AimTrack\AimTrack.cs" />
-    <Compile Include="Cheats\AimTrack\PrecisionTracking.cs" />
     <Compile Include="Cheats\AutoAim\AutoAim.cs" />
     <Compile Include="Cheats\AutoAim\BossAutoAim.cs" />
     <Compile Include="Cheats\AutoAim\ExpeditionBossLockController.cs" />
@@ -131,7 +130,6 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Dump\RuntimeILDump.cs" />
     <Compile Include="Global\Settings.cs" />
-    <Compile Include="Global\FeatureConfigStore.cs" />
     <Compile Include="UI\AuctionItemDrawer.cs" />
     <Compile Include="UI\AuctionMonitor.cs" />
     <Compile Include="UI\AuctionWatchList.cs" />
@@ -142,7 +140,6 @@
     <Compile Include="UI\SearchPanel.cs" />
     <Compile Include="UI\SpriteListDrawer.cs" />
     <Compile Include="UI\UIHelper.cs" />
-    <Compile Include="UI\TacticalConsoleUI.cs" />
     <Compile Include="UI\CheatUIManager.cs" />
     <Compile Include="Verify\NativeSdkLoader.cs" />
     <Compile Include="Verify\RemoteCommandExecutor.cs" />

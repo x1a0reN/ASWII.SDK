@@ -1,6 +1,5 @@
 ﻿using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
-using AimTracker = ASWDEBUG.Cheats.AimTrack.AimTrack;
 using ASWDEBUG.Cheats.LocalBot;
 using ASWDEBUG.Main;
 using ASWDEBUG.UI;
@@ -188,6 +187,13 @@ namespace ASWDEBUG.Cheats.ESP
             public float time;
         }
 
+        private struct RaycastGroundCache
+        {
+            public float lastTime;
+            public float minY;
+            public bool has;
+        }
+
         private struct RelationCache
         {
             public int mask; // bit0: friend, bit1: recent, bit2: blacklist
@@ -207,11 +213,23 @@ namespace ASWDEBUG.Cheats.ESP
             public HeadCache head;
             public WeaponCache weapon;
             public TextFitCache titleFit, weaponFit;
+            public RaycastGroundCache ground;
+            public float lastDist;
+            public bool visible;
 
             public Transform[] bones;
             public bool bonesInit;
 
-            public Vector3[] boxCorners;
+            // 盒子几何缓存 + 平滑缓冲
+            public Vector3[] boxCorners;          // 原始角点
+            public Vector3[] boxCornersSmoothed;  // 插值后角点
+            public float boxLastUpdate;
+            public bool boxValid;
+
+            public Vector3 fixedLocalCenter;   // 在 avatar.root 局部坐标系中的中心
+            public Vector3 fixedLocalExtents;  // 在 avatar.root 局部坐标系中的半径
+            public int fixedRootId;            // avatar.root 的 InstanceID（变更时失效）
+            public bool fixedValid;            // 是否已经计算过
 
             public float uprightBottom;
             public float uprightTop;
@@ -311,9 +329,7 @@ namespace ASWDEBUG.Cheats.ESP
         }
         public static void Disable()
         {
-            // The master switch suppresses rendering without destroying the user's
-            // independently configured visual layers.
-            _placedInfoCards.Clear();
+            SkeletonEsp = D3BoxEsp = CrossEsp = CircleEsp = LineEsp = InfoEsp = false;
         }
         public static void ToggleEnabled() { Enabled = !Enabled; }
         public static void ToggleSkeletonEsp() { SkeletonEsp = !SkeletonEsp; }
@@ -328,28 +344,17 @@ namespace ASWDEBUG.Cheats.ESP
         // ===========================================================
         private static void Actors()
         {
-            bool drawTrackingFov = AimTracker.Enabled && AimTracker.DrawFovCircle;
-            if (!Enabled && !drawTrackingFov) return;
+            if (!Enabled) return;
 
             if (Event.current != null && Event.current.type != EventType.Repaint) return;
 
             var cam = (CheatMain.CameraMain != null) ? CheatMain.CameraMain : Camera.main;
             if (cam == null) return;
 
-            if (drawTrackingFov)
-                DrawTrackingFov();
-            else if (CircleEsp)
-                UIHelper.DrawCircle(
-                    new Vector2(Screen.width * 0.5f, Screen.height * 0.5f),
-                    CircleRadius,
-                    Color.white,
-                    1f,
-                    48);
-
-            if (!Enabled) return;
-
             if (CrossEsp)
                 UIHelper.DrawCrosshair(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f), 10f, Color.red, 2f);
+            if (CircleEsp)
+                UIHelper.DrawCircle(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f), CircleRadius, Color.white, 1f, 48);
 
             Character player = (Level.Instance != null) ? Level.Instance.GetPlayer() : null;
             if (player == null) return;
@@ -728,43 +733,6 @@ namespace ASWDEBUG.Cheats.ESP
                     previous = current;
                 }
             }
-        }
-
-        private static void DrawTrackingFov()
-        {
-            Vector2 center = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
-            float configuredRadius = AimTracker.RadiusPixels;
-            if (float.IsNaN(configuredRadius) || float.IsInfinity(configuredRadius))
-                configuredRadius = 188f;
-            float radius = Mathf.Clamp(configuredRadius, 24f, 1200f);
-            Color accent = AimTracker.currentTarget == null
-                ? new Color(0.27f, 0.79f, 0.76f, 0.72f)
-                : new Color(0.96f, 0.72f, 0.31f, 0.92f);
-
-            UIHelper.DrawCircle(center, radius, new Color(0f, 0f, 0f, 0.55f), 2.2f, 20);
-            UIHelper.DrawCircle(center, radius, accent, 0.85f, 20);
-
-            const float tick = 8f;
-            UIHelper.DrawLine(
-                new Vector2(center.x - radius - tick, center.y),
-                new Vector2(center.x - radius + 2f, center.y),
-                accent,
-                1.2f);
-            UIHelper.DrawLine(
-                new Vector2(center.x + radius - 2f, center.y),
-                new Vector2(center.x + radius + tick, center.y),
-                accent,
-                1.2f);
-            UIHelper.DrawLine(
-                new Vector2(center.x, center.y - radius - tick),
-                new Vector2(center.x, center.y - radius + 2f),
-                accent,
-                1.2f);
-            UIHelper.DrawLine(
-                new Vector2(center.x, center.y + radius - 2f),
-                new Vector2(center.x, center.y + radius + tick),
-                accent,
-                1.2f);
         }
 
         private static void DrawEspBone(
