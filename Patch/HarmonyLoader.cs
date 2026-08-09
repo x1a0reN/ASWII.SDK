@@ -22,12 +22,16 @@ namespace ASWDEBUG.Patch
     {
         private static bool _installed;
         private static bool _patched;
+        private static bool _authorizedPatched;
         private static bool _telemetryOnly;
+        private const bool PreserveLiveNetworkSession = true;
         private static int _positionCheckLogCount;
         private static int _processCheckSuppressCount;
         private static int _pluginReportSuppressCount;
         private static int _requestReportSuppressCount;
         private static int _forceDisconnectSuppressCount;
+        private static int _pendingInjectionClearCount;
+        private static int _keepAliveAuditCount;
         private static int _actkSuppressCount;
         private static string _multiOpenIdentityHash;
         private static string _multiOpenAswcPath;
@@ -54,6 +58,10 @@ namespace ASWDEBUG.Patch
         private static int _aimAssistSampleBypassCount;
         private static int _aimAssistPayloadSanitizeCount;
         private static int _aimAssistConfigBypassCount;
+        private static readonly object AimShotContextSync = new object();
+        private static readonly Dictionary<object, AimShotContext> AimShotContexts =
+            new Dictionary<object, AimShotContext>();
+        private const int AimShotContextCapacity = 256;
         private static int _aimSyntheticSessionId;
         private static int _aimSyntheticTargetUid;
         private static float _aimSyntheticSessionStart;
@@ -64,8 +72,12 @@ namespace ASWDEBUG.Patch
         private static int _aimHistoryCacheFrame = -1;
         private static int _aimHistoryCacheTargetUid;
         private static int _aimHistoryCacheHitUid;
+        private static int _aimHistoryCacheSpreadDigit = -1;
         private static bool[] _aimHistoryCacheMask;
         private static short[] _aimHistoryCacheValues;
+        private static int _aimGeometryBypassCount;
+        private const int AimReportVersionV9 = 9;
+        private const int AimPrecisionMaxMillimetersV9 = 6400;
         private const int AimPrecisionSuspiciousThresholdMm = 120;
         private const int AimPrecisionHumanizedMinMm = 120;
         private const int AimPrecisionHumanizedMaxMm = 300;
@@ -73,7 +85,18 @@ namespace ASWDEBUG.Patch
         private static int _assistToolCheckSuppressCount;
         private static int _extendedDetectorSuppressCount;
         private static int _clientFileMd5LogSuppressCount;
+        private static int _launcherProcessBlockCount;
+        private static int _gameDetectionUploadBlockCount;
         private const int ExitStackPreviewChars = 900;
+
+        private sealed class AimShotContext
+        {
+            public bool AutoAimActive;
+            public bool AimTrackActive;
+            public bool GeometryManipulationActive;
+            public int AutoAimTargetUid;
+            public int AimTrackTargetUid;
+        }
         private static readonly HashSet<string> ExcludedFeaturePatchTypeNames = new HashSet<string>(StringComparer.Ordinal)
         {
             "Patch_LobbyConnection_AddTextRpc",
@@ -96,9 +119,14 @@ namespace ASWDEBUG.Patch
 
         public static void Install(bool telemetryOnly)
         {
+            InstallProtection();
+            InstallAuthorized(telemetryOnly);
+        }
+
+        public static void InstallProtection()
+        {
             if (_installed) return;
             _installed = true;
-            _telemetryOnly = telemetryOnly;
 
             try
             {
@@ -121,6 +149,47 @@ namespace ASWDEBUG.Patch
             catch (Exception e)
             {
                 FileLogger.Log("ASWDEBUG", "[HarmonyLoader] Install failed: " + e);
+            }
+        }
+
+        public static void InstallAuthorized(bool telemetryOnly)
+        {
+            if (_authorizedPatched) return;
+            _authorizedPatched = true;
+            _telemetryOnly = telemetryOnly;
+
+            try
+            {
+                Assembly asmAC = AppDomain.CurrentDomain
+                    .GetAssemblies()
+                    .FirstOrDefault(a => a.GetName().Name == "Assembly-CSharp");
+                if (asmAC == null)
+                {
+                    _authorizedPatched = false;
+                    FileLogger.Log("ASWDEBUG",
+                        "[HarmonyLoader] authorized patches deferred: Assembly-CSharp not found.");
+                    return;
+                }
+
+                var harmony = HarmonyInstance.Create("aswdebug.authorized-hooks");
+                if (_telemetryOnly)
+                {
+                    ApplyTelemetryPatches(harmony);
+                    FileLogger.Log("ASWDEBUG",
+                        "[HarmonyLoader] authorized telemetry patches applied.");
+                }
+                else
+                {
+                    BisectPatchGameClasses(harmony);
+                    FileLogger.Log("ASWDEBUG",
+                        "[HarmonyLoader] authorized feature patches applied.");
+                }
+            }
+            catch (Exception e)
+            {
+                _authorizedPatched = false;
+                FileLogger.Log("ASWDEBUG",
+                    "[HarmonyLoader] InstallAuthorized failed: " + e);
             }
         }
 
@@ -148,18 +217,10 @@ namespace ASWDEBUG.Patch
 
             try
             {
-                var harmony = HarmonyInstance.Create("aswdebug.hooks");
+                var harmony = HarmonyInstance.Create("aswdebug.protection-hooks");
                 ApplyCoreProtectionPatches(harmony);
-                if (_telemetryOnly)
-                {
-                    ApplyTelemetryPatches(harmony);
-                    FileLogger.Log("ASWDEBUG", "[HarmonyLoader] Core protection + telemetry patches applied.");
-                }
-                else
-                {
-                    BisectPatchGameClasses(harmony);
-                    FileLogger.Log("ASWDEBUG", "[HarmonyLoader] Core protection + feature patches applied.");
-                }
+                FileLogger.Log("ASWDEBUG",
+                    "[HarmonyLoader] runtime protection and disconnect diagnostics applied.");
             }
             catch (Exception e)
             {
@@ -387,70 +448,23 @@ namespace ASWDEBUG.Patch
                 return;
             }
 
-            TryPatch(harmony, asm, "ChannelConnection", "ParseProcessCheck",
-                new Type[] { typeof(global::NetworkStream) },
-                "Protection_ParseProcessCheckPrefix");
-
-            TryPatch(harmony, asm, "ProcessCheck", "CheckByBlackJosnTable",
-                new Type[] { typeof(string), typeof(Action<global::ProcessCheckInfo>) },
-                "Protection_SkipProcessCheckPrefix");
-
-            TryPatch(harmony, asm, "ProcessCheck", "CheckByUrl",
-                new Type[] { typeof(string), typeof(Action<global::ProcessCheckInfo>) },
-                "Protection_SkipProcessCheckPrefix");
-
-            TryPatch(harmony, asm, "ChannelConnection", "PluginReport",
-                new Type[] { typeof(byte), typeof(global::AssitToolType), typeof(bool) },
-                "Protection_BlockPluginReportPrefix");
-
-            // The current assembly uses v8 reports. Bit 0x80 marks a same-frame capture, while
-            // plain version 8 means the sample was missing. Keep the native lifecycle so this
-            // distinction and the variable sample count reach the packet builder intact.
-            FileLogger.Log("ASWDEBUG",
-                "[HarmonyLoader] AimAssistDetector v8 lifecycle left native; sustained-run convergence enabled.");
-
-            TryPatchAllOverloads(harmony, asm, "GunBaseController", "AssitToolCheck",
-                "Protection_BlockAssistToolCheckPrefix");
-
-            TryPatch(harmony, asm, "ShootPayloadCrypt", "BuildEncryptedPayload",
-                new Type[] { typeof(global::HitMessage) },
-                "Protection_ShootPayloadBuildPrefix");
-
-            TryPatch(harmony, asm, "ShootPayloadCrypt", "BuildEncryptedPayload",
-                new Type[] { typeof(global::HitMessage), typeof(int) },
-                "Protection_ShootPayloadBuildWithSpreadPrefix");
-
-            TryPatch(harmony, asm, "ClientFileMd5Checker", "GetClientBinarySummaryMd5",
-                new Type[] { typeof(bool) },
-                "Protection_ClientFileMd5Prefix");
-
-            TryPatch(harmony, asm, "ClientFileMd5Checker", "GetEncryptedClientBinarySummaryMd5",
-                new Type[] { typeof(ulong), typeof(bool) },
-                "Protection_EncryptedClientFileMd5Prefix");
-
-            TryPatch(harmony, asm, "ChannelConnection", "ParsePositionCheck",
+            ClearPendingInjectionFlag("install");
+            TryPatch(harmony, asm, "LobbyConnection", "RequestKeepAlive",
                 Type.EmptyTypes,
-                "Protection_ParsePositionCheckPrefix");
+                "Protection_ClearPendingInjectionPrefix");
 
-            TryPatch(harmony, asm, "ChannelConnection", "ParseKickOutByPlugin",
-                new Type[] { typeof(global::NetworkStream) },
-                "Protection_ParseKickOutByPluginPrefix");
+            ApplyDetectionProtectionPatches(harmony, asm);
+            ApplyAimReportV9Patches(harmony, asm);
 
-            TryPatch(harmony, asm, "ChannelConnection", "ParseNotifyKickedByGM",
-                new Type[] { typeof(global::NetworkStream) },
-                "Protection_ParseNotifyKickedByGMPrefix");
-
-            TryPatch(harmony, asm, "ChannelConnection", "ParseNotifyKickedByVote",
-                new Type[] { typeof(global::NetworkStream) },
-                "Protection_ParseNotifyKickedByVotePrefix");
-
-            TryPatch(harmony, asm, "LobbyConnection", "RequestReport",
-                new Type[] { typeof(byte), typeof(string), typeof(string), typeof(int), typeof(byte[]) },
-                "Protection_BlockRequestReportPrefix");
-
-            TryPatch(harmony, asm, "LobbyConnection", "RequestShutdown",
-                new Type[] { typeof(string) },
-                "Protection_BlockRequestShutdownPrefix");
+            if (!PreserveLiveNetworkSession)
+            {
+                ApplyProtocolMutationPatches(harmony, asm);
+            }
+            else
+            {
+                FileLogger.Log("NET-AUDIT",
+                    "[NETWORK-SAFETY] protocol mutation hooks skipped for live-process injection.");
+            }
 
             TryPatch(harmony, asm, "LobbyConnection", "ForceDisconnect",
                 Type.EmptyTypes,
@@ -475,6 +489,11 @@ namespace ASWDEBUG.Patch
             TryPatch(harmony, asm, "GameApp", "InitializeDllDetection",
                 Type.EmptyTypes,
                 "Protection_SkipInitializeDllDetectionPrefix");
+
+            TryPatchAllOverloads(harmony, asm, "GameApp", "OnDllInjectionDetected",
+                "Protection_BlockGameInjectionCallbackPrefix");
+            TryPatchAllOverloads(harmony, asm, "GameApp", "OnAssemblyInjectionDetected",
+                "Protection_BlockGameInjectionCallbackPrefix");
 
             TryPatch(harmony, asm, "GameApp", "ExitOnCheatDetected",
                 Type.EmptyTypes,
@@ -574,6 +593,73 @@ namespace ASWDEBUG.Patch
             }
         }
 
+        private static void ApplyAimReportV9Patches(HarmonyInstance harmony, Assembly asm)
+        {
+            TryPatch(harmony, asm, "ChannelConnection", "PluginReport",
+                new Type[] { typeof(byte), typeof(global::AssitToolType), typeof(bool) },
+                "Protection_BlockPluginReportPrefix");
+            TryPatchAllOverloads(harmony, asm, "GunBaseController", "AssitToolCheck",
+                "Protection_BlockAssistToolCheckPrefix");
+            TryPatch(harmony, asm, "ShootPayloadCrypt", "BuildEncryptedPayload",
+                new Type[] { typeof(global::HitMessage) },
+                "Protection_ShootPayloadBuildPrefix");
+            TryPatchAllOverloads(harmony, asm, "AimAssistDetector", "EvaluateBulletTrackingHit",
+                "Protection_AimHitGeometryPrefix");
+
+            FileLogger.Log("ASWDEBUG",
+                "[HarmonyLoader] AimAssistDetector v9 payload and hit-geometry protection enabled.");
+        }
+
+        private static void ApplyDetectionProtectionPatches(HarmonyInstance harmony, Assembly asm)
+        {
+            TryPatch(harmony, asm, "ChannelConnection", "ParseProcessCheck",
+                new Type[] { typeof(global::NetworkStream) },
+                "Protection_ParseProcessCheckPrefix");
+            TryPatch(harmony, asm, "ProcessCheck", "CheckByBlackJosnTable",
+                new Type[] { typeof(string), typeof(Action<global::ProcessCheckInfo>) },
+                "Protection_SkipProcessCheckPrefix");
+            TryPatch(harmony, asm, "ProcessCheck", "CheckByUrl",
+                new Type[] { typeof(string), typeof(Action<global::ProcessCheckInfo>) },
+                "Protection_SkipProcessCheckPrefix");
+            TryPatch(harmony, asm, "ClientFileMd5Checker", "GetClientBinarySummaryMd5",
+                new Type[] { typeof(bool) },
+                "Protection_ClientFileMd5Prefix");
+            TryPatch(harmony, asm, "ClientFileMd5Checker", "GetEncryptedClientBinarySummaryMd5",
+                new Type[] { typeof(ulong), typeof(bool) },
+                "Protection_EncryptedClientFileMd5Prefix");
+            TryPatch(harmony, asm, "ChannelConnection", "ParsePositionCheck",
+                Type.EmptyTypes,
+                "Protection_ParsePositionCheckPrefix");
+            TryPatch(harmony, asm, "LaucherConnection", "OnClientMessage",
+                Type.EmptyTypes,
+                "Protection_LauncherProcessDataPrefix");
+            TryPatch(harmony, asm, "GameApp", "HttpRequest",
+                new Type[] { typeof(string), typeof(Action<string>), typeof(int), typeof(int) },
+                "Protection_FilterGameHttpRequestPrefix");
+            TryPatch(harmony, asm, "LobbyConnection", "RequestReport",
+                new Type[] { typeof(byte), typeof(string), typeof(string), typeof(int), typeof(byte[]) },
+                "Protection_BlockRequestReportPrefix");
+
+            FileLogger.Log("NET-AUDIT",
+                "[DETECTION-BYPASS] process, position, launcher process-data, report and detection-upload paths protected.");
+        }
+
+        private static void ApplyProtocolMutationPatches(HarmonyInstance harmony, Assembly asm)
+        {
+            TryPatch(harmony, asm, "ChannelConnection", "ParseKickOutByPlugin",
+                new Type[] { typeof(global::NetworkStream) },
+                "Protection_ParseKickOutByPluginPrefix");
+            TryPatch(harmony, asm, "ChannelConnection", "ParseNotifyKickedByGM",
+                new Type[] { typeof(global::NetworkStream) },
+                "Protection_ParseNotifyKickedByGMPrefix");
+            TryPatch(harmony, asm, "ChannelConnection", "ParseNotifyKickedByVote",
+                new Type[] { typeof(global::NetworkStream) },
+                "Protection_ParseNotifyKickedByVotePrefix");
+            TryPatch(harmony, asm, "LobbyConnection", "RequestShutdown",
+                new Type[] { typeof(string) },
+                "Protection_BlockRequestShutdownPrefix");
+        }
+
         private static void ApplyExtendedAntiDetectionPatches(HarmonyInstance harmony, Assembly asm)
         {
             if (!Settings.ExtendedAntiDetectionBypassEnabled)
@@ -624,15 +710,14 @@ namespace ASWDEBUG.Patch
                 }
             }
 
-            TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.ActDetectorBase",
-                "StartDetectionAutomatically", "Protection_BlockExtendedDetectorPrefix");
-            TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.ActDetectorBase",
-                "ResumeDetector", "Protection_BlockExtendedDetectorPrefix");
-
             TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.InjectionDetector",
                 "AssemblyAllowed", "Protection_AllowAssemblyPrefix");
+            TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.InjectionDetector",
+                "FindInjectionInCurrentAssemblies", "Protection_BoolFalsePrefix");
             TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.ManagedAssemblyDetector",
                 "GetSuspiciousCount", "Protection_IntZeroPrefix");
+            TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.ManagedAssemblyDetector",
+                "IsFromManagedDir", "Protection_AllowAssemblyPrefix");
             TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.NativeDllDetector",
                 "get_IsRunning", "Protection_BoolFalsePrefix");
             TryPatchAllOverloads(harmony, asm, "CodeStage.AntiCheat.Detectors.WallHackDetector",
@@ -1337,6 +1422,92 @@ namespace ASWDEBUG.Patch
             return false;
         }
 
+        private static bool Protection_LauncherProcessDataPrefix(global::LaucherConnection __instance)
+        {
+            global::BuffReader reader = null;
+            int savedPosition = -1;
+            byte messageType = 0;
+
+            try
+            {
+                if (__instance == null) return true;
+
+                reader = Traverse.Create(__instance).Field("reader").GetValue<global::BuffReader>();
+                if (reader == null) return true;
+
+                savedPosition = reader.start_index;
+                messageType = reader.ReadByte();
+                if (messageType != (byte)global::ServerMessage.SM_PROCESS_DATA)
+                {
+                    reader.start_index = savedPosition;
+                    return true;
+                }
+
+                string processData = reader.ReadString();
+                string processName = reader.ReadString();
+                _launcherProcessBlockCount++;
+                FileLogger.Log("NET-AUDIT",
+                    "[LAUNCHER-PROCESS-DATA-BLOCKED] #" + _launcherProcessBlockCount +
+                    " processName=" + TrimLog(processName, 80) +
+                    " processDataHash=" + HashShort(processData) +
+                    " processDataLen=" + SafeLen(processData));
+                return false;
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    if (reader != null && savedPosition >= 0)
+                    {
+                        reader.start_index = savedPosition;
+                    }
+                }
+                catch
+                {
+                }
+
+                FileLogger.Log("NET-AUDIT",
+                    "[LAUNCHER-PROCESS-DATA] inspect error msg=" + messageType +
+                    " error=" + ex.Message);
+                return true;
+            }
+        }
+
+        private static bool Protection_FilterGameHttpRequestPrefix(string __0, Action<string> __1)
+        {
+            if (!IsGameDetectionUpload(__0)) return true;
+
+            try
+            {
+                _gameDetectionUploadBlockCount++;
+                FileLogger.Log("NET-AUDIT",
+                    "[GAME-DETECTION-UPLOAD-BLOCKED] #" + _gameDetectionUploadBlockCount +
+                    " kind=" +
+                    (__0.IndexOf("waigua.log", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "waigua.log"
+                        : "client_inner.log"));
+                if (__1 != null)
+                {
+                    __1(string.Empty);
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("NET-AUDIT",
+                    "[GAME-DETECTION-UPLOAD] block error: " + ex.Message);
+            }
+
+            return false;
+        }
+
+        private static bool IsGameDetectionUpload(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return false;
+
+            return url.IndexOf("filename=waigua.log", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   url.IndexOf("filename=client_inner.log", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private static bool Protection_BlockPluginReportPrefix(byte uid, global::AssitToolType type, bool check_ok)
         {
             try
@@ -1363,7 +1534,10 @@ namespace ASWDEBUG.Patch
 
             try
             {
-                NormalizeAimReportFields(hitMessage);
+                NormalizeAimReportFields(
+                    hitMessage,
+                    GetSpreadTenthsDigit(ReadRuntimeFieldFloat(hitMessage, "spread", 0f)),
+                    null);
                 if (global::ASWDEBUG.ShotDiagnostics.HighFrequencyLoggingEnabled &&
                     ShouldLog(ref _aimAssistReportBypassCount, 12, 200))
                 {
@@ -1492,27 +1666,109 @@ namespace ASWDEBUG.Patch
 
         private static void Protection_ShootPayloadBuildPrefix(object hitMessage)
         {
-            // This overload writes no payload itself; it delegates to BuildEncryptedPayload(hit, spread).
-            // Normalizing here would make the delegated hook observe already-modified diagnostics.
+            int spreadTenthsDigit = GetSpreadTenthsDigit(
+                ReadRuntimeFieldFloat(hitMessage, "spread", 0f));
+            Protection_SanitizeShootPayload(
+                hitMessage,
+                spreadTenthsDigit,
+                "BuildEncryptedPayload(hit)/v9");
         }
 
-        private static void Protection_ShootPayloadBuildWithSpreadPrefix(object hitMessage, int currentSpreadIndex)
+        private static bool Protection_AimHitGeometryPrefix(object hitMessage)
         {
-            Protection_SanitizeShootPayload(hitMessage, currentSpreadIndex, "BuildEncryptedPayload(hit,spread)");
+            if (!Settings.AimAssistDetectorBypassEnabled ||
+                !IsBulletGeometryManipulationActive())
+            {
+                return true;
+            }
+
+            try
+            {
+                TrySetRuntimeField(hitMessage, "aim_hit_geometry_state", (byte)1);
+                if (global::ASWDEBUG.ShotDiagnostics.HighFrequencyLoggingEnabled &&
+                    ShouldLog(ref _aimGeometryBypassCount, 12, 200))
+                {
+                    FileLogger.Log("NET-AUDIT",
+                        "[AIM-V9] native bullet geometry replaced with coherent state #" +
+                        _aimGeometryBypassCount);
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("NET-AUDIT", "[AIM-V9] geometry prefix error: " + ex.Message);
+            }
+
+            return false;
         }
 
-        private static void Protection_SanitizeShootPayload(object hitMessage, int currentSpreadIndex, string source)
+        public static void CaptureAimShotContext(
+            object hitMessage,
+            bool aimTrackApplied,
+            int aimTrackTargetUid,
+            bool geometryManipulationApplied)
+        {
+            if (!Settings.AimAssistDetectorBypassEnabled || hitMessage == null) return;
+
+            int autoAimTargetUid;
+            bool autoAimActive =
+                global::ASWDEBUG.Cheats.AutoAim.AutoAim.TryGetRecentManipulation(
+                    out autoAimTargetUid);
+            AimShotContext context = new AimShotContext
+            {
+                AutoAimActive = autoAimActive,
+                AimTrackActive = aimTrackApplied,
+                GeometryManipulationActive = aimTrackApplied || geometryManipulationApplied,
+                AutoAimTargetUid = autoAimTargetUid,
+                AimTrackTargetUid = aimTrackTargetUid
+            };
+
+            lock (AimShotContextSync)
+            {
+                // BuildEncryptedPayload normally consumes this immediately; the cap only bounds
+                // abandoned HitMessage instances if the native send exits early.
+                if (AimShotContexts.Count >= AimShotContextCapacity)
+                {
+                    AimShotContexts.Clear();
+                }
+                AimShotContexts[hitMessage] = context;
+            }
+        }
+
+        private static bool TryConsumeAimShotContext(
+            object hitMessage,
+            out AimShotContext context)
+        {
+            context = null;
+            if (hitMessage == null) return false;
+
+            lock (AimShotContextSync)
+            {
+                if (!AimShotContexts.TryGetValue(hitMessage, out context)) return false;
+                AimShotContexts.Remove(hitMessage);
+                return true;
+            }
+        }
+
+        private static void Protection_SanitizeShootPayload(
+            object hitMessage,
+            int spreadTenthsDigit,
+            string source)
         {
             if (!Settings.AimAssistDetectorBypassEnabled) return;
 
             try
             {
-                int adjustedPrecisionCount = NormalizeAimReportFields(hitMessage);
+                AimShotContext shotContext;
+                TryConsumeAimShotContext(hitMessage, out shotContext);
+                int adjustedPrecisionCount = NormalizeAimReportFields(
+                    hitMessage,
+                    spreadTenthsDigit,
+                    shotContext);
                 if (adjustedPrecisionCount < 0) return;
 
                 global::ASWDEBUG.ShotDiagnostics.LogAimPayload(
                     hitMessage,
-                    currentSpreadIndex,
+                    spreadTenthsDigit,
                     adjustedPrecisionCount,
                     source);
 
@@ -1526,8 +1782,10 @@ namespace ASWDEBUG.Patch
                         " source=" + source +
                         " version=" + version +
                         " captured=" + ((version & 0x80) != 0) +
+                        " spreadDigit=" + spreadTenthsDigit +
                         " target=" + ReadRuntimeFieldInt(hitMessage, "aim_target_uid", 0) +
                         " shotCode=" + ReadRuntimeFieldInt(hitMessage, "aim_shot_precision_code", -1) +
+                        " geometry=" + ReadRuntimeFieldInt(hitMessage, "aim_hit_geometry_state", 0) +
                         " samples=" + (samples == null ? 0 : samples.Length) +
                         " adjusted=" + adjustedPrecisionCount);
                 }
@@ -1538,75 +1796,187 @@ namespace ASWDEBUG.Patch
             }
         }
 
-        private static int NormalizeAimReportFields(object hitMessage)
+        private static int NormalizeAimReportFields(
+            object hitMessage,
+            int spreadTenthsDigit,
+            AimShotContext shotContext)
         {
             if (hitMessage == null) return -1;
             if (!HasRuntimeField(hitMessage, "aim_report_version")) return -1;
-
-            if (HasRuntimeField(hitMessage, "aim_shot_precision_code") ||
-                HasRuntimeField(hitMessage, "aim_precision_samples"))
+            if (!HasRuntimeField(hitMessage, "aim_shot_precision_code") ||
+                !HasRuntimeField(hitMessage, "aim_precision_samples"))
             {
-                int version = ReadRuntimeFieldInt(hitMessage, "aim_report_version", 8);
-                bool captured = (version & 0x80) != 0;
-                if (!captured)
+                return 0;
+            }
+
+            int version = ReadRuntimeFieldInt(hitMessage, "aim_report_version", AimReportVersionV9);
+            if ((version & 0x7F) != AimReportVersionV9)
+            {
+                return 0;
+            }
+
+            bool captured = (version & 0x80) != 0;
+            if (!captured) return 0;
+
+            bool hasShotContext = shotContext != null;
+            bool autoAimActive = hasShotContext
+                ? shotContext.AutoAimActive
+                : IsAutoAimManipulationActive();
+            bool aimTrackActive = hasShotContext
+                ? shotContext.AimTrackActive
+                : IsAimTrackManipulationActive();
+            bool geometryManipulationActive = hasShotContext
+                ? shotContext.GeometryManipulationActive
+                : aimTrackActive || IsBulletNoRecoilActive();
+            if (!autoAimActive && !aimTrackActive && !geometryManipulationActive) return 0;
+
+            int targetUid = ReadRuntimeFieldInt(hitMessage, "aim_target_uid", 0);
+            if (aimTrackActive)
+            {
+                int aimTrackTargetUid = hasShotContext
+                    ? shotContext.AimTrackTargetUid
+                    : GetAimTrackTargetUid();
+                if (aimTrackTargetUid > 0)
                 {
-                    // Preserve genuine timing misses instead of manufacturing a different shape.
-                    return 0;
+                    targetUid = aimTrackTargetUid;
+                    TrySetRuntimeField(hitMessage, "aim_target_uid", (byte)(targetUid & 0xFF));
                 }
+            }
+            int syntheticTargetUid = targetUid;
+            if (syntheticTargetUid <= 0 &&
+                hasShotContext &&
+                autoAimActive &&
+                shotContext.AutoAimTargetUid > 0)
+            {
+                syntheticTargetUid = shotContext.AutoAimTargetUid;
+            }
+            PrepareAimSyntheticSession(syntheticTargetUid);
 
-                // Manual fire is the control group and must stay byte-for-byte native. Only
-                // historical samples are adjusted while one of our aim features is actually
-                // steering/redirecting this shot. The shot-moment code is intentionally kept:
-                // changing it can disagree with the real hit part and alter critical damage.
-                if (!IsAimManipulationActive()) return 0;
-
-                int targetUid = ReadRuntimeFieldInt(hitMessage, "aim_target_uid", 0);
-                PrepareAimSyntheticSession(targetUid);
-
-                short[] samples = ReadRuntimeShortArray(hitMessage, "aim_precision_samples");
-                int adjusted = 0;
-                if (samples != null && samples.Length > 0)
+            int adjusted = 0;
+            int historyTailPrecisionMm = -1;
+            short[] samples = ReadRuntimeShortArray(hitMessage, "aim_precision_samples");
+            short[] effectiveSamples = samples;
+            if (samples != null && samples.Length > 0)
+            {
+                int hitUid = ReadRuntimeFieldInt(hitMessage, "uid", 0);
+                short[] normalizedSamples;
+                if (aimTrackActive)
                 {
-                    int hitUid = ReadRuntimeFieldInt(hitMessage, "uid", 0);
-                    short[] normalizedSamples;
+                    adjusted = HumanizeAimTrackPrecisionHistory(
+                        samples,
+                        spreadTenthsDigit,
+                        out normalizedSamples);
+                }
+                else if (autoAimActive)
+                {
                     adjusted = HumanizeHistoricalPrecisionRuns(
                         samples,
                         targetUid,
                         hitUid,
+                        spreadTenthsDigit,
                         out normalizedSamples);
+                }
+                else
+                {
+                    normalizedSamples = null;
+                }
 
-                    // ChannelConnection writes this array's length before entering the payload
-                    // builder. Never change the length here or the outer frame becomes inconsistent.
-                    if (adjusted > 0 && normalizedSamples != null)
+                // The outer packet already contains this array's length.
+                if (adjusted > 0 && normalizedSamples != null)
+                {
+                    if (TrySetRuntimeField(
+                        hitMessage,
+                        "aim_precision_samples",
+                        normalizedSamples))
                     {
-                        TrySetRuntimeField(hitMessage, "aim_precision_samples", normalizedSamples);
+                        effectiveSamples = normalizedSamples;
                     }
                 }
 
-                _aimSyntheticSessionEnd = Time.realtimeSinceStartup;
-
-                return adjusted;
+                if (TryGetHumanizedTailPrecisionMillimeters(
+                    effectiveSamples,
+                    spreadTenthsDigit,
+                    out historyTailPrecisionMm))
+                {
+                    _aimSyntheticPrecisionMm = historyTailPrecisionMm;
+                }
             }
 
-            // The current client is v8. Unknown/legacy layouts are safer left native than
-            // rewritten into a fixed fingerprint.
-            return 0;
+            if (geometryManipulationActive)
+            {
+                TrySetRuntimeField(hitMessage, "aim_hit_geometry_state", (byte)1);
+            }
+
+            adjusted += NormalizeShotPrecisionV9(
+                hitMessage,
+                spreadTenthsDigit,
+                historyTailPrecisionMm,
+                autoAimActive || aimTrackActive,
+                aimTrackActive,
+                geometryManipulationActive);
+            _aimSyntheticSessionEnd = Time.realtimeSinceStartup;
+            return adjusted;
         }
 
         private static bool IsAimManipulationActive()
         {
+            return IsAutoAimManipulationActive() || IsAimTrackManipulationActive();
+        }
+
+        private static bool IsAutoAimManipulationActive()
+        {
             try
             {
-                bool autoAimActive = global::ASWDEBUG.Cheats.AutoAim.AutoAim.Enabled &&
-                                     global::ASWDEBUG.Cheats.AutoAim.AutoAim.AimLocking &&
-                                     global::ASWDEBUG.Cheats.AutoAim.AutoAim.currentTarget != null;
-                bool aimTrackActive = global::ASWDEBUG.Cheats.AimTrack.AimTrack.Enabled &&
-                                      global::ASWDEBUG.Cheats.AimTrack.AimTrack.currentTarget != null;
-                return autoAimActive || aimTrackActive;
+                return global::ASWDEBUG.Cheats.AutoAim.AutoAim.Enabled &&
+                       global::ASWDEBUG.Cheats.AutoAim.AutoAim.AimLocking &&
+                       global::ASWDEBUG.Cheats.AutoAim.AutoAim.currentTarget != null;
             }
             catch
             {
                 return false;
+            }
+        }
+
+        private static bool IsAimTrackManipulationActive()
+        {
+            try
+            {
+                return global::ASWDEBUG.Cheats.AimTrack.AimTrack.Enabled &&
+                       global::ASWDEBUG.Cheats.AimTrack.AimTrack.currentTarget != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsBulletNoRecoilActive()
+        {
+            try
+            {
+                return global::ASWDEBUG.Cheats.Player.BulletNoRecoil.Enabled;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsBulletGeometryManipulationActive()
+        {
+            return IsAimTrackManipulationActive() || IsBulletNoRecoilActive();
+        }
+
+        private static int GetAimTrackTargetUid()
+        {
+            try
+            {
+                global::Character target = global::ASWDEBUG.Cheats.AimTrack.AimTrack.currentTarget;
+                return target == null ? 0 : target.uid;
+            }
+            catch
+            {
+                return 0;
             }
         }
 
@@ -1634,16 +2004,23 @@ namespace ASWDEBUG.Patch
             short[] samples,
             int targetUid,
             int hitUid,
+            int spreadTenthsDigit,
             out short[] normalizedSamples)
         {
             normalizedSamples = null;
             if (samples == null || samples.Length == 0) return 0;
 
-            bool[] adjustmentMask = BuildAimPrecisionAdjustmentMask(samples);
+            bool[] adjustmentMask = BuildAimPrecisionAdjustmentMask(samples, spreadTenthsDigit);
             int adjustedCount = CountTrue(adjustmentMask);
             if (adjustedCount == 0) return 0;
 
-            if (TryReuseAimHistoryCache(samples, adjustmentMask, targetUid, hitUid, out normalizedSamples))
+            if (TryReuseAimHistoryCache(
+                samples,
+                adjustmentMask,
+                targetUid,
+                hitUid,
+                spreadTenthsDigit,
+                out normalizedSamples))
             {
                 return adjustedCount;
             }
@@ -1664,16 +2041,26 @@ namespace ASWDEBUG.Patch
 
                 int tailMillimeters;
                 if (runEndExclusive >= samples.Length ||
-                    !TryDecodePrecisionMillimeters(samples[runEndExclusive], out tailMillimeters))
+                    !TryDecodePrecisionSampleMillimeters(
+                        samples[runEndExclusive],
+                        spreadTenthsDigit,
+                        runEndExclusive,
+                        samples.Length,
+                        out tailMillimeters))
                 {
-                    tailMillimeters = 55 + (int)(NextAimSyntheticUInt() % 61u);
+                    tailMillimeters = 135 + (int)(NextAimSyntheticUInt() % 56u);
                 }
 
                 int observedBeforeRun;
                 if (runStart > 0 &&
-                    TryDecodePrecisionMillimeters(samples[runStart - 1], out observedBeforeRun) &&
+                    TryDecodePrecisionSampleMillimeters(
+                        samples[runStart - 1],
+                        spreadTenthsDigit,
+                        runStart - 1,
+                        samples.Length,
+                        out observedBeforeRun) &&
                     observedBeforeRun >= AimPrecisionSuspiciousThresholdMm &&
-                    observedBeforeRun <= 330)
+                    observedBeforeRun <= AimPrecisionHumanizedMaxMm + 30)
                 {
                     _aimSyntheticPrecisionMm = (_aimSyntheticPrecisionMm * 2 + observedBeforeRun) / 3;
                 }
@@ -1683,9 +2070,9 @@ namespace ASWDEBUG.Patch
                     AimPrecisionHumanizedMinMm + 25,
                     AimPrecisionHumanizedMaxMm);
                 int endMillimeters = Mathf.Clamp(
-                    tailMillimeters + 30 + (int)(NextAimSyntheticUInt() % 51u),
-                    40,
-                    175);
+                    tailMillimeters + (int)(NextAimSyntheticUInt() % 31u) - 15,
+                    AimPrecisionHumanizedMinMm + 10,
+                    220);
                 endMillimeters = Mathf.Min(endMillimeters, startMillimeters - 8);
                 int runLength = runEndExclusive - runStart;
                 int previousMillimeters = startMillimeters;
@@ -1704,33 +2091,94 @@ namespace ASWDEBUG.Patch
                     _aimSyntheticVelocityMm = Mathf.Clamp(_aimSyntheticVelocityMm + acceleration, -12, 12);
                     int humanizedMillimeters = Mathf.Clamp(
                         idealMillimeters + _aimSyntheticVelocityMm + jitter,
-                        30,
+                        AimPrecisionHumanizedMinMm,
                         AimPrecisionHumanizedMaxMm);
 
                     // Preserve an overall approach shape while allowing small corrections.
                     humanizedMillimeters = Mathf.Min(humanizedMillimeters, previousMillimeters + 9);
                     previousMillimeters = humanizedMillimeters;
-                    normalizedSamples[runStart + offset] = EncodePrecisionMillimeters(humanizedMillimeters);
+                    int sampleIndex = runStart + offset;
+                    normalizedSamples[sampleIndex] = EncodePrecisionSampleMillimeters(
+                        humanizedMillimeters,
+                        spreadTenthsDigit,
+                        sampleIndex,
+                        samples.Length);
                 }
 
                 _aimSyntheticPrecisionMm = Mathf.Clamp(
                     (previousMillimeters * 3 + tailMillimeters) / 4,
-                    30,
+                    AimPrecisionHumanizedMinMm,
                     AimPrecisionHumanizedMaxMm);
             }
 
-            StoreAimHistoryCache(adjustmentMask, normalizedSamples, targetUid, hitUid);
+            StoreAimHistoryCache(
+                adjustmentMask,
+                normalizedSamples,
+                targetUid,
+                hitUid,
+                spreadTenthsDigit);
             return adjustedCount;
         }
 
-        private static bool[] BuildAimPrecisionAdjustmentMask(short[] samples)
+        private static int HumanizeAimTrackPrecisionHistory(
+            short[] samples,
+            int spreadTenthsDigit,
+            out short[] normalizedSamples)
+        {
+            normalizedSamples = null;
+            if (samples == null || samples.Length == 0) return 0;
+
+            normalizedSamples = (short[])samples.Clone();
+            int tailLength = Mathf.Min(
+                samples.Length,
+                6 + (int)(NextAimSyntheticUInt() % 7u));
+            int tailStart = samples.Length - tailLength;
+            int startMillimeters = 245 + (int)(NextAimSyntheticUInt() % 56u);
+            int endMillimeters = 145 + (int)(NextAimSyntheticUInt() % 51u);
+            int previous = startMillimeters;
+
+            for (int i = 0; i < tailLength; i++)
+            {
+                float progress = (float)(i + 1) / (float)(tailLength + 1);
+                float smoothProgress = progress * progress * (3f - 2f * progress);
+                int ideal = Mathf.RoundToInt(Mathf.Lerp(
+                    startMillimeters,
+                    endMillimeters,
+                    smoothProgress));
+                int jitter = (int)(NextAimSyntheticUInt() % 13u) - 6;
+                int millimeters = Mathf.Clamp(
+                    ideal + jitter,
+                    AimPrecisionHumanizedMinMm,
+                    AimPrecisionHumanizedMaxMm);
+                millimeters = Mathf.Min(millimeters, previous + 10);
+                previous = millimeters;
+                int sampleIndex = tailStart + i;
+                normalizedSamples[sampleIndex] = EncodePrecisionSampleMillimeters(
+                    millimeters,
+                    spreadTenthsDigit,
+                    sampleIndex,
+                    samples.Length);
+            }
+
+            _aimSyntheticPrecisionMm = previous;
+            return tailLength;
+        }
+
+        private static bool[] BuildAimPrecisionAdjustmentMask(
+            short[] samples,
+            int spreadTenthsDigit)
         {
             bool[] mask = new bool[samples.Length];
             int index = 0;
             while (index < samples.Length)
             {
                 int millimeters;
-                if (!TryDecodePrecisionMillimeters(samples[index], out millimeters) ||
+                if (!TryDecodePrecisionSampleMillimeters(
+                        samples[index],
+                        spreadTenthsDigit,
+                        index,
+                        samples.Length,
+                        out millimeters) ||
                     millimeters >= AimPrecisionSuspiciousThresholdMm)
                 {
                     index++;
@@ -1740,7 +2188,12 @@ namespace ASWDEBUG.Patch
                 int runStart = index;
                 while (index < samples.Length)
                 {
-                    if (!TryDecodePrecisionMillimeters(samples[index], out millimeters) ||
+                    if (!TryDecodePrecisionSampleMillimeters(
+                            samples[index],
+                            spreadTenthsDigit,
+                            index,
+                            samples.Length,
+                            out millimeters) ||
                         millimeters >= AimPrecisionSuspiciousThresholdMm)
                     {
                         break;
@@ -1749,13 +2202,32 @@ namespace ASWDEBUG.Patch
                 }
 
                 int runLength = index - runStart;
-                if (runLength < AimPrecisionSuspiciousRunMinSamples) continue;
-
-                // Keep the newest sample native so history still converges to the untouched
-                // shot-moment precision instead of ending at an unrelated synthetic value.
-                for (int i = runStart; i < index - 1; i++) mask[i] = true;
+                if (!ShouldHumanizePrecisionRun(index, runLength, samples.Length)) continue;
+                MarkPrecisionRun(mask, runStart, index);
             }
             return mask;
+        }
+
+        private static bool ShouldHumanizePrecisionRun(
+            int runEndExclusive,
+            int runLength,
+            int sampleCount)
+        {
+            // Even a one- or two-sample run at the shot boundary must join the same
+            // trajectory as aim_shot_precision_code.
+            return runLength >= AimPrecisionSuspiciousRunMinSamples ||
+                   runEndExclusive == sampleCount;
+        }
+
+        private static void MarkPrecisionRun(
+            bool[] mask,
+            int runStart,
+            int runEndExclusive)
+        {
+            for (int i = runStart; i < runEndExclusive; i++)
+            {
+                mask[i] = true;
+            }
         }
 
         private static bool TryReuseAimHistoryCache(
@@ -1763,12 +2235,14 @@ namespace ASWDEBUG.Patch
             bool[] adjustmentMask,
             int targetUid,
             int hitUid,
+            int spreadTenthsDigit,
             out short[] normalizedSamples)
         {
             normalizedSamples = null;
             if (_aimHistoryCacheFrame != Time.frameCount ||
                 _aimHistoryCacheTargetUid != targetUid ||
                 _aimHistoryCacheHitUid != hitUid ||
+                _aimHistoryCacheSpreadDigit != spreadTenthsDigit ||
                 _aimHistoryCacheMask == null ||
                 _aimHistoryCacheValues == null ||
                 _aimHistoryCacheMask.Length != adjustmentMask.Length ||
@@ -1794,11 +2268,13 @@ namespace ASWDEBUG.Patch
             bool[] adjustmentMask,
             short[] normalizedSamples,
             int targetUid,
-            int hitUid)
+            int hitUid,
+            int spreadTenthsDigit)
         {
             _aimHistoryCacheFrame = Time.frameCount;
             _aimHistoryCacheTargetUid = targetUid;
             _aimHistoryCacheHitUid = hitUid;
+            _aimHistoryCacheSpreadDigit = spreadTenthsDigit;
             _aimHistoryCacheMask = (bool[])adjustmentMask.Clone();
             _aimHistoryCacheValues = (short[])normalizedSamples.Clone();
         }
@@ -1814,19 +2290,48 @@ namespace ASWDEBUG.Patch
             return count;
         }
 
-        private static bool TryDecodePrecisionMillimeters(short code, out int millimeters)
+        private static bool TryDecodePrecisionSampleMillimeters(
+            short code,
+            int spreadTenthsDigit,
+            int sampleIndex,
+            int sampleCount,
+            out int millimeters)
         {
             millimeters = -1;
-            if (code < 0) return false;
+            int rawCode = unchecked((ushort)code);
+            if (rawCode == ushort.MaxValue) return false;
 
-            millimeters = code / 10;
-            if (millimeters < 0 || millimeters > 3276) return false;
+            millimeters = rawCode / 10;
+            if (millimeters < 0 || millimeters > AimPrecisionMaxMillimetersV9) return false;
 
-            int expectedCheckDigit = Mathf.Abs(
-                millimeters / 100 % 10 +
-                millimeters / 10 % 10 -
-                millimeters % 10) % 10;
-            return code % 10 == expectedCheckDigit;
+            return rawCode % 10 == ComputePrecisionSampleCheckDigitV9(
+                millimeters,
+                spreadTenthsDigit,
+                sampleIndex,
+                sampleCount);
+        }
+
+        private static bool TryGetHumanizedTailPrecisionMillimeters(
+            short[] samples,
+            int spreadTenthsDigit,
+            out int millimeters)
+        {
+            millimeters = -1;
+            if (samples == null || samples.Length == 0) return false;
+
+            int tailIndex = samples.Length - 1;
+            if (!TryDecodePrecisionSampleMillimeters(
+                samples[tailIndex],
+                spreadTenthsDigit,
+                tailIndex,
+                samples.Length,
+                out millimeters))
+            {
+                return false;
+            }
+
+            return millimeters >= AimPrecisionHumanizedMinMm &&
+                   millimeters <= AimPrecisionHumanizedMaxMm;
         }
 
         private static uint NextAimSyntheticUInt()
@@ -1840,14 +2345,194 @@ namespace ASWDEBUG.Patch
             return value;
         }
 
-        private static short EncodePrecisionMillimeters(int millimeters)
+        private static short EncodePrecisionSampleMillimeters(
+            int millimeters,
+            int spreadTenthsDigit,
+            int sampleIndex,
+            int sampleCount)
         {
-            millimeters = Mathf.Clamp(millimeters, 0, 3276);
+            millimeters = Mathf.Clamp(millimeters, 0, AimPrecisionMaxMillimetersV9);
+            int checkDigit = ComputePrecisionSampleCheckDigitV9(
+                millimeters,
+                spreadTenthsDigit,
+                sampleIndex,
+                sampleCount);
+            return unchecked((short)(millimeters * 10 + checkDigit));
+        }
+
+        private static int ComputePrecisionSampleCheckDigitV9(
+            int millimeters,
+            int spreadTenthsDigit,
+            int sampleIndex,
+            int sampleCount)
+        {
+            if (sampleIndex != 0)
+            {
+                return ComputePrecisionCheckDigitV9(millimeters, spreadTenthsDigit);
+            }
+
             int hundreds = millimeters / 100 % 10;
             int tens = millimeters / 10 % 10;
             int ones = millimeters % 10;
-            int checkDigit = Mathf.Abs(hundreds + tens - ones) % 10;
-            return (short)(millimeters * 10 + checkDigit);
+            return Mathf.Abs(
+                hundreds + tens + ones + spreadTenthsDigit + sampleCount) % 10;
+        }
+
+        private static int ComputePrecisionCheckDigitV9(
+            int millimeters,
+            int spreadTenthsDigit)
+        {
+            int hundreds = millimeters / 100 % 10;
+            int tens = millimeters / 10 % 10;
+            int ones = millimeters % 10;
+            return Mathf.Abs(hundreds + tens + ones - spreadTenthsDigit) % 10;
+        }
+
+        private static int NormalizeShotPrecisionV9(
+            object hitMessage,
+            int spreadTenthsDigit,
+            int historyTailPrecisionMm,
+            bool humanizePrecision,
+            bool allowSyntheticPrecision,
+            bool forceGeometryPassed)
+        {
+            if (hitMessage == null) return 0;
+
+            if (forceGeometryPassed)
+            {
+                TrySetRuntimeField(hitMessage, "aim_hit_geometry_state", (byte)1);
+            }
+
+            int currentSignedCode = ReadRuntimeFieldInt(
+                hitMessage,
+                "aim_shot_precision_code",
+                -1);
+            int currentRawCode = unchecked((ushort)(short)currentSignedCode);
+            bool hasNativePrecision =
+                currentRawCode != ushort.MaxValue &&
+                currentRawCode <= AimPrecisionMaxMillimetersV9 * 10 + 9;
+
+            if (humanizePrecision &&
+                ReadRuntimeFieldInt(hitMessage, "aim_target_uid", 0) == 0)
+            {
+                return 0;
+            }
+            if (humanizePrecision && !hasNativePrecision && !allowSyntheticPrecision)
+            {
+                return 0;
+            }
+            if (!humanizePrecision && !hasNativePrecision) return 0;
+
+            int millimeters;
+            if (humanizePrecision)
+            {
+                int jitter = (int)(NextAimSyntheticUInt() % 17u) - 8;
+                millimeters = ResolveShotPrecisionMillimeters(
+                    historyTailPrecisionMm,
+                    _aimSyntheticPrecisionMm,
+                    jitter);
+                _aimSyntheticPrecisionMm = millimeters;
+            }
+            else
+            {
+                millimeters = Mathf.Clamp(
+                    currentRawCode / 10,
+                    0,
+                    AimPrecisionMaxMillimetersV9);
+            }
+
+            int checkDigit = ComputeShotPrecisionCheckDigitV9(
+                hitMessage,
+                spreadTenthsDigit,
+                millimeters);
+            short normalizedCode = unchecked((short)(millimeters * 10 + checkDigit));
+            TrySetRuntimeField(hitMessage, "aim_shot_precision_code", normalizedCode);
+            return normalizedCode == (short)currentSignedCode ? 0 : 1;
+        }
+
+        private static int ResolveShotPrecisionMillimeters(
+            int historyTailPrecisionMm,
+            int fallbackPrecisionMm,
+            int jitter)
+        {
+            int precisionAnchor = historyTailPrecisionMm >= AimPrecisionHumanizedMinMm &&
+                                  historyTailPrecisionMm <= AimPrecisionHumanizedMaxMm
+                ? historyTailPrecisionMm
+                : fallbackPrecisionMm;
+            return Math.Max(
+                AimPrecisionHumanizedMinMm + 10,
+                Math.Min(260, precisionAnchor + jitter));
+        }
+
+        private static int ComputeShotPrecisionCheckDigitV9(
+            object hitMessage,
+            int spreadTenthsDigit,
+            int millimeters)
+        {
+            if (!ShouldApplyHitPointChecksumV9(hitMessage))
+            {
+                return ComputePrecisionCheckDigitV9(millimeters, spreadTenthsDigit);
+            }
+
+            int part = ReadRuntimeFieldInt(hitMessage, "part", 255);
+            bool geometryPassed =
+                !IsFixedHitShapePartV9(part) ||
+                ReadRuntimeFieldInt(hitMessage, "aim_hit_geometry_state", 0) == 1;
+            if (!geometryPassed) return spreadTenthsDigit;
+
+            Vector3 hitPosition = ReadRuntimeFieldVector3(
+                hitMessage,
+                "position",
+                Vector3.zero);
+            int coordinateDigit =
+                (Mathf.FloorToInt(Mathf.Abs(hitPosition.x)) +
+                 Mathf.FloorToInt(Mathf.Abs(hitPosition.y)) +
+                 Mathf.FloorToInt(Mathf.Abs(hitPosition.z))) % 10;
+            return (coordinateDigit + spreadTenthsDigit) % 10;
+        }
+
+        private static bool ShouldApplyHitPointChecksumV9(object hitMessage)
+        {
+            if (ReadRuntimeFieldInt(hitMessage, "uid", 0) == 0 ||
+                ReadRuntimeFieldInt(hitMessage, "part", 255) == 254)
+            {
+                return false;
+            }
+
+            try
+            {
+                global::CameraObj camera = global::CameraObj.Instance;
+                global::Character character = camera == null ? null : camera.character;
+                if (character == null || character.mWeapon == null) return false;
+
+                global::WeaponType type = character.mWeapon.GetWeaponType();
+                return type == global::WeaponType.kWeaponTypeSubMachineGun ||
+                       type == global::WeaponType.kWeaponTypeSniperGun ||
+                       type == global::WeaponType.kWeaponTypeMachineGun ||
+                       type == global::WeaponType.kWeaponTypeShotGun ||
+                       type == global::WeaponType.kWeaponTypePistol;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsFixedHitShapePartV9(int part)
+        {
+            return part == 0 ||
+                   part == 2 ||
+                   part == 4 ||
+                   part == 7 ||
+                   part == 11 ||
+                   part == 14 ||
+                   part == 17;
+        }
+
+        private static int GetSpreadTenthsDigit(float spread)
+        {
+            if (float.IsNaN(spread) || float.IsInfinity(spread)) return 0;
+            return Mathf.FloorToInt(Mathf.Abs(spread) * 10f) % 10;
         }
 
         private static bool HasRuntimeField(object instance, string fieldName)
@@ -1884,6 +2569,82 @@ namespace ASWDEBUG.Patch
 
                 object plainValue = implicitMethod.Invoke(null, new object[] { value });
                 return plainValue == null ? fallback : Convert.ToInt32(plainValue);
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
+        private static float ReadRuntimeFieldFloat(
+            object instance,
+            string fieldName,
+            float fallback)
+        {
+            try
+            {
+                if (instance == null) return fallback;
+                FieldInfo field = instance.GetType().GetField(
+                    fieldName,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field == null) return fallback;
+
+                object value = field.GetValue(instance);
+                if (value == null) return fallback;
+                if (value is float) return (float)value;
+
+                try
+                {
+                    return Convert.ToSingle(value);
+                }
+                catch
+                {
+                }
+
+                MethodInfo implicitMethod = field.FieldType.GetMethod(
+                    "op_Implicit",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new Type[] { field.FieldType },
+                    null);
+                if (implicitMethod == null) return fallback;
+
+                object plainValue = implicitMethod.Invoke(null, new object[] { value });
+                return plainValue == null ? fallback : Convert.ToSingle(plainValue);
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
+        private static Vector3 ReadRuntimeFieldVector3(
+            object instance,
+            string fieldName,
+            Vector3 fallback)
+        {
+            try
+            {
+                if (instance == null) return fallback;
+                FieldInfo field = instance.GetType().GetField(
+                    fieldName,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field == null) return fallback;
+
+                object value = field.GetValue(instance);
+                if (value == null) return fallback;
+                if (value is Vector3) return (Vector3)value;
+
+                MethodInfo implicitMethod = field.FieldType.GetMethod(
+                    "op_Implicit",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new Type[] { field.FieldType },
+                    null);
+                if (implicitMethod == null) return fallback;
+
+                object plainValue = implicitMethod.Invoke(null, new object[] { value });
+                return plainValue is Vector3 ? (Vector3)plainValue : fallback;
             }
             catch
             {
@@ -2069,6 +2830,58 @@ namespace ASWDEBUG.Patch
             }
 
             return !block;
+        }
+
+        private static void Protection_ClearPendingInjectionPrefix()
+        {
+            try
+            {
+                if (_keepAliveAuditCount < 8)
+                {
+                    global::GameApp app = global::GameApp.Instance;
+                    byte observedType = app == null
+                        ? byte.MaxValue
+                        : app.pendingInjectionType;
+                    _keepAliveAuditCount++;
+                    FileLogger.Log("NET-AUDIT",
+                        "[KEEPALIVE-AUDIT] #" + _keepAliveAuditCount +
+                        " observedInjectionType=" + observedType +
+                        " outgoingInjectionType=" + byte.MaxValue);
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("NET-AUDIT",
+                    "[KEEPALIVE-AUDIT] inspect error: " + ex.Message);
+            }
+
+            ClearPendingInjectionFlag("keepalive");
+        }
+
+        private static void ClearPendingInjectionFlag(string source)
+        {
+            try
+            {
+                global::GameApp app = global::GameApp.Instance;
+                if (app == null || app.pendingInjectionType == byte.MaxValue)
+                {
+                    return;
+                }
+
+                byte detectedType = app.pendingInjectionType;
+                app.pendingInjectionType = byte.MaxValue;
+                _pendingInjectionClearCount++;
+                FileLogger.Log("NET-AUDIT",
+                    "[ACTK] pending injection flag cleared #" +
+                    _pendingInjectionClearCount +
+                    " detectedType=" + detectedType +
+                    " source=" + source);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("NET-AUDIT",
+                    "[ACTK] pending injection flag clear error: " + ex.Message);
+            }
         }
 
         private static bool Protection_ParseKickOutByPluginPrefix(global::ChannelConnection __instance)
@@ -2987,6 +3800,12 @@ namespace ASWDEBUG.Patch
                 _multiOpenLastErrorCode = __0;
                 FileLogger.Log("NET-AUDIT",
                     "[ERROR-MSG] code=" + __0 +
+                    " serverReason=" +
+                    TrimLog(
+                        __instance == null
+                            ? "<null>"
+                            : __instance.error_message,
+                        PreviewChars) +
                     " caller=" + caller);
 
                 if (Settings.MultiOpenEnabled && __0 != 0)
@@ -3031,6 +3850,25 @@ namespace ASWDEBUG.Patch
             catch (Exception ex)
             {
                 FileLogger.Log("NET-AUDIT", "[ACTK] skip init error: " + ex.Message);
+            }
+
+            return false;
+        }
+
+        private static bool Protection_BlockGameInjectionCallbackPrefix(MethodBase __originalMethod)
+        {
+            try
+            {
+                ClearPendingInjectionFlag("callback");
+                _actkSuppressCount++;
+                FileLogger.Log("NET-AUDIT",
+                    "[ACTK] blocked game injection callback #" + _actkSuppressCount +
+                    " method=" + FormatMethod(__originalMethod));
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log("NET-AUDIT",
+                    "[ACTK] block injection callback error: " + ex.Message);
             }
 
             return false;

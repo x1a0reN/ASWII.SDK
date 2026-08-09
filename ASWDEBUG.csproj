@@ -4,7 +4,7 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <DeployToGame Condition=" '$(DeployToGame)' == '' ">true</DeployToGame>
+    <DeployToGame Condition=" '$(DeployToGame)' == '' ">false</DeployToGame>
     <ProjectGuid>{762C7A21-4560-4A19-951B-A0B3590F2454}</ProjectGuid>
     <OutputType>Library</OutputType>
     <RootNamespace>ASWDEBUG</RootNamespace>
@@ -40,12 +40,25 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Protected|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\ProtectedRaw\</OutputPath>
+    <DefineConstants>TRACE;PROTECTED_BUILD</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AssemblyName>ASWDEBUG.Runtime</AssemblyName>
+    <DeployToGame>false</DeployToGame>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
       <HintPath>Lib\0Harmony.dll</HintPath>
     </Reference>
-    <Reference Include="Assembly-CSharp.deobf">
-      <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\Assembly-CSharp.deobf.dll</HintPath>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\Managed_Dump\OFFLINE_FULL_20260806_212626\FULL_MANAGED\Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="BouncyCastle.Crypto">
       <HintPath>Lib\BouncyCastle.Crypto.dll</HintPath>
@@ -75,8 +88,12 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Cheats\AimTrack\AimTrack.cs" />
+    <Compile Include="Cheats\AimTrack\PrecisionTracking.cs" />
     <Compile Include="Cheats\AutoAim\AutoAim.cs" />
     <Compile Include="Cheats\AutoAim\BossAutoAim.cs" />
+    <Compile Include="Cheats\AutoAim\ExpeditionBossLockController.cs" />
+    <Compile Include="Cheats\AutoAim\MotherBossAutoClear.cs" />
+    <Compile Include="Cheats\AutoAim\MotherBossStageController.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleInput.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleManager.cs" />
     <Compile Include="Cheats\AutoBattle\AutoBattleRoutePlanner.cs" />
@@ -85,7 +102,9 @@
     <Compile Include="Cheats\ESP\ESP.cs" />
     <Compile Include="Cheats\Other\AutoInterface.cs" />
     <Compile Include="Cheats\Other\AutoKick.cs" />
+    <Compile Include="Cheats\Other\FlightMode.cs" />
     <Compile Include="Cheats\Other\HookMsgbox.cs" />
+    <Compile Include="Cheats\Other\InfiniteAmmo.cs" />
     <Compile Include="Cheats\Other\OtherC.cs" />
     <Compile Include="Cheats\Other\PlayerAutoNavRAIN.cs" />
     <Compile Include="Cheats\Player\Aike.cs" />
@@ -106,11 +125,13 @@
     <Compile Include="Main\DllUsageTelemetry.cs" />
     <Compile Include="Patch\GamePatches.cs" />
     <Compile Include="Patch\HarmonyLoader.cs" />
+    <Compile Include="Patch\InfiniteItemPatches.cs" />
     <Compile Include="Patch\LocalBotNetworkPatches.cs" />
     <Compile Include="Patch\LuaIntrospector.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Dump\RuntimeILDump.cs" />
     <Compile Include="Global\Settings.cs" />
+    <Compile Include="Global\FeatureConfigStore.cs" />
     <Compile Include="UI\AuctionItemDrawer.cs" />
     <Compile Include="UI\AuctionMonitor.cs" />
     <Compile Include="UI\AuctionWatchList.cs" />
@@ -121,6 +142,7 @@
     <Compile Include="UI\SearchPanel.cs" />
     <Compile Include="UI\SpriteListDrawer.cs" />
     <Compile Include="UI\UIHelper.cs" />
+    <Compile Include="UI\TacticalConsoleUI.cs" />
     <Compile Include="UI\CheatUIManager.cs" />
     <Compile Include="Verify\NativeSdkLoader.cs" />
     <Compile Include="Verify\RemoteCommandExecutor.cs" />
@@ -130,13 +152,8 @@
     <Compile Include="Verify\VeriGateException.cs" />
     <Compile Include="Verify\VeriGateOptions.cs" />
   </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="Native\verigate_sdk.dll">
-      <LogicalName>ASWDEBUG.Native.verigate_sdk.dll</LogicalName>
-    </EmbeddedResource>
-  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <PropertyGroup Condition=" '$(Configuration)' != 'Auction' and '$(DeployToGame)' == 'true' ">
+  <PropertyGroup Condition=" '$(Configuration)' != 'Auction' and '$(Configuration)' != 'Protected' and '$(DeployToGame)' == 'true' ">
     <PostBuildEvent>copy /Y "$(ProjectDir)bin\$(Configuration)\ASWDEBUG.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>
   </PropertyGroup>
 </Project>
