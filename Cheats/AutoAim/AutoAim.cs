@@ -27,6 +27,11 @@ namespace ASWDEBUG.Cheats.AutoAim
         public static Character currentTarget;
         public static float closestDistance = float.MaxValue;
 
+        private const float RecentManipulationWindowSeconds = 0.35f;
+        private static float _lastManipulationRealtime = -1f;
+        private static int _lastManipulationFrame = -1;
+        private static int _lastManipulationTargetUid;
+
         // —— 一次性缓存 —— //
         static FieldInfo s_Field_Character_data;
         static bool s_Field_Character_data_Scanned;
@@ -225,6 +230,42 @@ namespace ASWDEBUG.Cheats.AutoAim
             closestDistance = float.MaxValue;
         }
 
+        public static bool TryGetRecentManipulation(out int targetUid)
+        {
+            targetUid = 0;
+            try
+            {
+                float now = Time.realtimeSinceStartup;
+                float elapsed = now - _lastManipulationRealtime;
+                int frameDelta = Time.frameCount - _lastManipulationFrame;
+                if (_lastManipulationRealtime < 0f ||
+                    _lastManipulationFrame < 0 ||
+                    elapsed < 0f ||
+                    frameDelta < 0 ||
+                    elapsed > RecentManipulationWindowSeconds ||
+                    _lastManipulationTargetUid <= 0)
+                {
+                    return false;
+                }
+
+                targetUid = _lastManipulationTargetUid;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void RecordManipulation(Character target)
+        {
+            if (target == null) return;
+
+            _lastManipulationTargetUid = target.uid;
+            _lastManipulationFrame = Time.frameCount;
+            _lastManipulationRealtime = Time.realtimeSinceStartup;
+        }
+
         private static void Aim()
         {
             if (!Enabled || !Input.GetKey(GlobalHotkeys.PlayerKey))
@@ -259,6 +300,8 @@ namespace ASWDEBUG.Cheats.AutoAim
             float num2 = Mathf.DeltaAngle(eulerAngles2.x, eulerAngles.x);
             camera.finalx += num * Time.deltaTime * Settings._aimspeed;
             camera.finaly -= num2 * Time.deltaTime * Settings._aimspeed;
+            // Keep the actual camera manipulation alive across Update ordering and key release.
+            RecordManipulation(currentTarget);
         }
     }
 }

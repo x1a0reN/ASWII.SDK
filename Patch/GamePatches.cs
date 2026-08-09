@@ -75,6 +75,40 @@ namespace ASWDEBUG
 
     [HarmonyPatch]
     [Obfuscation(
+        Exclude = true,
+        ApplyToMembers = true,
+        Feature = "-rename",
+        StripAfterObfuscation = false
+    )]
+    public static class Patch_Character_GetSpread_SpreadControl
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(
+                typeof(Character),
+                "GetSpread",
+                new Type[] { typeof(float) });
+        }
+
+        static void Prefix(Character __instance, ref float shot_spread)
+        {
+            if (!BulletNoRecoil.Enabled || __instance == null) return;
+
+            Character player = null;
+            try
+            {
+                Level level = ASSingleton<Level>.Instance;
+                player = level == null ? null : level.GetPlayer();
+            }
+            catch { }
+            if (player == null || __instance != player) return;
+
+            shot_spread = BulletNoRecoil.ScaleNativeSpread(shot_spread);
+        }
+    }
+
+    [HarmonyPatch]
+    [Obfuscation(
     Exclude = true,                 // 排除本类型
     ApplyToMembers = true,          // 并排除所有成员
     Feature = "-rename",            // 重点：不要重命名（有的混淆器也接受 "rename(false)" 或 "renaming")
@@ -643,7 +677,12 @@ namespace ASWDEBUG
         {
             try
             {
-                if (!AimTrack.Enabled || hit_message == null) return true;
+                if (MotherBossAutoClear.SendingDirectMotherShot ||
+                    !AimTrack.Enabled ||
+                    hit_message == null)
+                {
+                    return true;
+                }
 
                 Character player = null;
                 try { player = global::ASSingleton<global::Level>.Instance.GetPlayer(); } catch { player = null; }
@@ -652,6 +691,10 @@ namespace ASWDEBUG
                 int spreadIndex = player.currentSpreadIndex;
                 int encodedUid = hit_message.uid;
                 int decodedUid = encodedUid != 0 ? (encodedUid ^ spreadIndex) : 0;
+                if (MotherBossAutoClear.IsManagedMotherUid(decodedUid))
+                {
+                    return true;
+                }
 
                 int bossUid;
                 Vector3 bestPoint;
@@ -1715,7 +1758,7 @@ namespace ASWDEBUG
             }
         }
 
-        public static void LogAimPayload(object hitMessage, int currentSpreadIndex, int adjustedCount, string source)
+        public static void LogAimPayload(object hitMessage, int spreadTenthsDigit, int adjustedCount, string source)
         {
             if (!HighFrequencyLoggingEnabled) return;
 
@@ -1729,11 +1772,12 @@ namespace ASWDEBUG
                     " combo=" + _lastCombo +
                     " weapon=" + _lastWeapon +
                     " source=" + source +
-                    " spreadIndex=" + currentSpreadIndex +
+                    " spreadDigit=" + spreadTenthsDigit +
                     " version=" + version +
                     " captured=" + ((version & 0x80) != 0) +
                     " target=" + ReadInt(hitMessage, "aim_target_uid", 0) +
                     " shotCode=" + ReadInt(hitMessage, "aim_shot_precision_code", -1) +
+                    " geometry=" + ReadInt(hitMessage, "aim_hit_geometry_state", 0) +
                     " samples=" + ReadArrayLength(hitMessage, "aim_precision_samples") +
                     " adjusted=" + adjustedCount +
                     " uid=" + ReadInt(hitMessage, "uid", 0) +
@@ -1873,7 +1917,7 @@ namespace ASWDEBUG
         /// </summary>
         public static bool CameraStraightForGunBase(object self, ref Ray ray, ref RaycastHit hit)
         {
-            if (!BulletNoRecoil.Enabled) return false;
+            if (!BulletNoRecoil.RequiresStraightRayFallback) return false;
 
             var inst = self as GunBaseController; // __instance
             if (inst == null || inst.owner == null) return false;
@@ -1882,7 +1926,7 @@ namespace ASWDEBUG
             bool preBnrHit = hit.collider != null;
             Vector3 preBnrHitPoint = hit.point;
 
-            // 与 AimAssistDetector 使用同一套相机射线，避免命中与 aim_report 脱节。
+            // Use the unspread camera ray; v9 geometry attestation is normalized separately.
             CameraObj cameraObj = CameraObj.Instance;
             Camera mainCamera = Camera.main;
             Vector3 pos = mainCamera != null ? mainCamera.transform.position : (cameraObj != null ? cameraObj.shootPos : ray.origin);
@@ -2141,14 +2185,14 @@ namespace ASWDEBUG
     {
         public static bool CameraStraightBranch(object self, ref Ray ray, ref RaycastHit hit)
         {
-            if (!BulletNoRecoil.Enabled)
+            if (!BulletNoRecoil.RequiresStraightRayFallback)
                 return false;
 
             Ray preBnrRay = ray;
             bool preBnrHit = hit.collider != null;
             Vector3 preBnrHitPoint = hit.point;
 
-            // 与 AimAssistDetector 使用同一套相机射线，避免命中与 aim_report 脱节。
+            // Use the unspread camera ray; v9 geometry attestation is normalized separately.
             CameraObj cameraObj = CameraObj.Instance;
             Camera mainCamera = Camera.main;
             Vector3 pos = mainCamera != null ? mainCamera.transform.position : (cameraObj != null ? cameraObj.shootPos : ray.origin);
@@ -2250,69 +2294,179 @@ namespace ASWDEBUG
         static bool Prefix(
             object __instance,
             Vector3 position,
-            Vector3 direction,
+            ref Vector3 direction,
             object hit_message,
             byte slot,
             bool do_effect,
             Vector3 velocity)
         {
+            InfiniteAmmo.BeforeShoot(__instance as ChannelConnection);
+
+            bool aimTrackApplied = false;
+            int aimTrackTargetUid = 0;
+            bool geometryManipulationApplied = false;
             try
             {
-                // 当前主程序集的 ChannelConnection.Shoot 已改为
-                // ShootPayloadCrypt.BuildEncryptedPayload(hit_message)。
-                // 旧版手写 106 包缺少 32 字节加密 payload/MAC，服务端会丢弃或判异常；
-                // 所以这里绝不能 return false 接管写包，只能放行原生实现。
-                ApplyAimTrackShotCompat(hit_message, position);
-                NormalizeBulletNoRecoilShotCompat(hit_message);
+                // v9 writes a hit endpoint instead of a normalized direction for hits.
+                // Keep the native writer/MAC and only make redirected fields coherent.
+                aimTrackApplied = ApplyAimTrackShotCompat(
+                    hit_message,
+                    position,
+                    ref direction,
+                    out aimTrackTargetUid);
+                geometryManipulationApplied =
+                    NormalizeBulletNoRecoilShotCompat(hit_message);
                 ShotDiagnostics.LogShoot(position, direction, hit_message, slot, do_effect, velocity);
-                // Do not touch aim-report fields here. The native Shoot method still needs to
-                // apply the same-frame v8 capture and write its sample count before encryption.
+                // Native ApplyPendingShotReport still owns the same-frame v9 capture.
             }
             catch (Exception e)
             {
                 FileLogger.Log("PATCH", "[ChannelConnection.Shoot] prefix error: " + e);
             }
+
+            try
+            {
+                global::ASWDEBUG.Patch.HarmonyLoader.CaptureAimShotContext(
+                    hit_message,
+                    aimTrackApplied,
+                    aimTrackTargetUid,
+                    geometryManipulationApplied);
+            }
+            catch (Exception e)
+            {
+                FileLogger.Log("PATCH", "[ChannelConnection.Shoot] context capture error: " + e.Message);
+            }
             return true;
         }
 
-        private static void ApplyAimTrackShotCompat(object hitMessage, Vector3 shotOrigin)
+        private static bool ApplyAimTrackShotCompat(
+            object hitMessage,
+            Vector3 shotOrigin,
+            ref Vector3 direction,
+            out int aimTrackTargetUid)
         {
+            aimTrackTargetUid = 0;
             try
             {
-                if (!AimTrack.Enabled || hitMessage == null || AimTrack.currentTarget == null) return;
+                if (!AimTrack.Enabled || hitMessage == null) return false;
+
+                // A native hit already owns this shot. Probability tracking is only
+                // evaluated for an actual miss, so ordinary aiming never conflicts.
+                if (!HasField(hitMessage, "uid")) return false;
+                if (ReadIntField(hitMessage, "uid") != 0)
+                {
+                    AimTrack.LastProbabilityRoll = -1f;
+                    AimTrack.LastProbabilityAccepted = false;
+                    AimTrack.LastDecision = "NATIVE_HIT";
+                    return false;
+                }
 
                 Character player = global::ASSingleton<global::Level>.Instance.GetPlayer();
-                if (player == null || player.mWeapon is KnifeBaseController) return;
+                if (player == null || IsAimTrackExcludedWeapon(player.mWeapon)) return false;
 
-                int targetUid = (int)AimTrack.currentTarget.uid ^ player.currentSpreadIndex;
+                Character target;
+                Vector3 hitPoint;
+                byte hitPart;
+                float probabilityRoll;
+                if (!AimTrack.TryResolveTrackedMiss(
+                    shotOrigin,
+                    out target,
+                    out hitPoint,
+                    out hitPart,
+                    out probabilityRoll))
+                {
+                    return false;
+                }
+
+                aimTrackTargetUid = target.uid;
+                int targetUid = aimTrackTargetUid ^ player.currentSpreadIndex;
+                float worldDistance = Vector3.Distance(shotOrigin, hitPoint);
+                if (float.IsNaN(worldDistance) || float.IsInfinity(worldDistance) ||
+                    worldDistance < 0f)
+                {
+                    return false;
+                }
+                short distance = (short)Mathf.Clamp(
+                    Mathf.FloorToInt(worldDistance),
+                    0,
+                    short.MaxValue);
 
                 TrySetHitField(hitMessage, "uid", targetUid);
-                TrySetHitField(hitMessage, "part", 4);
-
-                short distance;
-                if (TryResolveAimTrackDistance(AimTrack.currentTarget, shotOrigin, out distance))
-                    TrySetHitField(hitMessage, "distance", distance);
+                TrySetHitField(hitMessage, "part", hitPart);
+                TrySetHitField(hitMessage, "aim_hit_geometry_state", (byte)1);
+                TrySetHitField(hitMessage, "position", hitPoint);
+                TrySetHitField(hitMessage, "distance", distance);
+                SynchronizeAimTrackEnc(hitMessage);
+                direction = hitPoint;
+                return true;
             }
             catch (Exception e)
             {
                 FileLogger.Log("PATCH", "[ChannelConnection.Shoot] aim track compat error: " + e.Message);
+                return false;
             }
         }
 
-        private static bool TryResolveAimTrackDistance(Character target, Vector3 shotOrigin, out short distance)
+        private static bool IsAimTrackExcludedWeapon(WeaponBase weapon)
         {
+            return weapon == null ||
+                   weapon is KnifeBaseController ||
+                   weapon is BowController ||
+                   weapon is RPGController;
+        }
+
+        private static void SynchronizeAimTrackEnc(object hitMessage)
+        {
+            // The redirected endpoint is exactly collinear with the second-stage
+            // shot origin, so retain native angular evidence and clear stale
+            // low-word geometry error from the original miss.
+            int enc = ReadIntField(hitMessage, "enc");
+            TrySetHitField(hitMessage, "enc", enc & unchecked((int)0xFFFF0000));
+        }
+
+        private static bool TryResolveAimTrackHitPoint(
+            Character target,
+            Vector3 shotOrigin,
+            out Vector3 hitPoint,
+            out short distance)
+        {
+            hitPoint = Vector3.zero;
             distance = 0;
             if (target == null) return false;
 
-            Transform aimPoint = null;
-            try { aimPoint = target.getBone("web__head"); } catch { }
-            if (aimPoint == null)
+            try
             {
-                try { aimPoint = target.transform; } catch { }
+                HitCollider headHit = target.getHitCollider(4);
+                Transform fixedFrame = headHit == null ? null : headHit.self;
+                if (fixedFrame != null)
+                {
+                    Vector3 center = fixedFrame.position +
+                                     fixedFrame.rotation * new Vector3(-0.22f, 0.07f, 0f);
+                    Vector3 radial = shotOrigin - center;
+                    if (radial.sqrMagnitude <= 0.000001f)
+                    {
+                        radial = -fixedFrame.forward;
+                    }
+                    hitPoint = center + radial.normalized * 0.33f;
+                }
             }
-            if (aimPoint == null) return false;
+            catch
+            {
+            }
 
-            float worldDistance = Vector3.Distance(shotOrigin, aimPoint.position);
+            if (hitPoint == Vector3.zero)
+            {
+                Transform aimPoint = null;
+                try { aimPoint = target.getBone("web__head"); } catch { }
+                if (aimPoint == null)
+                {
+                    try { aimPoint = target.transform; } catch { }
+                }
+                if (aimPoint == null) return false;
+                hitPoint = aimPoint.position;
+            }
+
+            float worldDistance = Vector3.Distance(shotOrigin, hitPoint);
             if (float.IsNaN(worldDistance) || float.IsInfinity(worldDistance) || worldDistance < 0f)
                 return false;
 
@@ -2320,18 +2474,25 @@ namespace ASWDEBUG
             return true;
         }
 
-        private static void NormalizeBulletNoRecoilShotCompat(object hitMessage)
+        private static bool NormalizeBulletNoRecoilShotCompat(object hitMessage)
         {
             try
             {
-                if (!BulletNoRecoil.Enabled || hitMessage == null) return;
-                // enc/spread 同时参与服务端命中校验；强行清零会导致客户端看似命中但服务端不结算伤害。
-                // 子弹直线只改 FireCheck 的射线，命中包字段保持原版 FireCheck 计算结果。
+                if (!BulletNoRecoil.Enabled || hitMessage == null) return false;
+                if (ReadIntField(hitMessage, "uid") != 0 &&
+                    ReadIntField(hitMessage, "part") != 254)
+                {
+                    return TrySetHitField(
+                        hitMessage,
+                        "aim_hit_geometry_state",
+                        (byte)1);
+                }
             }
             catch (Exception e)
             {
                 FileLogger.Log("PATCH", "[ChannelConnection.Shoot] bullet no recoil normalize error: " + e.Message);
             }
+            return false;
         }
 
         private static void SanitizeAimReportCompat(object hitMessage)
@@ -2396,13 +2557,40 @@ namespace ASWDEBUG
         private static short ReadShortField(object instance, string fieldName)
         {
             var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            return field == null ? (short)0 : Convert.ToInt16(field.GetValue(instance));
+            object value = field == null ? null : ReadPlainFieldValue(field, instance);
+            return value == null ? (short)0 : Convert.ToInt16(value);
         }
 
         private static int ReadIntField(object instance, string fieldName)
         {
             var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            return field == null ? 0 : Convert.ToInt32(field.GetValue(instance));
+            object value = field == null ? null : ReadPlainFieldValue(field, instance);
+            return value == null ? 0 : Convert.ToInt32(value);
+        }
+
+        private static object ReadPlainFieldValue(FieldInfo field, object instance)
+        {
+            object value = field.GetValue(instance);
+            if (value == null) return null;
+
+            try
+            {
+                Convert.ToInt32(value);
+                return value;
+            }
+            catch
+            {
+            }
+
+            MethodInfo implicitMethod = field.FieldType.GetMethod(
+                "op_Implicit",
+                BindingFlags.Public | BindingFlags.Static,
+                null,
+                new Type[] { field.FieldType },
+                null);
+            return implicitMethod == null
+                ? value
+                : implicitMethod.Invoke(null, new object[] { value });
         }
 
         private static bool TrySetHitField(object instance, string fieldName, object plainValue)

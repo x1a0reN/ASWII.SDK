@@ -20,7 +20,6 @@ public class ConsoleManager : MonoBehaviour
     // work has no place in the game's long-lived 32-bit process.
     private static readonly bool AutoDumpProtectedAssemblies = false;
     private static readonly bool TelemetryOnlyMode = false;
-    private static readonly bool NetworkAuthEnabled = true;
 
     
     public static ConsoleManager Instance
@@ -76,10 +75,10 @@ public class ConsoleManager : MonoBehaviour
         // 捕获 Unity 日志
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
 
-        // 先把所有补丁装上，尽早覆盖反检测/反踢链路；
-        // 具体功能与菜单仍然延后到验证通过后再启动。
-        HarmonyLoader.Install(TelemetryOnlyMode);
-        FileLogger.Log("MARK", "Harmony installed before auth.");
+        // 注入时游戏已经联网，只预装本地保护和只读断线诊断。
+        // 功能补丁在授权成功后安装，协议报文 Hook 保持禁用。
+        HarmonyLoader.InstallProtection();
+        FileLogger.Log("MARK", "Runtime protection installed before auth.");
 
         if (AutoDumpProtectedAssemblies)
         {
@@ -91,14 +90,6 @@ public class ConsoleManager : MonoBehaviour
             StartStructuredDump();
             StartCoroutine(DeobfRepackRoutine());
             FileLogger.Log("MARK", "Auto game assembly dump armed.");
-        }
-
-        if (!NetworkAuthEnabled)
-        {
-            FileLogger.Log("AUTH", "Network auth disabled. Booting CheatMain directly.");
-            BootCheatMain();
-            FileLogger.Log("MARK", "Auth bypassed. CheatMain started; patches were already active.");
-            return;
         }
 
         // 网络验证通过后，再启用具体功能和菜单。
@@ -128,15 +119,16 @@ public class ConsoleManager : MonoBehaviour
             FileLogger.Log("AUTH", "VeriGate 登录成功：SessionID=" + mgr.SessionID + " DeviceID=" + mgr.DeviceID);
             if (!string.IsNullOrEmpty(mgr.StaticExpiredText))
             {
-                FileLogger.Log("AUTH", "到期时间：" + mgr.StaticExpiredText);
+                FileLogger.Log("AUTH", "卡密到期时间：" + mgr.StaticExpiredText);
             }
             else
             {
-                FileLogger.Log("AUTH", "到期时间：未获取");
+                FileLogger.Log("AUTH", "卡密到期时间：未获取");
             }
 
+            HarmonyLoader.InstallAuthorized(TelemetryOnlyMode);
             BootCheatMain();
-            FileLogger.Log("MARK", "Auth passed. CheatMain started; patches were already active.");
+            FileLogger.Log("MARK", "Auth passed. Authorized feature patches and CheatMain started.");
         });
     }
 

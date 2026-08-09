@@ -294,7 +294,7 @@ namespace Doorstop
             return null;
         }
 
-        private static void LogInfo(string message)
+        internal static void LogInfo(string message)
         {
             try
             {

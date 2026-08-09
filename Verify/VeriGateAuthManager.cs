@@ -81,13 +81,23 @@ namespace ASWDEBUG.Verify
                     if (!Doorstop.Entrypoint.WaitForAuthorizationHandoff(60000))
                         throw new InvalidOperationException(
                             "未收到登录器的授权交接，DLL 已停止登录。");
+                    Doorstop.Entrypoint.LogInfo(
+                        "VeriGate authorization handoff received");
                     string directCard = VeriGateCredentialStore.Load();
+                    Doorstop.Entrypoint.LogInfo(
+                        "VeriGate one-time credential loaded");
                     VeriGateClient client = VeriGateClient.Open(directCard);
+                    Doorstop.Entrypoint.LogInfo(
+                        "VeriGate native client opened");
                     VeriGateAuthorization authorization;
                     try
                     {
                         authorization = client.Authorize(
                             DllUsageTelemetry.Capture());
+                        Doorstop.Entrypoint.LogInfo(
+                            "VeriGate authorization completed allowed=" +
+                            authorization.Allowed +
+                            " terminate=" + authorization.Terminate);
                     }
                     catch
                     {
@@ -102,7 +112,7 @@ namespace ASWDEBUG.Verify
                     }
                     DeviceID = authorization.DeviceID;
                     SessionID = authorization.SessionID;
-                    StaticExpiredText = authorization.SessionExpiresAt.ToLocalTime()
+                    StaticExpiredText = authorization.PrincipalExpiresAt.ToLocalTime()
                         .ToString("yyyy-MM-dd HH:mm:ss");
                     LoggedIn = authorization.Allowed;
                     LastError = null;
@@ -126,6 +136,15 @@ namespace ASWDEBUG.Verify
                     LoggedIn = false;
                     LastError = error.Message;
                     FileLogger.Log("AUTH", "VeriGate 登录失败：" + error.Message);
+                    VeriGateException veriGateError =
+                        error as VeriGateException;
+                    Doorstop.Entrypoint.LogInfo(
+                        "VeriGate authorization failed: " +
+                        error.GetType().Name +
+                        (veriGateError == null
+                            ? string.Empty
+                            : " error_code=" + veriGateError.ErrorCode) +
+                        ": " + error.Message);
                     PostMain(delegate
                     {
                         if (onDone != null) onDone(false, error.Message);
@@ -159,6 +178,8 @@ namespace ASWDEBUG.Verify
         private IEnumerator HeartbeatLoop(float interval)
         {
             float waitSeconds = Mathf.Max(10f, interval);
+            Doorstop.Entrypoint.LogInfo(
+                "VeriGate heartbeat scheduled interval_seconds=" + waitSeconds);
             while (true)
             {
                 if (!_heartbeatInFlight && LoggedIn)
@@ -228,14 +249,10 @@ namespace ASWDEBUG.Verify
                         });
                     });
                 }
-                yield return WaitRealtime(waitSeconds);
+                float waitUntil = Time.realtimeSinceStartup + waitSeconds;
+                while (Time.realtimeSinceStartup < waitUntil)
+                    yield return null;
             }
-        }
-
-        private IEnumerator WaitRealtime(float seconds)
-        {
-            float end = Time.realtimeSinceStartup + Mathf.Max(0f, seconds);
-            while (Time.realtimeSinceStartup < end) yield return null;
         }
 
         private void PostMain(Action action)
@@ -348,6 +365,9 @@ namespace ASWDEBUG.Verify
             FileLogger.Log(
                 "AUTH",
                 "VeriGate 终止客户端进程，原因=" + (reason ?? "UNKNOWN"));
+            Doorstop.Entrypoint.LogInfo(
+                "VeriGate terminating client process reason=" +
+                (reason ?? "UNKNOWN"));
             try { Application.Quit(); } catch { }
             try { Process.GetCurrentProcess().Kill(); } catch { }
         }

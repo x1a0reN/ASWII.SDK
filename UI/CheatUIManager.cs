@@ -7,6 +7,7 @@ using ASWDEBUG.Cheats.Other;
 using ASWDEBUG.Cheats.Player;
 using ASWDEBUG.Global;
 using ASWDEBUG.Main;
+using ASWDEBUG.Patch;
 using ASWDEBUG.Verify;
 using PluginTool;
 using System;
@@ -30,11 +31,21 @@ namespace ASWDEBUG.UI
         private static readonly bool ShowAuctionUi = false;
         private static readonly bool ShowLocalBotUi = false;
         private static readonly bool ShowMultiOpenUi = false;
+        private static readonly bool UseTacticalUi = true;
         private static string _autoBattleDropdownId = string.Empty;
         private static Vector2 _autoBattleDropdownScroll;
 
+        private enum KeyBindingTarget
+        {
+            None,
+            AutoAim,
+            FlightAscend,
+            FlightDescend
+        }
+
         // 是否在“等待按键”模式
         private static bool _waitingForKey;
+        private static KeyBindingTarget _keyBindingTarget;
         // 记录进入等待模式的帧，用来防止把点击按钮的那一下当作绑定
         private static int _armFrame;
 
@@ -64,6 +75,11 @@ namespace ASWDEBUG.UI
         static Transform _cardIconRoot;
         static Rect _cardAreaLast;
         static bool _cardAreaValid;
+        static Texture2D _cardOverlayBackground;
+        static Texture2D _cardOverlayAccent;
+        static GUIStyle _cardOverlayPanelStyle;
+        static GUIStyle _cardOverlayTitleStyle;
+        static GUIStyle _cardOverlayMetaStyle;
 
         // 布局：每行 3 个
         const int ICONS_PER_ROW = 3;
@@ -88,19 +104,153 @@ namespace ASWDEBUG.UI
             _cardAreaValid = false;
         }
 
+        static void DisplayTacticalCardOverlay(EventType eventType)
+        {
+            bool canShow = CheatMain.inChannel && OtherC.Enabled && CardIconsEnabled;
+            if (eventType == EventType.Layout)
+            {
+                _cardSnapshotInfo.Clear();
+                if (canShow && CheatMain.CardData != null)
+                {
+                    _cardSnapshotInfo.AddRange(CheatMain.CardData);
+                }
+                else
+                {
+                    HideAllCardIcons();
+                }
+            }
+
+            if (!canShow)
+            {
+                HideAllCardIcons();
+                return;
+            }
+
+            EnsureCardOverlayStyles();
+            int count = _cardSnapshotInfo.Count;
+            int visibleCount = Mathf.Min(count, 12);
+            int rows = Mathf.Max(1, Mathf.CeilToInt(visibleCount / (float)ICONS_PER_ROW));
+            float blockHeight = rows * CELL_SIZE + (rows - 1) * CELL_GAP;
+            float panelWidth = 248f;
+            float panelHeight = 64f + blockHeight + 14f;
+            float x = Mathf.Max(12f, Screen.width - panelWidth - 18f);
+            float y = Mathf.Clamp(72f, 12f, Mathf.Max(12f, Screen.height - panelHeight - 12f));
+            Rect panel = new Rect(x, y, panelWidth, panelHeight);
+
+            Color oldColor = GUI.color;
+            Color oldContent = GUI.contentColor;
+            Color oldBackground = GUI.backgroundColor;
+            GUI.Box(panel, GUIContent.none, _cardOverlayPanelStyle);
+            GUI.DrawTexture(new Rect(panel.x, panel.y, 3f, panel.height), _cardOverlayAccent);
+            GUI.Label(
+                new Rect(panel.x + 16f, panel.y + 10f, panel.width - 32f, 22f),
+                "CARD REVEAL",
+                _cardOverlayTitleStyle);
+            GUI.Label(
+                new Rect(panel.x + 16f, panel.y + 34f, panel.width - 32f, 18f),
+                count > 0
+                    ? count + " rewards captured" + (count > visibleCount ? " / first 12 shown" : string.Empty)
+                    : "waiting for reward data",
+                _cardOverlayMetaStyle);
+            GUI.color = oldColor;
+            GUI.contentColor = oldContent;
+            GUI.backgroundColor = oldBackground;
+
+            if (visibleCount <= 0)
+            {
+                HideAllCardIcons();
+                return;
+            }
+
+            Rect area = new Rect(
+                panel.x + 12f,
+                panel.y + 62f,
+                panel.width - 24f,
+                blockHeight);
+            if (eventType == EventType.Layout)
+            {
+                EnsureCardIconRoot();
+                EnsureWidgetPool(visibleCount);
+                for (int i = 0; i < _cardWidgets.Count; i++)
+                {
+                    bool active = i < visibleCount;
+                    SetCardWidgetActive(_cardWidgets[i], active);
+                    if (active)
+                    {
+                        UpdateWidgetFromInfo(_cardWidgets[i], _cardSnapshotInfo[i]);
+                    }
+                }
+                _cardAreaLast = area;
+                _cardAreaValid = true;
+            }
+
+            if (eventType == EventType.Repaint && _cardAreaValid)
+            {
+                LayoutWidgetsInArea(_cardAreaLast);
+            }
+        }
+
+        static void EnsureCardOverlayStyles()
+        {
+            if (_cardOverlayPanelStyle != null) return;
+
+            _cardOverlayBackground = new Texture2D(1, 1, TextureFormat.ARGB32, false);
+            _cardOverlayBackground.hideFlags = HideFlags.HideAndDontSave;
+            _cardOverlayBackground.SetPixel(0, 0, new Color(0.035f, 0.055f, 0.072f, 0.96f));
+            _cardOverlayBackground.Apply();
+
+            _cardOverlayAccent = new Texture2D(1, 1, TextureFormat.ARGB32, false);
+            _cardOverlayAccent.hideFlags = HideFlags.HideAndDontSave;
+            _cardOverlayAccent.SetPixel(0, 0, new Color(0.215f, 0.81f, 0.76f, 1f));
+            _cardOverlayAccent.Apply();
+
+            _cardOverlayPanelStyle = new GUIStyle(GUI.skin.box);
+            _cardOverlayPanelStyle.normal.background = _cardOverlayBackground;
+            _cardOverlayPanelStyle.border = new RectOffset(0, 0, 0, 0);
+
+            _cardOverlayTitleStyle = new GUIStyle(GUI.skin.label);
+            _cardOverlayTitleStyle.fontSize = 14;
+            _cardOverlayTitleStyle.fontStyle = FontStyle.Bold;
+            _cardOverlayTitleStyle.normal.textColor = new Color(0.91f, 0.95f, 0.97f, 1f);
+
+            _cardOverlayMetaStyle = new GUIStyle(GUI.skin.label);
+            _cardOverlayMetaStyle.fontSize = 11;
+            _cardOverlayMetaStyle.normal.textColor = new Color(0.58f, 0.68f, 0.72f, 1f);
+        }
+
 
         public static void Display()
         {
             var et = Event.current != null ? Event.current.type : EventType.Repaint;
 
-            if (ESP.Enabled){ ESP.Enable(); } else{ESP.Disable();}
+            if (ESP.Enabled || (AimTrack.Enabled && AimTrack.DrawFovCircle))
+            {
+                ESP.Enable();
+            }
+            else
+            {
+                ESP.Disable();
+            }
+
+            if (UseTacticalUi)
+            {
+                DisplayTacticalCardOverlay(et);
+            }
 
             if (!MenuVisible) return;
+
+            if (UseTacticalUi)
+            {
+                TacticalConsoleUI.Display();
+                AutoUseConfigPanel.Display();
+                if (ShowLocalBotUi) LocalBotPanel.Display();
+                return;
+            }
 
             GUI.color = Color.white;
 
             // Player
-            UIHelper.Begin("玩家", 10, 10, 150, 220, 0, 22, 0);
+            UIHelper.Begin("玩家", 10, 10, 150, 242, 0, 22, 0);
             UIHelper.Button("红名透视", HealthBarDisplay.Enabled, HealthBarDisplay.Toggle);
             UIHelper.Button("爆炸免伤", GrenadeNotHurt.Enabled, GrenadeNotHurt.Toggle);
             UIHelper.Button("自动扳机", AutoFire.Enabled, AutoFire.Toggle);
@@ -108,6 +258,7 @@ namespace ASWDEBUG.UI
             UIHelper.Button("无视挂机", NotKick.Enabled, NotKick.Toggle);
             UIHelper.Button("爆炸半伤", GrenadeHalfHurt.Enabled, GrenadeHalfHurt.Toggle);
             UIHelper.Button("子弹直线", BulletNoRecoil.Enabled, BulletNoRecoil.Toggle);
+            UIHelper.Button("无限药", InfiniteItemUse.Enabled, InfiniteItemUse.Toggle);
             //UIHelper.Button("子弹速射", WeaponNotCD.Enabled, WeaponNotCD.Toggle);
             //UIHelper.Button("瞬移秒杀", Aike.Enabled, Aike.Toggle);
             //UIHelper.Button("自动锁血", AutoLockHP.Enabled, AutoLockHP.Toggle);
@@ -117,7 +268,7 @@ namespace ASWDEBUG.UI
             {
                 expiredText = VeriGateAuthManager.Instance.StaticExpiredText;
             }
-            UIHelper.LabelAuto("到期时间: " + expiredText);
+            UIHelper.LabelAuto("卡密到期时间: " + expiredText);
 
             // ===== Layout 阶段：做快照/决定隐藏 =====
             if (et == EventType.Layout)
@@ -182,14 +333,13 @@ namespace ASWDEBUG.UI
             UIHelper.Button("是否判断盾牌", AutoAim.Shield, AutoAim.ToggleShield);
             UIHelper.Button("是否判断隐身", AutoAim.Hidden, AutoAim.ToggleHidden);
             UIHelper.Button("BOSS自瞄", BossAutoAim.Enabled, BossAutoAim.ToggleEnabled);
-            string btnText = _waitingForKey
+            string btnText = _waitingForKey && _keyBindingTarget == KeyBindingTarget.AutoAim
                 ? "设置按键"
                 : $"{GetKeyDisplayName(GlobalHotkeys.PlayerKey)}";
 
             if (UIHelper.Button(btnText))
             {
-                _waitingForKey = true;
-                _armFrame = Time.frameCount; // ★ 这一帧不捕获
+                BeginKeyBinding(KeyBindingTarget.AutoAim);
             }
 
             if (_waitingForKey)
@@ -204,13 +354,12 @@ namespace ASWDEBUG.UI
                     {
                         if (e.keyCode == KeyCode.Escape) // 可选：Esc 取消
                         {
-                            _waitingForKey = false;
+                            CancelKeyBinding();
                             e.Use();
                             return;
                         }
 
-                        GlobalHotkeys.PlayerKey = e.keyCode;
-                        _waitingForKey = false;
+                        ApplyKeyBinding(e.keyCode);
                         e.Use();
                         return;
                     }
@@ -218,14 +367,15 @@ namespace ASWDEBUG.UI
                     // ★ 新增：鼠标左/右/中键
                     if (e.type == EventType.MouseDown)
                     {
+                        KeyCode key;
                         switch (e.button)
                         {
-                            case 0: GlobalHotkeys.PlayerKey = KeyCode.Mouse0; break; // 左键
-                            case 1: GlobalHotkeys.PlayerKey = KeyCode.Mouse1; break; // 右键
-                            case 2: GlobalHotkeys.PlayerKey = KeyCode.Mouse2; break; // 中键
+                            case 0: key = KeyCode.Mouse0; break; // 左键
+                            case 1: key = KeyCode.Mouse1; break; // 右键
+                            case 2: key = KeyCode.Mouse2; break; // 中键
                             default: return; // 其它按键（侧键）这里先不处理
                         }
-                        _waitingForKey = false;
+                        ApplyKeyBinding(key);
                         e.Use();
                         return;
                     }
@@ -241,16 +391,17 @@ namespace ASWDEBUG.UI
             ESP.CircleRadius = UIHelper.SliderRow("范围半径", ESP.CircleRadius, 0f, 800f, 0);
 
             // ESP
-            UIHelper.Begin("ESP", 335, 10, 165, 154, 0, 22, 0);
+            UIHelper.Begin("ESP", 335, 10, 165, 176, 0, 22, 0);
             UIHelper.Button("开启", ESP.Enabled, ESP.ToggleEnabled);
             UIHelper.Button("信息卡片", ESP.InfoEsp, ESP.ToggleInfoEsp);
-            UIHelper.Button("骨骼方框", ESP.D3BoxEsp, ESP.ToggleD3BoxEsp);
+            UIHelper.Button("人物骨骼", ESP.SkeletonEsp, ESP.ToggleSkeletonEsp);
+            UIHelper.Button("人物方框", ESP.D3BoxEsp, ESP.ToggleD3BoxEsp);
             UIHelper.Button("绘制十字", ESP.CrossEsp, ESP.ToggleCrossEsp);
             UIHelper.Button("绘制圆心", ESP.CircleEsp, ESP.ToggleCircleEsp);
             UIHelper.Button("绘制射线", ESP.LineEsp, ESP.ToggleLineEsp);
 
             // Other
-            UIHelper.Begin("其他", 505, 10, 165, 215, 0, 22, 0);
+            UIHelper.Begin("其他", 505, 10, 165, 350, 0, 22, 0);
             UIHelper.Button("自动防踢", AutoKick.Enabled, AutoKick.Toggle);
             //UIHelper.Button("自动拉对局频道", AutoInterface.Enabled, AutoInterface.Toggle);
             UIHelper.Button("屏蔽所有弹窗", HookMsgbox.Enabled, HookMsgbox.Toggle);
@@ -262,6 +413,23 @@ namespace ASWDEBUG.UI
             {
                 AutoUseConfigPanel.Visible = !AutoUseConfigPanel.Visible;
             }
+            UIHelper.Button("远征秒过小关", MotherBossAutoClear.Enabled, MotherBossAutoClear.ToggleEnabled);
+            UIHelper.Button("无限子弹", InfiniteAmmo.Enabled, InfiniteAmmo.Toggle);
+            UIHelper.Button("滞空飞行", FlightMode.Enabled, FlightMode.Toggle);
+            if (UIHelper.Button(FlightKeyButtonText("上升", FlightMode.AscendKey, KeyBindingTarget.FlightAscend)))
+            {
+                BeginKeyBinding(KeyBindingTarget.FlightAscend);
+            }
+            if (UIHelper.Button(FlightKeyButtonText("下降", FlightMode.DescendKey, KeyBindingTarget.FlightDescend)))
+            {
+                BeginKeyBinding(KeyBindingTarget.FlightDescend);
+            }
+            FlightMode.VerticalSpeed = UIHelper.SliderRow(
+                "升降速度",
+                FlightMode.VerticalSpeed,
+                1f,
+                30f,
+                1);
             if (ShowLocalBotUi && UIHelper.Button("本地Bot控制"))
             {
                 LocalBotPanel.Visible = !LocalBotPanel.Visible;
@@ -395,6 +563,49 @@ namespace ASWDEBUG.UI
         private static void ToggleMultiOpenEnabled()
         {
             Settings.MultiOpenEnabled = !Settings.MultiOpenEnabled;
+        }
+
+        private static void BeginKeyBinding(KeyBindingTarget target)
+        {
+            _waitingForKey = true;
+            _keyBindingTarget = target;
+            _armFrame = Time.frameCount;
+        }
+
+        private static void CancelKeyBinding()
+        {
+            _waitingForKey = false;
+            _keyBindingTarget = KeyBindingTarget.None;
+        }
+
+        private static void ApplyKeyBinding(KeyCode key)
+        {
+            switch (_keyBindingTarget)
+            {
+                case KeyBindingTarget.AutoAim:
+                    GlobalHotkeys.PlayerKey = key;
+                    break;
+                case KeyBindingTarget.FlightAscend:
+                    FlightMode.SetAscendKey(key);
+                    break;
+                case KeyBindingTarget.FlightDescend:
+                    FlightMode.SetDescendKey(key);
+                    break;
+            }
+
+            CancelKeyBinding();
+        }
+
+        private static string FlightKeyButtonText(
+            string label,
+            KeyCode key,
+            KeyBindingTarget target)
+        {
+            if (_waitingForKey && _keyBindingTarget == target)
+            {
+                return label + ": 按下按键";
+            }
+            return label + ": " + GetKeyDisplayName(key);
         }
 
         private static void ToggleMultiOpenAswcIsolation()

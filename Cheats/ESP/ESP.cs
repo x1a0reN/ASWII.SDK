@@ -1,5 +1,6 @@
 ﻿using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
+using AimTracker = ASWDEBUG.Cheats.AimTrack.AimTrack;
 using ASWDEBUG.Cheats.LocalBot;
 using ASWDEBUG.Main;
 using ASWDEBUG.UI;
@@ -15,6 +16,7 @@ namespace ASWDEBUG.Cheats.ESP
         // ============ 总开关/绘制项 ============
         public static bool Enabled = false;
 
+        public static bool SkeletonEsp = false;
         public static bool D3BoxEsp = false;
         public static bool CrossEsp;
         public static bool CircleEsp;
@@ -52,15 +54,15 @@ namespace ASWDEBUG.Cheats.ESP
 
         // 3D 盒子参数
         public static Vector3 BoxHalfSize = new Vector3(0.4f, 0.9f, 0.3f);
-        public static Color BoxColor = Color.green;
-        public static Color BoxColorOccluded = Color.red; // ✅ 被墙挡时的颜色
-        public static Color BoxColorHidden = Color.gray;      // 隐身
+        public static Color BoxColor = new Color(0.31f, 0.96f, 0.73f, 1f);
+        public static Color BoxColorOccluded = new Color(1.00f, 0.32f, 0.43f, 1f);
+        public static Color BoxColorHidden = new Color(0.65f, 0.72f, 0.80f, 1f);
         public static float BoxLineWidth = 1f;
 
         // 骨骼颜色
-        public static Color SkeletonColorVisible = Color.green;
-        public static Color SkeletonColorOccluded = Color.red;
-        public static Color SkeletonColorHidden = Color.gray; // 隐身
+        public static Color SkeletonColorVisible = new Color(0.31f, 0.96f, 0.73f, 1f);
+        public static Color SkeletonColorOccluded = new Color(1.00f, 0.32f, 0.43f, 1f);
+        public static Color SkeletonColorHidden = new Color(0.65f, 0.72f, 0.80f, 1f);
 
         // 线
         public static Color LineColor = Color.red;
@@ -87,6 +89,9 @@ namespace ASWDEBUG.Cheats.ESP
             1,10,10,11,11,12,12,13,13,14,14,15,14,16,14,17,
             1,18, 18,19,19,20,20,21,21,22,
             18,23,23,24,24,25,25,26
+        };
+        private static readonly int[] InfoAnchorBoneIndices = new int[] {
+            0,1,2,3,5,6,10,11,13,14,18,19,20,21,22,23,24,25,26
         };
 
         // 动态盒子调参
@@ -183,13 +188,6 @@ namespace ASWDEBUG.Cheats.ESP
             public float time;
         }
 
-        private struct RaycastGroundCache
-        {
-            public float lastTime;
-            public float minY;
-            public bool has;
-        }
-
         private struct RelationCache
         {
             public int mask; // bit0: friend, bit1: recent, bit2: blacklist
@@ -209,23 +207,17 @@ namespace ASWDEBUG.Cheats.ESP
             public HeadCache head;
             public WeaponCache weapon;
             public TextFitCache titleFit, weaponFit;
-            public RaycastGroundCache ground;
-            public float lastDist;
-            public bool visible;
 
             public Transform[] bones;
             public bool bonesInit;
 
-            // 盒子几何缓存 + 平滑缓冲
-            public Vector3[] boxCorners;          // 原始角点
-            public Vector3[] boxCornersSmoothed;  // 插值后角点
-            public float boxLastUpdate;
-            public bool boxValid;
+            public Vector3[] boxCorners;
 
-            public Vector3 fixedLocalCenter;   // 在 avatar.root 局部坐标系中的中心
-            public Vector3 fixedLocalExtents;  // 在 avatar.root 局部坐标系中的半径
-            public int fixedRootId;            // avatar.root 的 InstanceID（变更时失效）
-            public bool fixedValid;            // 是否已经计算过
+            public float uprightBottom;
+            public float uprightTop;
+            public float uprightHalfWidth;
+            public float uprightHalfDepth;
+            public bool uprightBoxValid;
 
             // ✅ 新增：LOS
             public OcclusionCache occlusion;
@@ -235,6 +227,43 @@ namespace ASWDEBUG.Cheats.ESP
         private static readonly Dictionary<string, string> _weaponNameByKey = new Dictionary<string, string>(256);
         private static readonly Dictionary<int, string> _weaponNameById = new Dictionary<int, string>(256);
         private static readonly Dictionary<ulong, RelationCache> _relationCache = new Dictionary<ulong, RelationCache>(256);
+        private static readonly List<Rect> _placedInfoCards = new List<Rect>(32);
+
+        private enum InfoCardMode
+        {
+            Near,
+            Mid,
+            Far
+        }
+
+        private struct InfoStatusLine
+        {
+            public string text;
+            public Color color;
+
+            public InfoStatusLine(string text, Color color)
+            {
+                this.text = text;
+                this.color = color;
+            }
+        }
+
+        private struct ScreenTargetBounds
+        {
+            public float minX, maxX, minY, maxY, centerX, centerY;
+        }
+
+        private struct EspDrawStyle
+        {
+            public Color skeletonColor;
+            public Color boxColor;
+            public float skeletonOutlineWidth;
+            public float skeletonInnerWidth;
+            public float boxOutlineWidth;
+            public float boxInnerWidth;
+            public float outlineAlpha;
+            public float cornerRatio;
+        }
 
         // ===== 信息卡片内部类型 =====
         private struct Chip
@@ -249,6 +278,19 @@ namespace ASWDEBUG.Cheats.ESP
         private static GUIStyle _titleStyle;
         private static GUIStyle _subStyle;
         private static int _titleFontLast = -1, _subFontLast = -1;
+        private static GUIStyle _infoTitleStyle;
+        private static GUIStyle _infoBodyStyle;
+        private static GUIStyle _infoMicroStyle;
+        private static int _infoStyleKey = -1;
+        private static readonly Color InfoAccent = new Color(0.30f, 0.96f, 0.74f, 1f);
+        private static readonly Color InfoAccentHidden = new Color(0.60f, 0.69f, 0.75f, 1f);
+        private static readonly Color InfoPrimary = new Color(0.96f, 0.99f, 1.00f, 1f);
+        private static readonly Color InfoSecondary = new Color(0.73f, 0.82f, 0.85f, 1f);
+        private static readonly Color InfoMuted = new Color(0.54f, 0.65f, 0.70f, 1f);
+        private static readonly Color InfoShield = new Color(0.32f, 0.72f, 1.00f, 1f);
+        private static readonly Color InfoWarning = new Color(1.00f, 0.70f, 0.34f, 1f);
+        private static readonly Color InfoDanger = new Color(1.00f, 0.36f, 0.45f, 1f);
+        private static readonly Color InfoBarTrack = new Color(0.05f, 0.09f, 0.12f, 0.98f);
         private static GUIStyle TitleStyle(int size)
         {
             if (_titleStyle == null) _titleStyle = (UIHelper.StringStyle ?? new GUIStyle(GUI.skin.label));
@@ -269,9 +311,12 @@ namespace ASWDEBUG.Cheats.ESP
         }
         public static void Disable()
         {
-            D3BoxEsp = CrossEsp = CircleEsp = LineEsp = InfoEsp = false;
+            // The master switch suppresses rendering without destroying the user's
+            // independently configured visual layers.
+            _placedInfoCards.Clear();
         }
         public static void ToggleEnabled() { Enabled = !Enabled; }
+        public static void ToggleSkeletonEsp() { SkeletonEsp = !SkeletonEsp; }
         public static void ToggleD3BoxEsp() { D3BoxEsp = !D3BoxEsp; }
         public static void ToggleInfoEsp() { InfoEsp = !InfoEsp; }
         public static void ToggleCrossEsp() { CrossEsp = !CrossEsp; }
@@ -283,17 +328,28 @@ namespace ASWDEBUG.Cheats.ESP
         // ===========================================================
         private static void Actors()
         {
-            if (!Enabled) return;
+            bool drawTrackingFov = AimTracker.Enabled && AimTracker.DrawFovCircle;
+            if (!Enabled && !drawTrackingFov) return;
 
             if (Event.current != null && Event.current.type != EventType.Repaint) return;
 
             var cam = (CheatMain.CameraMain != null) ? CheatMain.CameraMain : Camera.main;
             if (cam == null) return;
 
+            if (drawTrackingFov)
+                DrawTrackingFov();
+            else if (CircleEsp)
+                UIHelper.DrawCircle(
+                    new Vector2(Screen.width * 0.5f, Screen.height * 0.5f),
+                    CircleRadius,
+                    Color.white,
+                    1f,
+                    48);
+
+            if (!Enabled) return;
+
             if (CrossEsp)
                 UIHelper.DrawCrosshair(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f), 10f, Color.red, 2f);
-            if (CircleEsp)
-                UIHelper.DrawCircle(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f), CircleRadius, Color.white, 1f, 48);
 
             Character player = (Level.Instance != null) ? Level.Instance.GetPlayer() : null;
             if (player == null) return;
@@ -305,6 +361,7 @@ namespace ASWDEBUG.Cheats.ESP
 
             float now = Time.time;
             float dt = Mathf.Max(0.0001f, Time.deltaTime);
+            _placedInfoCards.Clear();
 
             foreach (var character in set)
             {
@@ -352,10 +409,9 @@ namespace ASWDEBUG.Cheats.ESP
                     }
                 }
 
-                // 骨架 + 3D 盒
-                if (D3BoxEsp && dist <= MAX_SKELETON_DISTANCE)
+                // 骨骼与人物方框使用独立开关，但共享一次几何缓存。
+                if ((SkeletonEsp || D3BoxEsp) && dist <= MAX_SKELETON_DISTANCE)
                 {
-                    // ✅ 这里把 hasLOS 传进去
                     DrawSkeletonAndBox_Smooth(character, cam, dist, now, dt, occludedByWall, isHidden);
                 }
 
@@ -433,139 +489,371 @@ namespace ASWDEBUG.Cheats.ESP
         }
 
         // ===========================================================
-        // 骨架/3D盒子（骨架每帧画；盒子固定尺寸，只随位移/旋转/缩放）
+        // 骨骼/人物方框：世界竖直方框避免动画倾斜，骨骼只保留主关节链。
         // ===========================================================
-        private static void DrawSkeletonAndBox_Smooth(Character c, Camera cam, float dist, float now, float dt, bool hasLOS, bool isHidden)
+        private static void DrawSkeletonAndBox_Smooth(
+            Character c,
+            Camera cam,
+            float dist,
+            float now,
+            float dt,
+            bool occluded,
+            bool isHidden)
         {
-            var id = c.GetInstanceID();
+            int id = c.GetInstanceID();
             PerCharCache pc;
-            if (!_cache.TryGetValue(id, out pc)) { pc = new PerCharCache(); }
+            if (!_cache.TryGetValue(id, out pc)) pc = new PerCharCache();
+            EnsureEspBones(c, ref pc);
 
-            // ===== 颜色选择逻辑（优先级：隐身 > 墙挡 > 正常） =====
-            Color boneCol;
-            Color boxCol;
+            EspDrawStyle style = ResolveEspDrawStyle(dist, occluded, isHidden);
+            if (SkeletonEsp) DrawCleanSkeleton(c, cam, pc.bones, style);
+            if (D3BoxEsp) DrawUprightCornerBox(c, cam, ref pc, style, dt);
+            _cache[id] = pc;
+        }
 
-            if (isHidden)
+        private static void EnsureEspBones(Character c, ref PerCharCache pc)
+        {
+            if (pc.bonesInit && pc.bones != null && pc.bones.Length == BoneNames.Length) return;
+            if (pc.bones == null || pc.bones.Length != BoneNames.Length)
+                pc.bones = new Transform[BoneNames.Length];
+            for (int i = 0; i < BoneNames.Length; i++)
             {
-                boneCol = SkeletonColorHidden;   // 👻 隐身颜色
-                boxCol = BoxColorHidden;
+                try { pc.bones[i] = c.getBone(BoneNames[i]); }
+                catch { pc.bones[i] = null; }
             }
-            else if (hasLOS)
+            pc.bonesInit = true;
+        }
+
+        private static EspDrawStyle ResolveEspDrawStyle(float distance, bool occluded, bool hidden)
+        {
+            Color skeletonBase = hidden
+                ? SkeletonColorHidden
+                : occluded ? SkeletonColorOccluded : SkeletonColorVisible;
+            Color boxBase = hidden
+                ? BoxColorHidden
+                : occluded ? BoxColorOccluded : BoxColor;
+            float far = Mathf.Clamp01((distance - 12f) / 78f);
+
+            EspDrawStyle style = new EspDrawStyle();
+            style.skeletonColor = EspWithAlpha(skeletonBase, Mathf.Lerp(0.96f, 0.76f, far));
+            style.boxColor = EspWithAlpha(boxBase, Mathf.Lerp(0.68f, 0.42f, far));
+            style.skeletonOutlineWidth = Mathf.Lerp(1.72f, 1.12f, far);
+            style.skeletonInnerWidth = Mathf.Lerp(0.90f, 0.62f, far);
+            style.boxOutlineWidth = Mathf.Lerp(1.62f, 1.05f, far) * Mathf.Max(0.5f, BoxLineWidth);
+            style.boxInnerWidth = Mathf.Lerp(0.82f, 0.54f, far) * Mathf.Max(0.5f, BoxLineWidth);
+            style.outlineAlpha = Mathf.Lerp(0.50f, 0.26f, far);
+            style.cornerRatio = Mathf.Lerp(0.29f, 0.22f, far);
+            return style;
+        }
+
+        private static void DrawCleanSkeleton(
+            Character c,
+            Camera cam,
+            Transform[] bones,
+            EspDrawStyle style)
+        {
+            Vector3 headCenter, ignoredUp;
+            float headHeight, headRadius;
+            if (TryGetHeadBounds(c, out headCenter, out headHeight, out headRadius, out ignoredUp))
             {
-                boneCol = SkeletonColorOccluded; // 🧱 被墙挡颜色
-                boxCol = BoxColorOccluded;
+                DrawSegmentedHeadRing(cam, headCenter, headHeight, headRadius, style);
+                Transform chest = EspBone(bones, 1);
+                if (chest != null)
+                {
+                    Vector3 neck = headCenter - Vector3.up * (headHeight * 0.43f);
+                    DrawEspSkeletonLine(cam, neck, chest.position, style);
+                }
             }
             else
             {
-                boneCol = SkeletonColorVisible;  // ✅ 正常颜色
-                boxCol = BoxColor;
+                DrawEspBone(cam, bones, 0, 1, style);
             }
 
-            // ------- 骨骼引用缓存：每帧画骨架线 -------
-            if (!pc.bonesInit || pc.bones == null || pc.bones.Length != BoneNames.Length)
+            DrawEspBone(cam, bones, 1, 18, style);
+
+            DrawEspBone(cam, bones, 1, 2, style);
+            DrawEspBone(cam, bones, 2, 3, style);
+            DrawEspBone(cam, bones, 3, EspFirstBoneIndex(bones, 5, 4), style);
+            DrawEspBone(cam, bones, EspFirstBoneIndex(bones, 5, 4), 6, style);
+
+            DrawEspBone(cam, bones, 1, 10, style);
+            DrawEspBone(cam, bones, 10, 11, style);
+            DrawEspBone(cam, bones, 11, EspFirstBoneIndex(bones, 13, 12), style);
+            DrawEspBone(cam, bones, EspFirstBoneIndex(bones, 13, 12), 14, style);
+
+            DrawEspBone(cam, bones, 18, 19, style);
+            DrawEspBone(cam, bones, 19, 20, style);
+            DrawEspBone(cam, bones, 20, EspFirstBoneIndex(bones, 22, 21), style);
+            DrawEspBone(cam, bones, 18, 23, style);
+            DrawEspBone(cam, bones, 23, 24, style);
+            DrawEspBone(cam, bones, 24, EspFirstBoneIndex(bones, 26, 25), style);
+        }
+
+        private static void DrawUprightCornerBox(
+            Character c,
+            Camera cam,
+            ref PerCharCache pc,
+            EspDrawStyle style,
+            float dt)
+        {
+            Vector3 headCenter, ignoredUp;
+            float headHeight, headRadius;
+            bool hasHead = TryGetHeadBounds(c, out headCenter, out headHeight, out headRadius, out ignoredUp);
+
+            Vector3 origin = c.transform.position;
+            float scale = SafeEspScale(c.transform);
+            float rawBottom = origin.y;
+            float fallbackHeight = 1.8f * scale;
+            float rawTop = hasHead ? headCenter.y + headHeight * 0.55f : rawBottom + fallbackHeight;
+            float rawHeight = rawTop - rawBottom;
+            if (rawHeight < fallbackHeight * 0.55f || rawHeight > fallbackHeight * 2.4f)
             {
-                if (pc.bones == null) pc.bones = new Transform[BoneNames.Length];
-                for (int i = 0; i < BoneNames.Length; i++)
-                    pc.bones[i] = c.getBone(BoneNames[i]);
-                pc.bonesInit = true;
-                _cache[id] = pc;
+                rawTop = rawBottom + fallbackHeight;
+                rawHeight = fallbackHeight;
             }
 
-            for (int i = 0; i < BoneEdges.Length; i += 2)
+            float shoulderWidth = EspBoneDistance(pc.bones, 2, 10);
+            float rawHalfWidth = shoulderWidth > 0.01f ? shoulderWidth * 0.58f : rawHeight * 0.225f;
+            rawHalfWidth = Mathf.Clamp(rawHalfWidth, rawHeight * 0.18f, rawHeight * 0.32f);
+            float rawHalfDepth = Mathf.Clamp(rawHalfWidth * 0.62f, rawHeight * 0.12f, rawHeight * 0.22f);
+
+            float blend = 1f - Mathf.Exp(-14f * Mathf.Max(0.0001f, dt));
+            if (!pc.uprightBoxValid)
             {
-                int a = BoneEdges[i], b = BoneEdges[i + 1];
-                Transform ta = (a >= 0 && a < pc.bones.Length) ? pc.bones[a] : null;
-                Transform tb = (b >= 0 && b < pc.bones.Length) ? pc.bones[b] : null;
-                if (ta != null && tb != null)
-                {
-                    // UIHelper 里增加 DrawBone(Transform,Transform,Color) 重载
-                    UIHelper.DrawBone(ta, tb, boneCol);
-                }
+                pc.uprightBottom = rawBottom;
+                pc.uprightTop = rawTop;
+                pc.uprightHalfWidth = rawHalfWidth;
+                pc.uprightHalfDepth = rawHalfDepth;
+                pc.uprightBoxValid = true;
             }
-
-
-            // ------- 固定盒子：只随 root 的位移/旋转/缩放 -------
-            Transform root = (c.avatar != null && c.avatar.root != null) ? c.avatar.root.transform : c.transform;
-            if (root == null) return;
-
-            int rootId = root.GetInstanceID();
-            if (!pc.fixedValid || pc.fixedRootId != rootId)
+            else
             {
-                Vector3 lc, le;
-                Transform usedRoot;
-                if (GetStableModelBounds(c, out lc, out le, out usedRoot) && usedRoot != null)
-                {
-                    // 合理化，避免“扁”
-                    EnsureFixedBoxDims(c, usedRoot, ref lc, ref le);
-
-                    pc.fixedLocalCenter = lc;
-                    pc.fixedLocalExtents = le;
-                    pc.fixedRootId = usedRoot.GetInstanceID();
-                    pc.fixedValid = true;
-                }
-                else
-                {
-                    // 兜底：由头部估计
-                    Vector3 headC, headUp; float headH, headR;
-                    if (TryGetHeadBounds(c, out headC, out headH, out headR, out headUp))
-                    {
-                        float H = Mathf.Max(0.6f, headH * 1.8f);
-                        Vector3 ext = new Vector3(
-                            Mathf.Max(0.30f, headR * 1.6f),
-                            Mathf.Max(0.80f, H * 0.5f),
-                            Mathf.Max(0.25f, headR * 1.4f));
-                        Vector3 cen = new Vector3(0f, ext.y, 0f);
-                        // 合理化（一般已满足）
-                        EnsureFixedBoxDims(c, root, ref cen, ref ext);
-
-                        pc.fixedLocalExtents = ext;
-                        pc.fixedLocalCenter = cen;
-                        pc.fixedRootId = rootId;
-                        pc.fixedValid = true;
-                    }
-                    else
-                    {
-                        // 最终兜底
-                        Vector3 ext = FallbackHalfSize;
-                        Vector3 cen = new Vector3(0f, ext.y, 0f);
-                        EnsureFixedBoxDims(c, root, ref cen, ref ext);
-
-                        pc.fixedLocalExtents = ext;
-                        pc.fixedLocalCenter = cen;
-                        pc.fixedRootId = rootId;
-                        pc.fixedValid = true;
-                    }
-                }
-                _cache[id] = pc;
+                pc.uprightBottom = Mathf.Lerp(pc.uprightBottom, rawBottom, blend);
+                pc.uprightTop = Mathf.Lerp(pc.uprightTop, rawTop, blend);
+                pc.uprightHalfWidth = Mathf.Lerp(pc.uprightHalfWidth, rawHalfWidth, blend);
+                pc.uprightHalfDepth = Mathf.Lerp(pc.uprightHalfDepth, rawHalfDepth, blend);
             }
 
-            if (!pc.fixedValid) return;
+            Vector3 forward = c.transform.forward;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 0.0001f) forward = Vector3.forward;
+            forward.Normalize();
+            Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
 
-            // 把固定盒子从 root 局部坐标变换到世界坐标
-            Vector3 centerW = root.TransformPoint(pc.fixedLocalCenter);
-
-            // 三个半轴（考虑非均匀缩放+旋转）
-            Vector3 ax = root.TransformVector(new Vector3(pc.fixedLocalExtents.x, 0f, 0f));
-            Vector3 ay = root.TransformVector(new Vector3(0f, pc.fixedLocalExtents.y, 0f));
-            Vector3 az = root.TransformVector(new Vector3(0f, 0f, pc.fixedLocalExtents.z));
-
-            // —— 关键兜底：若某轴被极端缩放压扁，改用 root 的方向向量 × 对应长度 —— //
-            const float EPS = 1e-6f;
-            if (ax.sqrMagnitude < EPS) ax = root.right.normalized * pc.fixedLocalExtents.x * Mathf.Max(0.0001f, Mathf.Abs(root.lossyScale.x));
-            if (ay.sqrMagnitude < EPS) ay = root.up.normalized * pc.fixedLocalExtents.y * Mathf.Max(0.0001f, Mathf.Abs(root.lossyScale.y));
-            if (az.sqrMagnitude < EPS) az = root.forward.normalized * pc.fixedLocalExtents.z * Mathf.Max(0.0001f, Mathf.Abs(root.lossyScale.z));
+            float centerY = (pc.uprightBottom + pc.uprightTop) * 0.5f;
+            float halfHeight = Mathf.Max(0.1f, (pc.uprightTop - pc.uprightBottom) * 0.5f);
+            Vector3 center = new Vector3(origin.x, centerY, origin.z);
+            Vector3 ax = right * pc.uprightHalfWidth;
+            Vector3 ay = Vector3.up * halfHeight;
+            Vector3 az = forward * pc.uprightHalfDepth;
 
             if (pc.boxCorners == null || pc.boxCorners.Length != 8) pc.boxCorners = new Vector3[8];
-            pc.boxCorners[0] = centerW + (-ax - ay - az);
-            pc.boxCorners[1] = centerW + (ax - ay - az);
-            pc.boxCorners[2] = centerW + (ax + ay - az);
-            pc.boxCorners[3] = centerW + (-ax + ay - az);
-            pc.boxCorners[4] = centerW + (-ax - ay + az);
-            pc.boxCorners[5] = centerW + (ax - ay + az);
-            pc.boxCorners[6] = centerW + (ax + ay + az);
-            pc.boxCorners[7] = centerW + (-ax + ay + az);
+            pc.boxCorners[0] = center - ax - ay - az;
+            pc.boxCorners[1] = center + ax - ay - az;
+            pc.boxCorners[2] = center + ax + ay - az;
+            pc.boxCorners[3] = center - ax + ay - az;
+            pc.boxCorners[4] = center - ax - ay + az;
+            pc.boxCorners[5] = center + ax - ay + az;
+            pc.boxCorners[6] = center + ax + ay + az;
+            pc.boxCorners[7] = center - ax + ay + az;
 
-            UIHelper.Draw3DBox(pc.boxCorners, cam, boxCol, BoxLineWidth);
+            bool positiveForwardIsNear = Vector3.Dot(cam.transform.position - center, forward) >= 0f;
+            int nearStart = positiveForwardIsNear ? 4 : 0;
+            int farStart = positiveForwardIsNear ? 0 : 4;
+            DrawEspBoxFace(cam, pc.boxCorners, farStart, EspWithAlpha(style.boxColor, 0.42f), style);
+            DrawEspCornerWorldLine(cam, pc.boxCorners[0], pc.boxCorners[4], EspWithAlpha(style.boxColor, 0.66f), style);
+            DrawEspCornerWorldLine(cam, pc.boxCorners[1], pc.boxCorners[5], EspWithAlpha(style.boxColor, 0.66f), style);
+            DrawEspCornerWorldLine(cam, pc.boxCorners[2], pc.boxCorners[6], EspWithAlpha(style.boxColor, 0.66f), style);
+            DrawEspCornerWorldLine(cam, pc.boxCorners[3], pc.boxCorners[7], EspWithAlpha(style.boxColor, 0.66f), style);
+            DrawEspBoxFace(cam, pc.boxCorners, nearStart, style.boxColor, style);
+        }
+
+        private static void DrawEspBoxFace(
+            Camera cam,
+            Vector3[] corners,
+            int start,
+            Color color,
+            EspDrawStyle style)
+        {
+            DrawEspCornerWorldLine(cam, corners[start], corners[start + 1], color, style);
+            DrawEspCornerWorldLine(cam, corners[start + 1], corners[start + 2], color, style);
+            DrawEspCornerWorldLine(cam, corners[start + 2], corners[start + 3], color, style);
+            DrawEspCornerWorldLine(cam, corners[start + 3], corners[start], color, style);
+        }
+
+        private static void DrawEspCornerWorldLine(
+            Camera cam,
+            Vector3 a,
+            Vector3 b,
+            Color color,
+            EspDrawStyle style)
+        {
+            Vector3 fromA = Vector3.Lerp(a, b, style.cornerRatio);
+            Vector3 fromB = Vector3.Lerp(b, a, style.cornerRatio);
+            DrawStyledEspWorldLine(cam, a, fromA, color,
+                style.boxOutlineWidth, style.boxInnerWidth, style.outlineAlpha);
+            DrawStyledEspWorldLine(cam, b, fromB, color,
+                style.boxOutlineWidth, style.boxInnerWidth, style.outlineAlpha);
+        }
+
+        private static void DrawSegmentedHeadRing(
+            Camera cam,
+            Vector3 center,
+            float height,
+            float radius,
+            EspDrawStyle style)
+        {
+            Vector2 screenCenter, screenRight, screenTop;
+            if (!ProjectEspWorld(cam, center, out screenCenter) ||
+                !ProjectEspWorld(cam, center + cam.transform.right * radius, out screenRight) ||
+                !ProjectEspWorld(cam, center + Vector3.up * (height * 0.5f), out screenTop)) return;
+
+            float radiusX = Mathf.Clamp(Vector2.Distance(screenCenter, screenRight), 2.5f, 72f);
+            float radiusY = Mathf.Clamp(Vector2.Distance(screenCenter, screenTop), 3.2f, 88f);
+            for (int arc = 0; arc < 4; arc++)
+            {
+                float start = (arc * 90f + 14f) * Mathf.Deg2Rad;
+                float span = 62f * Mathf.Deg2Rad;
+                Vector2 previous = screenCenter + new Vector2(
+                    Mathf.Cos(start) * radiusX,
+                    Mathf.Sin(start) * radiusY);
+                for (int i = 1; i <= 4; i++)
+                {
+                    float angle = start + span * i / 4f;
+                    Vector2 current = screenCenter + new Vector2(
+                        Mathf.Cos(angle) * radiusX,
+                        Mathf.Sin(angle) * radiusY);
+                    DrawStyledEspScreenLine(previous, current, style.skeletonColor,
+                        style.skeletonOutlineWidth, style.skeletonInnerWidth, style.outlineAlpha);
+                    previous = current;
+                }
+            }
+        }
+
+        private static void DrawTrackingFov()
+        {
+            Vector2 center = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+            float configuredRadius = AimTracker.RadiusPixels;
+            if (float.IsNaN(configuredRadius) || float.IsInfinity(configuredRadius))
+                configuredRadius = 188f;
+            float radius = Mathf.Clamp(configuredRadius, 24f, 1200f);
+            Color accent = AimTracker.currentTarget == null
+                ? new Color(0.27f, 0.79f, 0.76f, 0.72f)
+                : new Color(0.96f, 0.72f, 0.31f, 0.92f);
+
+            UIHelper.DrawCircle(center, radius, new Color(0f, 0f, 0f, 0.55f), 2.2f, 20);
+            UIHelper.DrawCircle(center, radius, accent, 0.85f, 20);
+
+            const float tick = 8f;
+            UIHelper.DrawLine(
+                new Vector2(center.x - radius - tick, center.y),
+                new Vector2(center.x - radius + 2f, center.y),
+                accent,
+                1.2f);
+            UIHelper.DrawLine(
+                new Vector2(center.x + radius - 2f, center.y),
+                new Vector2(center.x + radius + tick, center.y),
+                accent,
+                1.2f);
+            UIHelper.DrawLine(
+                new Vector2(center.x, center.y - radius - tick),
+                new Vector2(center.x, center.y - radius + 2f),
+                accent,
+                1.2f);
+            UIHelper.DrawLine(
+                new Vector2(center.x, center.y + radius - 2f),
+                new Vector2(center.x, center.y + radius + tick),
+                accent,
+                1.2f);
+        }
+
+        private static void DrawEspBone(
+            Camera cam,
+            Transform[] bones,
+            int a,
+            int b,
+            EspDrawStyle style)
+        {
+            Transform ta = EspBone(bones, a);
+            Transform tb = EspBone(bones, b);
+            if (ta == null || tb == null) return;
+            DrawEspSkeletonLine(cam, ta.position, tb.position, style);
+        }
+
+        private static void DrawEspSkeletonLine(Camera cam, Vector3 a, Vector3 b, EspDrawStyle style)
+        {
+            DrawStyledEspWorldLine(cam, a, b, style.skeletonColor,
+                style.skeletonOutlineWidth, style.skeletonInnerWidth, style.outlineAlpha);
+        }
+
+        private static void DrawStyledEspWorldLine(
+            Camera cam,
+            Vector3 a,
+            Vector3 b,
+            Color color,
+            float outlineWidth,
+            float innerWidth,
+            float outlineAlpha)
+        {
+            Vector2 screenA, screenB;
+            if (!ProjectEspWorld(cam, a, out screenA) || !ProjectEspWorld(cam, b, out screenB)) return;
+            if ((screenA - screenB).sqrMagnitude > Screen.width * Screen.width * 2.5f) return;
+            DrawStyledEspScreenLine(screenA, screenB, color, outlineWidth, innerWidth, outlineAlpha);
+        }
+
+        private static void DrawStyledEspScreenLine(
+            Vector2 a,
+            Vector2 b,
+            Color color,
+            float outlineWidth,
+            float innerWidth,
+            float outlineAlpha)
+        {
+            Color outline = new Color(0.01f, 0.018f, 0.024f, Mathf.Min(outlineAlpha, color.a));
+            UIHelper.DrawLine(a, b, outline, outlineWidth);
+            UIHelper.DrawLine(a, b, color, innerWidth);
+        }
+
+        private static bool ProjectEspWorld(Camera cam, Vector3 world, out Vector2 screen)
+        {
+            screen = Vector2.zero;
+            Vector3 projected = cam.WorldToScreenPoint(world);
+            if (projected.z <= 0.03f || float.IsNaN(projected.x) || float.IsNaN(projected.y) ||
+                float.IsInfinity(projected.x) || float.IsInfinity(projected.y)) return false;
+            screen = new Vector2(projected.x, Screen.height - projected.y);
+            float maxX = Screen.width * 3f;
+            float maxY = Screen.height * 3f;
+            return screen.x > -maxX && screen.x < maxX && screen.y > -maxY && screen.y < maxY;
+        }
+
+        private static Transform EspBone(Transform[] bones, int index)
+        {
+            return bones != null && index >= 0 && index < bones.Length ? bones[index] : null;
+        }
+
+        private static int EspFirstBoneIndex(Transform[] bones, int preferred, int fallback)
+        {
+            return EspBone(bones, preferred) != null ? preferred : fallback;
+        }
+
+        private static float EspBoneDistance(Transform[] bones, int a, int b)
+        {
+            Transform ta = EspBone(bones, a);
+            Transform tb = EspBone(bones, b);
+            return ta == null || tb == null ? 0f : Vector3.Distance(ta.position, tb.position);
+        }
+
+        private static float SafeEspScale(Transform transform)
+        {
+            if (transform == null) return 1f;
+            Vector3 scale = transform.lossyScale;
+            float value = Mathf.Max(Mathf.Abs(scale.x), Mathf.Max(Mathf.Abs(scale.y), Mathf.Abs(scale.z)));
+            return value < 0.01f ? 1f : value;
+        }
+
+        private static Color EspWithAlpha(Color color, float multiplier)
+        {
+            return new Color(color.r, color.g, color.b, color.a * multiplier);
         }
 
 
@@ -650,6 +938,160 @@ namespace ASWDEBUG.Cheats.ESP
         // 信息卡片（头部投影自适应频率，但每帧画 UI）
         // ===========================================================
         private static void DrawCharacterInfoCard_Smooth(Character c, Character player, Camera cam, float dist, float now)
+        {
+            ScreenTargetBounds target;
+            if (!TryGetInfoTargetBounds(c, cam, out target)) return;
+            if (target.centerX < -24f || target.centerX > Screen.width + 24f ||
+                target.centerY < -40f || target.centerY > Screen.height + 40f) return;
+
+            // Never shrink below 1:1 pixels. Fractional down-scaling was the main
+            // cause of the unreadable bitmap text in the live preview.
+            float uiScale = Mathf.Clamp(Screen.height / 960f, 1f, 1.14f);
+            EnsureInfoCardStyles(uiScale);
+
+            InfoCardMode mode = dist > 76f
+                ? InfoCardMode.Far
+                : dist > 34f ? InfoCardMode.Mid : InfoCardMode.Near;
+            bool hidden = false;
+            try { hidden = c.GetHidden(); } catch { }
+            Color accent = hidden ? InfoAccentHidden : InfoAccent;
+            InfoStatusLine status = mode == InfoCardMode.Far
+                ? new InfoStatusLine(string.Empty, InfoSecondary)
+                : BuildInfoStatus(c, mode);
+
+            float width = (mode == InfoCardMode.Near ? 178f : mode == InfoCardMode.Mid ? 156f : 126f) * uiScale;
+            float padX = (mode == InfoCardMode.Far ? 7f : 9f) * uiScale;
+            float topPad = (mode == InfoCardMode.Far ? 4f : 5f) * uiScale;
+            float bottomPad = topPad;
+            float titleHeight = (_infoTitleStyle.fontSize + 3f) * uiScale;
+            float bodyHeight = (_infoBodyStyle.fontSize + 2f) * uiScale;
+            float microHeight = (_infoMicroStyle.fontSize + 2f) * uiScale;
+            float gap = 2f * uiScale;
+            bool hasShield = c.max_shield > 0;
+            float barsHeight = (hasShield ? 7f : 4f) * uiScale;
+
+            float height = topPad + titleHeight + gap;
+            if (mode == InfoCardMode.Near) height += microHeight + gap;
+            height += barsHeight;
+            if (mode != InfoCardMode.Far)
+            {
+                height += 3f * uiScale + bodyHeight;
+                if (mode == InfoCardMode.Near) height += gap + microHeight;
+                if (!string.IsNullOrEmpty(status.text)) height += gap + microHeight;
+            }
+            height += bottomPad;
+
+            bool panelOnRight;
+            Rect panel = PlaceInfoCard(target, width, height, 10f * uiScale, out panelOnRight);
+            DrawInfoCardChrome(panel, target, panelOnRight, accent, mode, uiScale);
+
+            float contentX = panel.x + padX + (panelOnRight ? 2f * uiScale : 0f);
+            float contentRight = panel.xMax - padX - (panelOnRight ? 0f : 2f * uiScale);
+            float contentWidth = Mathf.Max(28f, contentRight - contentX);
+            float y = panel.y + topPad;
+
+            string distanceText = Mathf.RoundToInt(dist) + "m";
+            float distanceWidth = MeasureInfoText(distanceText, _infoMicroStyle).x + 5f * uiScale;
+            string nameText = c.character_info != null && !string.IsNullOrEmpty(c.character_info.name)
+                ? c.character_info.name
+                : !string.IsNullOrEmpty(c.name) ? c.name : "UNKNOWN";
+            nameText = FitInfoText(
+                nameText,
+                _infoTitleStyle,
+                Mathf.Max(24f, contentWidth - distanceWidth - 5f * uiScale));
+            DrawInfoText(
+                new Rect(contentX, y, contentWidth - distanceWidth, titleHeight),
+                nameText,
+                _infoTitleStyle,
+                InfoPrimary,
+                TextAnchor.MiddleLeft);
+            DrawInfoText(
+                new Rect(contentRight - distanceWidth, y, distanceWidth, titleHeight),
+                distanceText,
+                _infoMicroStyle,
+                InfoSecondary,
+                TextAnchor.MiddleRight);
+            y += titleHeight + gap;
+
+            int maxHp = c.max_health > 0
+                ? c.max_health
+                : c.character_info != null ? c.character_info.max_health : 0;
+            float hpPercent = maxHp > 0 ? Mathf.Clamp01((float)c.hp / maxHp) : 0f;
+            float shieldPercent = hasShield ? Mathf.Clamp01((float)c.shield / c.max_shield) : 0f;
+            Color hpColor = ResolveInfoHealthColor(hpPercent);
+
+            if (mode == InfoCardMode.Near)
+            {
+                string hpText = maxHp > 0 ? "HP  " + c.hp + "/" + maxHp : "HP  --";
+                DrawInfoText(
+                    new Rect(contentX, y, contentWidth * 0.62f, microHeight),
+                    hpText,
+                    _infoMicroStyle,
+                    InfoSecondary,
+                    TextAnchor.MiddleLeft);
+                if (hasShield)
+                {
+                    string shieldText = "SH  " + c.shield + "/" + c.max_shield;
+                    DrawInfoText(
+                        new Rect(contentX + contentWidth * 0.44f, y, contentWidth * 0.56f, microHeight),
+                        shieldText,
+                        _infoMicroStyle,
+                        InfoShield,
+                        TextAnchor.MiddleRight);
+                }
+                y += microHeight + gap;
+            }
+
+            DrawInfoVitals(contentX, y, contentWidth, hpPercent, shieldPercent, hasShield, hpColor, uiScale);
+            y += barsHeight;
+            if (mode == InfoCardMode.Far) return;
+
+            byte quality;
+            int plus;
+            string weapon = GetWeaponNameCached(c, now, out quality, out plus);
+            string weaponText = "WPN  " + weapon + (plus > 0 ? "  +" + plus : string.Empty);
+            y += 3f * uiScale;
+            DrawInfoText(
+                new Rect(contentX, y, contentWidth, bodyHeight),
+                FitInfoText(weaponText, _infoBodyStyle, contentWidth),
+                _infoBodyStyle,
+                ResolveInfoWeaponColor(quality),
+                TextAnchor.MiddleLeft);
+            y += bodyHeight;
+
+            if (mode == InfoCardMode.Near)
+            {
+                y += gap;
+                string meta = BuildInfoMeta(c);
+                DrawInfoText(
+                    new Rect(contentX, y, contentWidth, microHeight),
+                    FitInfoText(meta, _infoMicroStyle, contentWidth),
+                    _infoMicroStyle,
+                    InfoMuted,
+                    TextAnchor.MiddleLeft);
+                y += microHeight;
+            }
+
+            if (!string.IsNullOrEmpty(status.text))
+            {
+                y += gap;
+                float marker = Mathf.Max(3f, 3f * uiScale);
+                UIHelper.DrawBox(
+                    new Vector2(Mathf.Round(contentX), Mathf.Round(y + (microHeight - marker) * 0.5f)),
+                    new Vector2(marker, marker),
+                    status.color,
+                    false);
+                float textX = contentX + 8f * uiScale;
+                DrawInfoText(
+                    new Rect(textX, y, contentRight - textX, microHeight),
+                    FitInfoText(status.text, _infoMicroStyle, contentRight - textX),
+                    _infoMicroStyle,
+                    status.color,
+                    TextAnchor.MiddleLeft);
+            }
+        }
+
+        private static void DrawCharacterInfoCard_Legacy(Character c, Character player, Camera cam, float dist, float now)
         {
             Vector3 headTopWorld;
             if (!GetHeadTopWorld_Cached(c, now, dist, out headTopWorld)) return;
@@ -826,6 +1268,442 @@ namespace ASWDEBUG.Cheats.ESP
                     gx += w + chipGap;
                 }
             }
+        }
+
+        private static InfoStatusLine BuildInfoStatus(Character c, InfoCardMode mode)
+        {
+            _sb.Length = 0;
+            int count = 0;
+            Color color = InfoSecondary;
+            bool priorityColor = false;
+
+            WeaponBase weapon = c.mWeapon as WeaponBase;
+            if (weapon != null && weapon.reloading)
+            {
+                AppendInfoStatus("换弹", ref count);
+                color = InfoWarning;
+                priorityColor = true;
+            }
+            if (c.invincible_time > 0f)
+            {
+                AppendInfoStatus("无敌", ref count);
+                color = InfoDanger;
+                priorityColor = true;
+            }
+
+            bool hidden = false;
+            try { hidden = c.GetHidden(); } catch { }
+            if (hidden && count < 3)
+            {
+                AppendInfoStatus("隐身", ref count);
+                color = InfoWarning;
+                priorityColor = true;
+            }
+            if (weapon != null && weapon.shooting && count < 3)
+            {
+                AppendInfoStatus("开火", ref count);
+                if (!priorityColor) color = InfoDanger;
+            }
+
+            if (count == 0 || mode == InfoCardMode.Near)
+            {
+                string dllCardText = GetDllUserCardText(c);
+                if (!string.IsNullOrEmpty(dllCardText) && count < 3)
+                {
+                    AppendInfoStatus(dllCardText, ref count);
+                    if (!priorityColor) color = InfoAccent;
+                }
+
+                ulong pid = c.character_info != null ? c.character_info.character_id : 0UL;
+                int relationMask = pid != 0UL ? GetRelationMaskCached(pid) : 0;
+                if ((relationMask & 4) != 0 && count < 3)
+                {
+                    AppendInfoStatus("黑名单", ref count);
+                    color = InfoDanger;
+                    priorityColor = true;
+                }
+                else if ((relationMask & 1) != 0 && count < 3)
+                {
+                    AppendInfoStatus("好友", ref count);
+                }
+                else if ((relationMask & 2) != 0 && count < 3)
+                {
+                    AppendInfoStatus("最近玩家", ref count);
+                }
+
+                if (count < 3)
+                {
+                    if (LocalBotManager.Contains(c)) AppendInfoStatus("本地Bot", ref count);
+                    else if (c.IsRobot) AppendInfoStatus("人机", ref count);
+                }
+
+                if (mode == InfoCardMode.Near && count < 3 && c.character_info != null &&
+                    !string.IsNullOrEmpty(c.character_info.guild_name))
+                {
+                    AppendInfoStatus("公会 " + c.character_info.guild_name, ref count);
+                }
+            }
+
+            return new InfoStatusLine(_sb.ToString(), color);
+        }
+
+        private static void AppendInfoStatus(string value, ref int count)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+            if (count > 0) _sb.Append("  /  ");
+            _sb.Append(value);
+            count++;
+        }
+
+        private static string BuildInfoMeta(Character c)
+        {
+            if (c.character_info == null) return string.Empty;
+            _sb.Length = 0;
+            if (c.character_info.character_level > 0)
+                _sb.Append("LV ").Append(c.character_info.character_level);
+
+            string career = InfoCareerLabel(c.character_info.career);
+            if (!string.IsNullOrEmpty(career))
+            {
+                if (_sb.Length > 0) _sb.Append("  /  ");
+                _sb.Append(career);
+            }
+
+            string rank = InfoRankLabel(c.character_info.rank_type, c.character_info.rank_level);
+            if (!string.IsNullOrEmpty(rank))
+            {
+                if (_sb.Length > 0) _sb.Append("  /  ");
+                _sb.Append(rank);
+            }
+            return _sb.ToString();
+        }
+
+        private static string InfoCareerLabel(CareerType career)
+        {
+            if (career == CareerType.kCareerSolider) return "护卫";
+            if (career == CareerType.kCareerGunner) return "重装";
+            if (career == CareerType.kCareerCommando) return "突击";
+            return string.Empty;
+        }
+
+        private static string InfoRankLabel(int type, int level)
+        {
+            if (type <= 0 || level <= 0) return string.Empty;
+            string tier = type == 1
+                ? "铜"
+                : type == 2 ? "银" : type == 3 ? "金" : type == 4 ? "钻" : "R" + type;
+            return tier + " " + level.ToString("D2");
+        }
+
+        private static Color ResolveInfoHealthColor(float percent)
+        {
+            if (percent <= 0.25f) return InfoDanger;
+            if (percent <= 0.55f) return InfoWarning;
+            return InfoAccent;
+        }
+
+        private static Color ResolveInfoWeaponColor(byte quality)
+        {
+            if (quality == 2) return new Color(0.52f, 0.94f, 0.66f, 1f);
+            if (quality == 3) return new Color(0.53f, 0.75f, 1.00f, 1f);
+            if (quality == 4) return new Color(0.80f, 0.67f, 1.00f, 1f);
+            if (quality >= 5) return new Color(1.00f, 0.76f, 0.42f, 1f);
+            return new Color(0.80f, 0.87f, 0.89f, 1f);
+        }
+
+        private static bool TryGetInfoTargetBounds(Character c, Camera cam, out ScreenTargetBounds target)
+        {
+            target = new ScreenTargetBounds();
+            int id = c.GetInstanceID();
+            PerCharCache pc;
+            if (!_cache.TryGetValue(id, out pc)) pc = new PerCharCache();
+            EnsureEspBones(c, ref pc);
+            _cache[id] = pc;
+
+            bool any = false;
+            float minX = float.MaxValue;
+            float minY = float.MaxValue;
+            float maxX = float.MinValue;
+            float maxY = float.MinValue;
+            for (int i = 0; i < InfoAnchorBoneIndices.Length; i++)
+            {
+                Transform bone = EspBone(pc.bones, InfoAnchorBoneIndices[i]);
+                if (bone == null) continue;
+                AddInfoProjected(cam, bone.position, ref any, ref minX, ref minY, ref maxX, ref maxY);
+            }
+
+            Vector3 headCenter, ignoredUp;
+            float headHeight, headRadius;
+            try
+            {
+                if (TryGetHeadBounds(c, out headCenter, out headHeight, out headRadius, out ignoredUp))
+                {
+                    AddInfoProjected(cam, headCenter + Vector3.up * (headHeight * 0.55f),
+                        ref any, ref minX, ref minY, ref maxX, ref maxY);
+                    AddInfoProjected(cam, headCenter + cam.transform.right * headRadius,
+                        ref any, ref minX, ref minY, ref maxX, ref maxY);
+                    AddInfoProjected(cam, headCenter - cam.transform.right * headRadius,
+                        ref any, ref minX, ref minY, ref maxX, ref maxY);
+                }
+            }
+            catch { }
+
+            if (!any)
+            {
+                AddInfoProjected(cam, c.transform.position,
+                    ref any, ref minX, ref minY, ref maxX, ref maxY);
+                AddInfoProjected(cam, c.transform.position + Vector3.up * 1.8f,
+                    ref any, ref minX, ref minY, ref maxX, ref maxY);
+            }
+            if (!any) return false;
+
+            const float margin = 2f;
+            target.minX = minX - margin;
+            target.maxX = maxX + margin;
+            target.minY = minY - margin;
+            target.maxY = maxY + margin;
+            target.centerX = (target.minX + target.maxX) * 0.5f;
+            target.centerY = (target.minY + target.maxY) * 0.5f;
+            return true;
+        }
+
+        private static void AddInfoProjected(
+            Camera cam,
+            Vector3 world,
+            ref bool any,
+            ref float minX,
+            ref float minY,
+            ref float maxX,
+            ref float maxY)
+        {
+            Vector2 point;
+            if (!ProjectEspWorld(cam, world, out point)) return;
+            if (!any)
+            {
+                minX = maxX = point.x;
+                minY = maxY = point.y;
+                any = true;
+                return;
+            }
+            if (point.x < minX) minX = point.x;
+            if (point.x > maxX) maxX = point.x;
+            if (point.y < minY) minY = point.y;
+            if (point.y > maxY) maxY = point.y;
+        }
+
+        private static Rect PlaceInfoCard(
+            ScreenTargetBounds target,
+            float width,
+            float height,
+            float gap,
+            out bool panelOnRight)
+        {
+            const float edge = 7f;
+            width = Mathf.Round(width);
+            height = Mathf.Round(height);
+            bool preferRight = target.centerX >= Screen.width * 0.5f;
+            float rightX = target.maxX + gap;
+            float leftX = target.minX - gap - width;
+            bool rightFits = rightX + width <= Screen.width - edge;
+            bool leftFits = leftX >= edge;
+
+            if (preferRight) panelOnRight = rightFits || !leftFits;
+            else panelOnRight = !leftFits && rightFits;
+
+            float x = panelOnRight ? rightX : leftX;
+            x = Mathf.Round(Mathf.Clamp(x, edge, Mathf.Max(edge, Screen.width - width - edge)));
+            float desiredY = Mathf.Round(Mathf.Clamp(
+                target.minY,
+                edge,
+                Mathf.Max(edge, Screen.height - height - edge)));
+
+            Rect best = new Rect(x, desiredY, width, height);
+            if (InfoCardOverlaps(best))
+            {
+                const float step = 13f;
+                for (int i = 1; i <= 10; i++)
+                {
+                    float offset = ((i + 1) / 2) * step * (i % 2 == 1 ? 1f : -1f);
+                    float candidateY = Mathf.Round(Mathf.Clamp(
+                        desiredY + offset,
+                        edge,
+                        Mathf.Max(edge, Screen.height - height - edge)));
+                    Rect candidate = new Rect(x, candidateY, width, height);
+                    if (!InfoCardOverlaps(candidate))
+                    {
+                        best = candidate;
+                        break;
+                    }
+                }
+            }
+            _placedInfoCards.Add(best);
+            return best;
+        }
+
+        private static bool InfoCardOverlaps(Rect candidate)
+        {
+            for (int i = 0; i < _placedInfoCards.Count; i++)
+            {
+                Rect other = _placedInfoCards[i];
+                if (candidate.xMin < other.xMax + 3f && candidate.xMax + 3f > other.xMin &&
+                    candidate.yMin < other.yMax + 3f && candidate.yMax + 3f > other.yMin)
+                    return true;
+            }
+            return false;
+        }
+
+        private static void DrawInfoCardChrome(
+            Rect panel,
+            ScreenTargetBounds target,
+            bool panelOnRight,
+            Color accent,
+            InfoCardMode mode,
+            float scale)
+        {
+            float alpha = mode == InfoCardMode.Near ? 0.86f : mode == InfoCardMode.Mid ? 0.78f : 0.68f;
+            Color surface = new Color(0.012f, 0.028f, 0.043f, alpha);
+            if (mode != InfoCardMode.Far)
+            {
+                UIHelper.DrawBox(
+                    new Vector2(panel.x + 1f, panel.y + 2f),
+                    new Vector2(panel.width, panel.height),
+                    new Color(0f, 0f, 0f, 0.36f),
+                    false);
+            }
+            UIHelper.DrawBox(new Vector2(panel.x, panel.y), new Vector2(panel.width, panel.height), surface, false);
+
+            float railX = panelOnRight ? panel.x : panel.xMax;
+            UIHelper.DrawLine(
+                new Vector2(railX, panel.y),
+                new Vector2(railX, panel.yMax),
+                new Color(accent.r, accent.g, accent.b, mode == InfoCardMode.Far ? 0.72f : 0.94f),
+                mode == InfoCardMode.Far ? 1f : Mathf.Max(1.25f, 1.4f * scale));
+            float tickLength = (mode == InfoCardMode.Far ? 14f : 22f) * scale;
+            float tickEndX = panelOnRight ? railX + tickLength : railX - tickLength;
+            UIHelper.DrawLine(
+                new Vector2(railX, panel.y),
+                new Vector2(tickEndX, panel.y),
+                new Color(accent.r, accent.g, accent.b, 0.60f),
+                1f);
+
+            float leaderY = panel.y + (mode == InfoCardMode.Far ? 9f : 12f) * scale;
+            float targetX = panelOnRight ? target.maxX + 1f : target.minX - 1f;
+            float targetY = target.maxY - target.minY > 6f
+                ? Mathf.Clamp(leaderY, target.minY + 3f, target.maxY - 3f)
+                : target.centerY;
+            Color leaderColor = new Color(accent.r, accent.g, accent.b, 0.48f);
+            UIHelper.DrawLine(new Vector2(targetX, targetY), new Vector2(railX, leaderY), leaderColor, 1f);
+            UIHelper.DrawBox(
+                new Vector2(Mathf.Round(targetX - 1f), Mathf.Round(targetY - 1f)),
+                new Vector2(3f, 3f),
+                accent,
+                false);
+        }
+
+        private static void DrawInfoVitals(
+            float x,
+            float y,
+            float width,
+            float hpPercent,
+            float shieldPercent,
+            bool hasShield,
+            Color hpColor,
+            float scale)
+        {
+            x = Mathf.Round(x);
+            y = Mathf.Round(y);
+            width = Mathf.Round(width);
+            float hpHeight = Mathf.Max(4f, Mathf.Round(4f * scale));
+            UIHelper.DrawBox(new Vector2(x, y), new Vector2(width, hpHeight), InfoBarTrack, false);
+            float hpWidth = Mathf.Round(width * hpPercent);
+            if (hpWidth > 0.5f)
+                UIHelper.DrawBox(new Vector2(x, y), new Vector2(hpWidth, hpHeight), hpColor, false);
+
+            if (!hasShield) return;
+            float shieldY = Mathf.Round(y + 5f * scale);
+            float shieldHeight = Mathf.Max(2f, Mathf.Round(2f * scale));
+            UIHelper.DrawBox(new Vector2(x, shieldY), new Vector2(width, shieldHeight), InfoBarTrack, false);
+            float shieldWidth = Mathf.Round(width * shieldPercent);
+            if (shieldWidth > 0.5f)
+                UIHelper.DrawBox(new Vector2(x, shieldY), new Vector2(shieldWidth, shieldHeight), InfoShield, false);
+        }
+
+        private static void EnsureInfoCardStyles(float scale)
+        {
+            int titleSize = Mathf.Max(15, Mathf.RoundToInt(15f * scale));
+            int bodySize = Mathf.Max(13, Mathf.RoundToInt(13f * scale));
+            int microSize = Mathf.Max(12, Mathf.RoundToInt(12f * scale));
+            int key = titleSize * 10000 + bodySize * 100 + microSize;
+            if (_infoTitleStyle != null && _infoStyleKey == key) return;
+
+            _infoTitleStyle = CreateInfoCardStyle(titleSize, FontStyle.Bold);
+            _infoBodyStyle = CreateInfoCardStyle(bodySize, FontStyle.Normal);
+            _infoMicroStyle = CreateInfoCardStyle(microSize, FontStyle.Normal);
+            _infoStyleKey = key;
+        }
+
+        private static GUIStyle CreateInfoCardStyle(int size, FontStyle fontStyle)
+        {
+            GUIStyle style = new GUIStyle(GUI.skin.label);
+            style.fontSize = size;
+            style.fontStyle = fontStyle;
+            style.wordWrap = false;
+            style.richText = false;
+            style.clipping = TextClipping.Clip;
+            style.padding = new RectOffset(0, 0, 0, 0);
+            style.margin = new RectOffset(0, 0, 0, 0);
+            style.contentOffset = Vector2.zero;
+            style.normal = new GUIStyleState { background = null, textColor = Color.white };
+            return style;
+        }
+
+        private static void DrawInfoText(
+            Rect rect,
+            string text,
+            GUIStyle style,
+            Color color,
+            TextAnchor alignment)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            rect = PixelAlignInfoRect(rect);
+            style.alignment = alignment;
+            style.normal.textColor = new Color(0f, 0f, 0f, 0.94f);
+            GUI.Label(new Rect(rect.x + 1f, rect.y + 1f, rect.width, rect.height), text, style);
+            style.normal.textColor = color;
+            GUI.Label(rect, text, style);
+        }
+
+        private static Rect PixelAlignInfoRect(Rect rect)
+        {
+            return new Rect(
+                Mathf.Round(rect.x),
+                Mathf.Round(rect.y),
+                Mathf.Round(rect.width),
+                Mathf.Round(rect.height));
+        }
+
+        private static Vector2 MeasureInfoText(string text, GUIStyle style)
+        {
+            _gc.text = text ?? string.Empty;
+            return style.CalcSize(_gc);
+        }
+
+        private static string FitInfoText(string text, GUIStyle style, float maxWidth)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+            if (MeasureInfoText(text, style).x <= maxWidth) return text;
+
+            const string suffix = "...";
+            int low = 0;
+            int high = text.Length;
+            while (low < high)
+            {
+                int middle = (low + high + 1) / 2;
+                string candidate = text.Substring(0, middle) + suffix;
+                if (MeasureInfoText(candidate, style).x <= maxWidth) low = middle;
+                else high = middle - 1;
+            }
+            return low <= 0 ? suffix : text.Substring(0, low) + suffix;
         }
 
         // ===========================================================

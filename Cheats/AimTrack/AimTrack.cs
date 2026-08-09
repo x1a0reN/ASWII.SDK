@@ -15,14 +15,25 @@ namespace ASWDEBUG.Cheats.AimTrack
     {
         public static bool Enabled;
 
-        public static bool Wall;
-        public static bool Shield;
-        public static bool Hidden;
+        public static bool Wall = true;
+        public static bool Shield = true;
+        public static bool Hidden = true;
+        public static bool DrawFovCircle = true;
+        public static float RadiusPixels = 188f;
+        public static float TrackingProbability = 1f;
 
         public static bool AimLocking = false;
         public static Character bestTarget = null;
         public static Character currentTarget;
         public static float closestDistance = float.MaxValue;
+        public static Vector3 CurrentHitPoint;
+        public static byte CurrentHitPart = 4;
+        public static float LastProbabilityRoll = -1f;
+        public static bool LastProbabilityAccepted;
+        public static string LastDecision = "IDLE";
+
+        private const float TargetRefreshInterval = 0.05f;
+        private static float _nextTargetRefresh;
 
         // —— 一次性缓存 —— //
         static FieldInfo s_Field_Character_data;
@@ -44,15 +55,41 @@ namespace ASWDEBUG.Cheats.AimTrack
 
         public static void Disable()
         {
-            Wall = false;
-            Shield = false;
-            Hidden = false;
+            Enabled = false;
+            ResetTarget("DISABLED");
         }
 
-        public static void ToggleEnabled() { Enabled = !Enabled; }
+        public static void ToggleEnabled()
+        {
+            Enabled = !Enabled;
+            if (!Enabled) ResetTarget("DISABLED");
+        }
         public static void ToggleWall() { Wall = !Wall; }
         public static void ToggleShield() { Shield = !Shield; }
         public static void ToggleHidden() { Hidden = !Hidden; }
+
+        public static bool IsExcludedWeapon(WeaponBase weapon)
+        {
+            return weapon == null ||
+                   weapon is KnifeBaseController ||
+                   weapon is BowController ||
+                   weapon is RPGController;
+        }
+
+        public static bool TryResolveTrackedMiss(
+            Vector3 shotOrigin,
+            out Character target,
+            out Vector3 hitPoint,
+            out byte hitPart,
+            out float probabilityRoll)
+        {
+            return PrecisionTracking.TryResolveTrackedMiss(
+                shotOrigin,
+                out target,
+                out hitPoint,
+                out hitPart,
+                out probabilityRoll);
+        }
 
         /// <summary>
         /// 从 Character 实例上读出 data 字段（世界坐标）；
@@ -106,6 +143,16 @@ namespace ASWDEBUG.Cheats.AimTrack
             out float closestDistance
         )
         {
+            if (PrecisionTracking.EnabledPipeline)
+            {
+                return PrecisionTracking.SelectBestTarget(
+                    radius,
+                    requireLineOfSight,
+                    allowShieldBack,
+                    allowHidden,
+                    out closestDistance);
+            }
+
             closestDistance = float.MaxValue;
 
             // 相机 & 玩家
@@ -214,6 +261,16 @@ namespace ASWDEBUG.Cheats.AimTrack
             out float closestDistance  // 返回最近者与玩家的线性世界距离
         )
                 {
+                    if (PrecisionTracking.EnabledPipeline)
+                    {
+                        return PrecisionTracking.SelectBestTargetByWorldDistance(
+                            radius,
+                            requireLineOfSight,
+                            allowShieldBack,
+                            allowHidden,
+                            out closestDistance);
+                    }
+
                     closestDistance = float.MaxValue;
 
                     var player = ASSingleton<Level>.Instance.GetPlayer();
@@ -301,8 +358,20 @@ namespace ASWDEBUG.Cheats.AimTrack
 
         private static void Track()
         {
-            if (Enabled && !(Level.Instance.GetPlayer().mWeapon is KnifeBaseController)) 
+            Character player = null;
+            try { player = Level.Instance == null ? null : Level.Instance.GetPlayer(); }
+            catch { }
+
+            if (!Enabled || player == null || IsExcludedWeapon(player.mWeapon))
             {
+                ResetTarget(Enabled ? "WEAPON_EXCLUDED" : "DISABLED");
+                return;
+            }
+
+            if (Enabled)
+            {
+                if (Time.realtimeSinceStartup < _nextTargetRefresh) return;
+                _nextTargetRefresh = Time.realtimeSinceStartup + TargetRefreshInterval;
 
                 if (SpinTop.Enabled)
                 {
@@ -312,12 +381,26 @@ namespace ASWDEBUG.Cheats.AimTrack
                 else
                 {
                     // 寻找追踪目标
-                    bestTarget = SelectBestTarget(ESP.ESP.CircleRadius, Wall, Shield, Hidden, out closestDistance);
+                    bestTarget = SelectBestTarget(RadiusPixels, Wall, Shield, Hidden, out closestDistance);
                 }
 
                 currentTarget = bestTarget;
+                AimLocking = currentTarget != null;
+                LastDecision = AimLocking ? "TARGET_READY" : "NO_TARGET";
             }
 
+        }
+
+        private static void ResetTarget(string decision)
+        {
+            AimLocking = false;
+            bestTarget = null;
+            currentTarget = null;
+            closestDistance = float.MaxValue;
+            CurrentHitPoint = Vector3.zero;
+            CurrentHitPart = 4;
+            LastDecision = decision;
+            _nextTargetRefresh = 0f;
         }
     }
 }
