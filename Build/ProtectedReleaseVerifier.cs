@@ -230,6 +230,18 @@ internal static class ProtectedReleaseVerifier
         MethodDefinition wantsFire = autoFire == null
             ? null
             : FindMethod(autoFire, "get_WantsFire");
+        MethodDefinition triggerTargetAcquired = autoFire == null
+            ? null
+            : FindMethod(autoFire, "get_TriggerTargetAcquired");
+        MethodDefinition setTriggerEnabled = autoFire == null
+            ? null
+            : FindMethod(autoFire, "SetTriggerEnabled");
+        MethodDefinition setAutoAttackEnabled = autoFire == null
+            ? null
+            : FindMethod(autoFire, "SetAutoAttackEnabled");
+        MethodDefinition toggleAutoAttack = autoFire == null
+            ? null
+            : FindMethod(autoFire, "ToggleAutoFireAllowed");
         MethodDefinition shouldFireKeyDown = autoFire == null
             ? null
             : FindMethod(autoFire, "ShouldFireKeyDown");
@@ -248,6 +260,24 @@ internal static class ProtectedReleaseVerifier
         MethodDefinition stringGetKeyDownPrefix = stringGetKeyDownPatch == null
             ? null
             : FindMethod(stringGetKeyDownPatch, "Prefix");
+        MethodDefinition loadConfig = null;
+        foreach (TypeDefinition type in AllTypes(assembly.MainModule))
+        {
+            foreach (MethodDefinition method in type.Methods)
+            {
+                if (MethodHasString(method, "automation.auto_attack") &&
+                    CallsMethod(method, setTriggerEnabled) &&
+                    CallsMethod(method, setAutoAttackEnabled))
+                {
+                    loadConfig = method;
+                    break;
+                }
+            }
+            if (loadConfig != null) break;
+        }
+        MethodDefinition drawAutomation = FindMethodWithString(
+            assembly.MainModule,
+            "FIRE OUTPUT / ACTIVE");
         FieldDefinition keyDownRepeat = autoFire == null
             ? null
             : FindField(autoFire, "KeyDownRepeatSeconds");
@@ -259,14 +289,42 @@ internal static class ProtectedReleaseVerifier
             FindMethod(autoFire, "Enable") != null &&
             FindMethod(autoFire, "Fire") != null &&
             FindMethod(autoFire, "IsCrosshairOnEnemyExact") != null &&
-            FindMethod(autoFire, "ToggleAutoFireAllowed") != null &&
+            toggleAutoAttack != null &&
+            setTriggerEnabled != null &&
+            setAutoAttackEnabled != null &&
             tick != null &&
             reset != null &&
             wantsFire != null &&
+            triggerTargetAcquired != null &&
             shouldFireKeyDown != null &&
             FindField(autoFire, "Enabled") != null &&
-            FindField(autoFire, "AutoFireAllowed") != null,
+            FindField(autoFire, "AutoFireAllowed") != null &&
+            FindField(autoFire, "_triggerTargetAcquired") != null,
             label + " automatic-trigger runtime contract is incomplete.");
+        Require(
+            MethodReferencesField(wantsFire, "AutoFireAllowed") &&
+            CallsMethod(wantsFire, triggerTargetAcquired) &&
+            !MethodWritesNamedField(tick, "AutoFireAllowed") &&
+            !MethodWritesNamedField(reset, "AutoFireAllowed") &&
+            CallsMethod(toggleAutoAttack, setAutoAttackEnabled),
+            label + " automatic attack and trigger acquisition are not independent.");
+        Require(
+            loadConfig != null &&
+            CallsMethod(loadConfig, setTriggerEnabled) &&
+            CallsMethod(loadConfig, setAutoAttackEnabled) &&
+            drawAutomation != null &&
+            FindReachableMethodCalling(
+                drawAutomation,
+                "SetTriggerEnabled",
+                2) != null &&
+            FindReachableMethodCalling(
+                drawAutomation,
+                "SetAutoAttackEnabled",
+                2) != null &&
+            HasStringLiteral(assembly, "automation.auto_trigger") &&
+            HasStringLiteral(assembly, "automation.auto_attack") &&
+            HasStringLiteral(assembly, "FIRE OUTPUT / ACTIVE"),
+            label + " automatic attack and trigger controls are not independently persisted and exposed.");
         Require(
             update != null &&
             CallsMethod(update, tick) &&
@@ -2270,6 +2328,33 @@ internal static class ProtectedReleaseVerifier
         return false;
     }
 
+    private static bool MethodWritesNamedField(
+        MethodDefinition method,
+        string expectedName)
+    {
+        if (method == null || !method.HasBody)
+        {
+            return false;
+        }
+
+        foreach (Instruction instruction in method.Body.Instructions)
+        {
+            if (instruction.OpCode.Code != Code.Stfld &&
+                instruction.OpCode.Code != Code.Stsfld)
+            {
+                continue;
+            }
+
+            FieldReference field = instruction.Operand as FieldReference;
+            if (field != null &&
+                string.Equals(field.Name, expectedName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static bool MethodWritesField(
         MethodDefinition method,
         string declaringTypeName)
@@ -2965,6 +3050,23 @@ internal static class ProtectedReleaseVerifier
             if (string.Equals(method.Name, name, StringComparison.Ordinal))
             {
                 return method;
+            }
+        }
+        return null;
+    }
+
+    private static MethodDefinition FindMethodWithString(
+        ModuleDefinition module,
+        string value)
+    {
+        foreach (TypeDefinition candidateType in AllTypes(module))
+        {
+            foreach (MethodDefinition method in candidateType.Methods)
+            {
+                if (MethodHasString(method, value))
+                {
+                    return method;
+                }
             }
         }
         return null;

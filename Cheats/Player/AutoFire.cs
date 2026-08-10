@@ -16,7 +16,8 @@ namespace ASWDEBUG.Cheats.Player
         private const float MaxCastDistance = 300f;
         private const float KeyDownRepeatSeconds = 0.06f;
 
-        private static bool _wasAllowed;
+        private static bool _wasFiring;
+        private static bool _triggerTargetAcquired;
         private static float _nextKeyDownAt;
         private static int _keyDownPulseFrame = -1;
         private static bool _castMaskInitialized;
@@ -25,9 +26,14 @@ namespace ASWDEBUG.Cheats.Player
         public static bool Enabled;
         public static bool AutoFireAllowed;
 
+        public static bool TriggerTargetAcquired
+        {
+            get { return Enabled && _triggerTargetAcquired; }
+        }
+
         public static bool WantsFire
         {
-            get { return Enabled && AutoFireAllowed; }
+            get { return AutoFireAllowed || TriggerTargetAcquired; }
         }
 
         public static void Enable()
@@ -53,29 +59,41 @@ namespace ASWDEBUG.Cheats.Player
             if (!Enabled || level == null || player == null || camera == null ||
                 player.IsDied || (player.Is_Viewer && !player.Is_GP))
             {
-                SetAllowed(false);
+                SetTriggerTargetAcquired(false);
                 return;
             }
 
             Character target;
             bool allowed = TryGetCrosshairTarget(level, player, camera, out target);
-            SetAllowed(allowed);
+            SetTriggerTargetAcquired(allowed);
         }
 
         public static void Toggle()
         {
-            Enabled = !Enabled;
-            if (!Enabled) SetAllowed(false);
+            SetTriggerEnabled(!Enabled);
+        }
+
+        public static void SetTriggerEnabled(bool enabled)
+        {
+            Enabled = enabled;
+            if (!Enabled) _triggerTargetAcquired = false;
+            UpdateFireState();
         }
 
         public static void Reset()
         {
-            SetAllowed(false);
+            SetTriggerTargetAcquired(false);
         }
 
         public static void ToggleAutoFireAllowed()
         {
-            SetAllowed(!AutoFireAllowed);
+            SetAutoAttackEnabled(!AutoFireAllowed);
+        }
+
+        public static void SetAutoAttackEnabled(bool enabled)
+        {
+            AutoFireAllowed = enabled;
+            UpdateFireState();
         }
 
         public static bool ShouldFireKeyDown()
@@ -265,21 +283,27 @@ namespace ASWDEBUG.Cheats.Player
             return _castMask;
         }
 
-        private static void SetAllowed(bool allowed)
+        private static void SetTriggerTargetAcquired(bool acquired)
         {
-            if (allowed && !_wasAllowed)
+            _triggerTargetAcquired = acquired;
+            UpdateFireState();
+        }
+
+        private static void UpdateFireState()
+        {
+            bool wantsFire = WantsFire;
+            if (wantsFire && !_wasFiring)
             {
                 _nextKeyDownAt = 0f;
                 _keyDownPulseFrame = -1;
             }
-            else if (!allowed)
+            else if (!wantsFire)
             {
                 _nextKeyDownAt = 0f;
                 _keyDownPulseFrame = -1;
             }
 
-            AutoFireAllowed = allowed;
-            _wasAllowed = allowed;
+            _wasFiring = wantsFire;
         }
     }
 }

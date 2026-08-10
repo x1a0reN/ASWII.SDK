@@ -104,10 +104,14 @@ namespace ASWDEBUG.Global
                     values,
                     "automation.auto_use",
                     AutoUseManager.Enabled);
-                AutoFire.Enabled = ReadBool(
+                AutoFire.SetTriggerEnabled(ReadBool(
                     values,
                     "automation.auto_trigger",
-                    AutoFire.Enabled);
+                    AutoFire.Enabled));
+                AutoFire.SetAutoAttackEnabled(ReadBool(
+                    values,
+                    "automation.auto_attack",
+                    AutoFire.AutoFireAllowed));
                 GrenadeNotHurt.Enabled = ReadBool(
                     values,
                     "protection.explosion_no_damage",
@@ -169,7 +173,7 @@ namespace ASWDEBUG.Global
 
                 string[] lines = new string[]
                 {
-                    "# ASW precision profile v2",
+                    "# ASW precision profile v3",
                     "esp.enabled=" + Bool(ESP.Enabled),
                     "esp.skeleton=" + Bool(ESP.SkeletonEsp),
                     "esp.box=" + Bool(ESP.D3BoxEsp),
@@ -191,6 +195,7 @@ namespace ASWDEBUG.Global
                     "aim.shield=" + Bool(AutoAim.Shield),
                     "automation.auto_use=" + Bool(AutoUseManager.Enabled),
                     "automation.auto_trigger=" + Bool(AutoFire.Enabled),
+                    "automation.auto_attack=" + Bool(AutoFire.AutoFireAllowed),
                     "protection.explosion_no_damage=" + Bool(GrenadeNotHurt.Enabled),
                     "protection.explosion_no_damage_probability=" +
                         Number(GrenadeNotHurt.Probability),

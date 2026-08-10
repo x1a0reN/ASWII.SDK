@@ -518,15 +518,17 @@ namespace ASWDEBUG.UI
                 AutoUseManager.Load();
 
             SectionLabel(ref y, width, "FIRE SUPPORT", "辅助执行");
-            ApplyToggle(ref y, width, "自动扳机", "逐帧检查准星首个有效碰撞体，并兼容按住与半自动开火路径。", AutoFire.Enabled,
-                delegate(bool value) { AutoFire.Enabled = value; });
+            ApplyToggle(ref y, width, "自动扳机", "仅在准星命中有效敌人时开火；地形、队友和无效角色会阻断。", AutoFire.Enabled,
+                delegate(bool value) { AutoFire.SetTriggerEnabled(value); });
+            ApplyToggle(ref y, width, "自动攻击", "持续提交开火输入，不依赖准星判定；与自动扳机完全独立。", AutoFire.AutoFireAllowed,
+                delegate(bool value) { AutoFire.SetAutoAttackEnabled(value); });
             InfoPanel(
                 ref y,
                 width,
-                AutoFire.WantsFire ? "TRIGGER / FIRING" : "TRIGGER / STANDBY",
-                AutoFire.Enabled
-                    ? "准星命中有效敌人时自动触发；地形、队友与无效角色会阻断。"
-                    : "功能未启用。",
+                AutoFire.WantsFire ? "FIRE OUTPUT / ACTIVE" : "FIRE OUTPUT / STANDBY",
+                "自动扳机=" + (AutoFire.Enabled ? "ON" : "OFF") +
+                "   准星目标=" + (AutoFire.TriggerTargetAcquired ? "LOCKED" : "NONE") +
+                "   自动攻击=" + (AutoFire.AutoFireAllowed ? "ON" : "OFF"),
                 AutoFire.WantsFire ? Accent : TextMuted);
             ApplyToggle(ref y, width, "AI 接管", "启用现有自动战斗管理器；手动输入仍优先。", Settings.AutoBattleEnabled,
                 delegate(bool value)
@@ -849,7 +851,7 @@ namespace ASWDEBUG.UI
                 case ConsoleTab.Ballistics: return 580f;
                 case ConsoleTab.Tracking: return 1120f;
                 case ConsoleTab.Protection: return 820f;
-                case ConsoleTab.Automation: return 860f;
+                case ConsoleTab.Automation: return 940f;
                 case ConsoleTab.Utility: return 760f;
                 case ConsoleTab.Access: return 740f;
                 default: return 620f;

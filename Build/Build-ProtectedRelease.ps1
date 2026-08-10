@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $projectPath = Join-Path $projectRoot 'ASWDEBUG.csproj'
 $toolManifest = Join-Path $projectRoot '.config\dotnet-tools.json'
-$expectedVersion = '1.0.48.0'
+$expectedVersion = '1.0.49.0'
 $obfuscarVersion = '2.2.50'
 $gameAssemblyPath =
     'C:\Users\x1a0reN\AppData\LocalLow\____________II\Managed_Dump\' +
