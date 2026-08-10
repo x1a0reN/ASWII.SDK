@@ -601,15 +601,6 @@ namespace ASWDEBUG.UI
                     : "验证未完成或已失效；功能补丁不会安装。",
                 online ? Accent : Danger);
 
-            MetricCard(
-                new Rect(0f, y, width, 76f),
-                "ENTITLEMENT EXPIRY",
-                auth == null || string.IsNullOrEmpty(auth.StaticExpiredText)
-                    ? "PENDING"
-                    : auth.StaticExpiredText,
-                online ? Accent : TextMuted);
-            y += 88f;
-
             InfoPanel(
                 ref y,
                 width,

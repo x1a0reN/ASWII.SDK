@@ -8,7 +8,6 @@ using ASWDEBUG.Cheats.Player;
 using ASWDEBUG.Global;
 using ASWDEBUG.Main;
 using ASWDEBUG.Patch;
-using ASWDEBUG.Verify;
 using PluginTool;
 using System;
 using System.Collections.Generic;
@@ -251,7 +250,7 @@ namespace ASWDEBUG.UI
             GUI.color = Color.white;
 
             // Player
-            UIHelper.Begin("玩家", 10, 10, 150, 242, 0, 22, 0);
+            UIHelper.Begin("玩家", 10, 10, 150, 220, 0, 22, 0);
             UIHelper.Button("红名透视", HealthBarDisplay.Enabled, HealthBarDisplay.Toggle);
             UIHelper.Button("爆炸免伤", GrenadeNotHurt.Enabled, GrenadeNotHurt.Toggle);
             UIHelper.Button("自动扳机", AutoFire.Enabled, AutoFire.Toggle);
@@ -264,12 +263,6 @@ namespace ASWDEBUG.UI
             //UIHelper.Button("瞬移秒杀", Aike.Enabled, Aike.Toggle);
             //UIHelper.Button("自动锁血", AutoLockHP.Enabled, AutoLockHP.Toggle);
             UIHelper.Button("超级大陀螺", SpinTop.Enabled, SpinTop.Toggle);
-            string expiredText = "未获取";
-            if (VeriGateAuthManager.Instance != null && !string.IsNullOrEmpty(VeriGateAuthManager.Instance.StaticExpiredText))
-            {
-                expiredText = VeriGateAuthManager.Instance.StaticExpiredText;
-            }
-            UIHelper.LabelAuto("卡密到期时间: " + expiredText);
 
             // ===== Layout 阶段：做快照/决定隐藏 =====
             if (et == EventType.Layout)
