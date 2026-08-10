@@ -111,6 +111,7 @@
     <Compile Include="Cheats\Player\AutoFire.cs" />
     <Compile Include="Cheats\Player\AutoLockHP.cs" />
     <Compile Include="Cheats\Player\BulletNoRecoil.cs" />
+    <Compile Include="Cheats\Player\ExplosionDamagePolicy.cs" />
     <Compile Include="Cheats\Player\GrenadeHalfHurt.cs" />
     <Compile Include="Cheats\Player\GrenadeNotHurt.cs" />
     <Compile Include="Cheats\Player\HealthBarDisplay.cs" />

@@ -966,20 +966,27 @@ namespace ASWDEBUG
             {
                 return false;
             }
+            Character player = null;
+            try
+            {
+                Level level = ASSingleton<Level>.Instance;
+                player = level == null ? null : level.GetPlayer();
+            }
+            catch
+            {
+            }
+
+            bool suppressDamage;
+            bool resolvedHalfDamage;
+            ExplosionDamagePolicy.Resolve(
+                player != null && uid != (int)player.uid,
+                half_damage,
+                out suppressDamage,
+                out resolvedHalfDamage);
+
             ch.BeginWrite();
-            if (!GrenadeNotHurt.Enabled)
-            {
-                ch.WriteByte(114);
-            }
-            else if (uid != (int)ASSingleton<Level>.Instance.GetPlayer().uid)
-            {
-                // 115是没伤害，114是有伤害
-                ch.WriteByte(115);
-            }
-            else
-            {
-                ch.WriteByte(114);
-            }
+            // 115 is no damage; 114 preserves the normal explosion path.
+            ch.WriteByte(suppressDamage ? (byte)115 : (byte)114);
 
             ch.WriteByte((!c.IsRobot) ? (byte)1 : (byte)0);
             ch.WriteInt(c.robot_uid);
@@ -987,14 +994,7 @@ namespace ASWDEBUG
             ch.WriteByte(slot);
             Vector3 data = pos + new Vector3(0f, 0.5f, 0f);
             ch.WriteVector3(data);
-            if (GrenadeHalfHurt.Enabled && uid != (int)ASSingleton<Level>.Instance.GetPlayer().uid)
-            {
-                ch.WriteByte(true);
-            }
-            else
-            {
-                ch.WriteByte(half_damage);
-            }
+            ch.WriteByte(resolvedHalfDamage);
             ch.EndWrite();
 
             return false;
@@ -2727,7 +2727,7 @@ namespace ASWDEBUG
                 // 读取游戏里配置的“开火键”
                 var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
 
-                if ((key == fireKey && AutoFire.AutoFireAllowed) || (key == fireKey && SpinTop.Enabled))
+                if ((key == fireKey && AutoFire.WantsFire) || (key == fireKey && SpinTop.Enabled))
                 {
                     __result = true;
                     return false; // 跳过原 Input.GetKey
@@ -2790,7 +2790,7 @@ namespace ASWDEBUG
                     }
 
                     var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
-                    if ((keyCode == fireKey && AutoFire.AutoFireAllowed) || (keyCode == fireKey && SpinTop.Enabled))
+                    if ((keyCode == fireKey && AutoFire.WantsFire) || (keyCode == fireKey && SpinTop.Enabled))
                     {
                         __result = true;
                         return false; // 跳过原 Input.GetKey(string)
@@ -2835,6 +2835,13 @@ namespace ASWDEBUG
                 {
                     return false;
                 }
+
+                var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
+                if (key == fireKey && AutoFire.ShouldFireKeyDown())
+                {
+                    __result = true;
+                    return false;
+                }
             }
             catch
             {
@@ -2876,6 +2883,13 @@ namespace ASWDEBUG
                 if (AutoBattleInput.TryParseKeyCode(name, out keyCode) &&
                     AutoBattleInput.TryGetKeyDown(keyCode, ref __result))
                 {
+                    return false;
+                }
+
+                var fireKey = ASSingleton<GameConfig>.Instance.KeyDic[ActionType.kActionFire];
+                if (keyCode == fireKey && AutoFire.ShouldFireKeyDown())
+                {
+                    __result = true;
                     return false;
                 }
             }

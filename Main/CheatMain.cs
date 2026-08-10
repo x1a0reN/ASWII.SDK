@@ -197,6 +197,16 @@ namespace ASWDEBUG.Main
 
                 try
                 {
+                    AutoFire.Tick(level, player, CameraMain);
+                }
+                catch (Exception e)
+                {
+                    AutoFire.Reset();
+                    FileLogger.Log("CHEAT", "AutoFire tick failed: " + e.Message);
+                }
+
+                try
+                {
                     AutoAim.Enable();
                 }
                 catch (Exception e)
@@ -253,6 +263,7 @@ namespace ASWDEBUG.Main
                 BossAutoAim.bestTarget = null;
                 BossAutoAim.currentTarget = null;
                 MotherBossAutoClear.Tick(null, null);
+                AutoFire.Reset();
             }
 
             if (EnableDebugUi && Input.GetKeyDown(KeyCode.Delete))
@@ -268,6 +279,7 @@ namespace ASWDEBUG.Main
             try { FeatureConfigStore.SaveNow(); } catch { }
             try { LocalBotManager.RemoveAll("shutdown"); } catch { }
             try { FlightMode.Shutdown(); } catch { }
+            try { AutoFire.Reset(); } catch { }
             try
             {
                 DllUsageTelemetry.Stop();

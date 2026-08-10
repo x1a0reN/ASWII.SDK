@@ -104,6 +104,30 @@ namespace ASWDEBUG.Global
                     values,
                     "automation.auto_use",
                     AutoUseManager.Enabled);
+                AutoFire.Enabled = ReadBool(
+                    values,
+                    "automation.auto_trigger",
+                    AutoFire.Enabled);
+                GrenadeNotHurt.Enabled = ReadBool(
+                    values,
+                    "protection.explosion_no_damage",
+                    GrenadeNotHurt.Enabled);
+                GrenadeNotHurt.SetProbability(ReadFloat(
+                    values,
+                    "protection.explosion_no_damage_probability",
+                    GrenadeNotHurt.Probability,
+                    0f,
+                    1f));
+                GrenadeHalfHurt.Enabled = ReadBool(
+                    values,
+                    "protection.explosion_half_damage",
+                    GrenadeHalfHurt.Enabled);
+                GrenadeHalfHurt.SetProbability(ReadFloat(
+                    values,
+                    "protection.explosion_half_damage_probability",
+                    GrenadeHalfHurt.Probability,
+                    0f,
+                    1f));
                 OtherC.Enabled = ReadBool(
                     values,
                     "utility.card_reveal",
@@ -145,7 +169,7 @@ namespace ASWDEBUG.Global
 
                 string[] lines = new string[]
                 {
-                    "# ASW precision profile v1",
+                    "# ASW precision profile v2",
                     "esp.enabled=" + Bool(ESP.Enabled),
                     "esp.skeleton=" + Bool(ESP.SkeletonEsp),
                     "esp.box=" + Bool(ESP.D3BoxEsp),
@@ -166,6 +190,13 @@ namespace ASWDEBUG.Global
                     "aim.hidden=" + Bool(AutoAim.Hidden),
                     "aim.shield=" + Bool(AutoAim.Shield),
                     "automation.auto_use=" + Bool(AutoUseManager.Enabled),
+                    "automation.auto_trigger=" + Bool(AutoFire.Enabled),
+                    "protection.explosion_no_damage=" + Bool(GrenadeNotHurt.Enabled),
+                    "protection.explosion_no_damage_probability=" +
+                        Number(GrenadeNotHurt.Probability),
+                    "protection.explosion_half_damage=" + Bool(GrenadeHalfHurt.Enabled),
+                    "protection.explosion_half_damage_probability=" +
+                        Number(GrenadeHalfHurt.Probability),
                     "utility.card_reveal=" + Bool(OtherC.Enabled),
                     "utility.auto_anti_kick=" + Bool(AutoKick.Enabled),
                     "utility.ignore_match_validation=" + Bool(OtherC.EnabledVeryify)

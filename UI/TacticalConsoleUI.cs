@@ -21,24 +21,25 @@ namespace ASWDEBUG.UI
             Visual,
             Ballistics,
             Tracking,
+            Protection,
             Automation,
             Utility,
             Access
         }
 
         private const int WindowId = 741902;
-        private const float RailWidth = 164f;
+        private const float RailWidth = 184f;
         private static readonly string[] NavNames = new string[]
         {
-            "总览", "视觉", "弹道", "追踪", "自动化", "实用", "授权"
+            "总览", "视觉", "弹道", "追踪", "防护", "自动化", "实用", "授权"
         };
         private static readonly string[] NavCodes = new string[]
         {
-            "01", "02", "03", "04", "05", "06", "07"
+            "01", "02", "03", "04", "05", "06", "07", "08"
         };
         private static readonly string[] PageTitles = new string[]
         {
-            "运行总览", "视觉识别", "弹道控制", "概率追踪", "自动执行", "对局实用", "网络授权"
+            "运行总览", "视觉识别", "弹道控制", "概率追踪", "伤害防护", "自动执行", "对局实用", "网络授权"
         };
         private static readonly string[] PageDescriptions = new string[]
         {
@@ -46,6 +47,7 @@ namespace ASWDEBUG.UI
             "人物信息采用独立图层，避免骨骼、方框和卡片相互绑定。",
             "直接缩放游戏原生散布输入，0 为直线，1 为原始手感。",
             "仅接管自然未命中的子弹；自然命中不会进入概率计算。",
+            "分别设置爆炸免伤与半伤概率；免伤判定优先，失败后再判定半伤。",
             "管理自动使用规则与辅助执行状态。",
             "集中管理翻牌信息、自动防踢与游戏内房间校验。",
             "验证失败即关闭功能；凭据与 SDK 均不写入核心 DLL。"
@@ -59,8 +61,8 @@ namespace ASWDEBUG.UI
             "直线", "极低", "低", "原生", "高"
         };
 
-        private static readonly Vector2[] Scroll = new Vector2[7];
-        private static Rect _window = new Rect(24f, 24f, 760f, 690f);
+        private static readonly Vector2[] Scroll = new Vector2[8];
+        private static Rect _window = new Rect(24f, 24f, 860f, 740f);
         private static ConsoleTab _tab = ConsoleTab.Overview;
 
         private static Texture2D _white;
@@ -71,6 +73,7 @@ namespace ASWDEBUG.UI
         private static GUIStyle _smallStyle;
         private static GUIStyle _microStyle;
         private static GUIStyle _wrappedMicroStyle;
+        private static GUIStyle _badgeStyle;
         private static GUIStyle _navStyle;
         private static GUIStyle _navActiveStyle;
         private static GUIStyle _buttonStyle;
@@ -88,8 +91,8 @@ namespace ASWDEBUG.UI
         private static readonly Color Border = Rgb(42, 59, 68, 0.78f);
         private static readonly Color BorderSoft = Rgb(31, 45, 53, 0.72f);
         private static readonly Color Text = Rgb(232, 241, 244, 1f);
-        private static readonly Color TextSecondary = Rgb(148, 166, 174, 1f);
-        private static readonly Color TextMuted = Rgb(91, 112, 121, 1f);
+        private static readonly Color TextSecondary = Rgb(177, 193, 199, 1f);
+        private static readonly Color TextMuted = Rgb(121, 143, 152, 1f);
         private static readonly Color Accent = Rgb(55, 207, 194, 1f);
         private static readonly Color AccentSoft = Rgb(35, 116, 111, 0.42f);
         private static readonly Color Amber = Rgb(244, 184, 96, 1f);
@@ -99,8 +102,8 @@ namespace ASWDEBUG.UI
         {
             EnsureStyles();
 
-            float width = Mathf.Clamp(Screen.width - 32f, 580f, 780f);
-            float height = Mathf.Clamp(Screen.height - 32f, 540f, 730f);
+            float width = Mathf.Clamp(Screen.width - 32f, 700f, 920f);
+            float height = Mathf.Clamp(Screen.height - 32f, 600f, 790f);
             _window.width = width;
             _window.height = height;
             _window.x = Mathf.Clamp(_window.x, 8f, Mathf.Max(8f, Screen.width - width - 8f));
@@ -131,35 +134,36 @@ namespace ASWDEBUG.UI
             DrawContent(width, height);
 
             if (GUI.Button(
-                new Rect(width - 42f, 13f, 28f, 28f),
+                new Rect(width - 44f, 16f, 28f, 28f),
                 "×",
                 _buttonQuietStyle))
             {
                 CheatUIManager.MenuVisible = false;
             }
 
-            GUI.DragWindow(new Rect(0f, 0f, width - 52f, 54f));
+            GUI.DragWindow(new Rect(0f, 0f, width - 52f, 62f));
         }
 
         private static void DrawHeader(float width)
         {
-            DrawRect(new Rect(1f, 1f, width - 2f, 54f), Header);
-            DrawRect(new Rect(0f, 54f, width, 1f), Border);
-            DrawRect(new Rect(18f, 15f, 3f, 24f), Accent);
-            Label(new Rect(30f, 8f, 280f, 25f), "VECTOR / FIELD CONTROL", _titleStyle, Text);
-            Label(new Rect(30f, 31f, 310f, 16f), "PRECISION SUITE  ·  DOORSTOP RUNTIME", _microStyle, TextMuted);
+            DrawRect(new Rect(1f, 1f, width - 2f, 61f), Header);
+            DrawRect(new Rect(0f, 61f, width, 1f), Border);
+            DrawRect(new Rect(0f, 0f, width, 2f), Accent);
+            DrawRect(new Rect(18f, 17f, 3f, 27f), Accent);
+            Label(new Rect(31f, 10f, 330f, 25f), "VECTOR / FIELD CONTROL", _titleStyle, Text);
+            Label(new Rect(31f, 34f, 360f, 17f), "PRECISION SUITE  ·  DOORSTOP RUNTIME", _microStyle, TextMuted);
 
             bool online = VeriGateAuthManager.Instance != null &&
                           VeriGateAuthManager.Instance.LoggedIn;
             Color state = online ? Accent : Amber;
-            DrawRect(new Rect(width - 222f, 17f, 7f, 7f), state);
+            DrawRect(new Rect(width - 232f, 20f, 8f, 8f), state);
             Label(
-                new Rect(width - 207f, 9f, 148f, 24f),
+                new Rect(width - 214f, 12f, 158f, 24f),
                 online ? "AUTH / ONLINE" : "AUTH / PENDING",
                 _smallStyle,
                 state);
             Label(
-                new Rect(width - 207f, 29f, 148f, 15f),
+                new Rect(width - 214f, 33f, 158f, 17f),
                 online ? "heartbeat active" : "fail-closed gate",
                 _microStyle,
                 TextMuted);
@@ -167,14 +171,14 @@ namespace ASWDEBUG.UI
 
         private static void DrawRail(float height)
         {
-            DrawRect(new Rect(1f, 55f, RailWidth, height - 56f), Rail);
-            DrawRect(new Rect(RailWidth, 55f, 1f, height - 56f), BorderSoft);
-            Label(new Rect(18f, 72f, 120f, 18f), "CONTROL DOMAINS", _microStyle, TextMuted);
+            DrawRect(new Rect(1f, 62f, RailWidth, height - 63f), Rail);
+            DrawRect(new Rect(RailWidth, 62f, 1f, height - 63f), BorderSoft);
+            Label(new Rect(18f, 79f, 138f, 18f), "CONTROL DOMAINS", _microStyle, TextMuted);
 
-            float y = 101f;
+            float y = 106f;
             for (int i = 0; i < NavNames.Length; i++)
             {
-                Rect row = new Rect(8f, y, RailWidth - 16f, 42f);
+                Rect row = new Rect(8f, y, RailWidth - 16f, 40f);
                 bool selected = (int)_tab == i;
                 if (selected)
                 {
@@ -188,7 +192,7 @@ namespace ASWDEBUG.UI
                 {
                     _tab = (ConsoleTab)i;
                 }
-                y += 47f;
+                y += 44f;
             }
 
             DrawRect(new Rect(14f, height - 73f, RailWidth - 28f, 1f), BorderSoft);
@@ -200,9 +204,9 @@ namespace ASWDEBUG.UI
         {
             Rect area = new Rect(
                 RailWidth + 23f,
-                72f,
+                79f,
                 width - RailWidth - 42f,
-                height - 88f);
+                height - 96f);
             GUI.BeginGroup(area);
 
             int index = (int)_tab;
@@ -227,6 +231,7 @@ namespace ASWDEBUG.UI
                 case ConsoleTab.Visual: DrawVisual(ref y, content.width); break;
                 case ConsoleTab.Ballistics: DrawBallistics(ref y, content.width); break;
                 case ConsoleTab.Tracking: DrawTracking(ref y, content.width); break;
+                case ConsoleTab.Protection: DrawProtection(ref y, content.width); break;
                 case ConsoleTab.Automation: DrawAutomation(ref y, content.width); break;
                 case ConsoleTab.Utility: DrawUtility(ref y, content.width); break;
                 case ConsoleTab.Access: DrawAccess(ref y, content.width); break;
@@ -408,6 +413,88 @@ namespace ASWDEBUG.UI
                 delegate(bool value) { AutoAim.Wall = value; });
         }
 
+        private static void DrawProtection(ref float y, float width)
+        {
+            SectionLabel(ref y, width, "EXPLOSION POLICY", "爆炸伤害策略");
+            ApplyToggle(
+                ref y,
+                width,
+                "概率爆炸免伤",
+                "仅处理其他角色造成的爆炸；命中概率后发送无伤害结果。",
+                GrenadeNotHurt.Enabled,
+                delegate(bool value) { GrenadeNotHurt.Enabled = value; });
+
+            float noDamageProbability = SliderRow(
+                ref y,
+                width,
+                "免伤概率",
+                "0% 永不触发，100% 每次触发；判定成功后不再执行半伤判定。",
+                GrenadeNotHurt.Probability,
+                0f,
+                1f,
+                Mathf.RoundToInt(GrenadeNotHurt.Probability * 100f) + "%");
+            if (Mathf.Abs(noDamageProbability - GrenadeNotHurt.Probability) > 0.0001f)
+            {
+                GrenadeNotHurt.SetProbability(noDamageProbability);
+                FeatureConfigStore.MarkDirty();
+            }
+
+            ApplyToggle(
+                ref y,
+                width,
+                "概率爆炸半伤",
+                "仅在免伤未触发时判定；成功后强制使用半伤结果。",
+                GrenadeHalfHurt.Enabled,
+                delegate(bool value) { GrenadeHalfHurt.Enabled = value; });
+
+            float halfDamageProbability = SliderRow(
+                ref y,
+                width,
+                "半伤概率",
+                "概率针对免伤判定失败后的剩余事件，两个设置可以同时启用。",
+                GrenadeHalfHurt.Probability,
+                0f,
+                1f,
+                Mathf.RoundToInt(GrenadeHalfHurt.Probability * 100f) + "%");
+            if (Mathf.Abs(halfDamageProbability - GrenadeHalfHurt.Probability) > 0.0001f)
+            {
+                GrenadeHalfHurt.SetProbability(halfDamageProbability);
+                FeatureConfigStore.MarkDirty();
+            }
+
+            SectionLabel(ref y, width, "OUTCOME MODEL", "策略结果预估");
+            float noDamageRate = GrenadeNotHurt.Enabled
+                ? GrenadeNotHurt.Probability
+                : 0f;
+            float halfDamageRate = GrenadeHalfHurt.Enabled
+                ? (1f - noDamageRate) * GrenadeHalfHurt.Probability
+                : 0f;
+            float nativeRate = Mathf.Clamp01(1f - noDamageRate - halfDamageRate);
+            ProbabilityBand(
+                ref y,
+                width,
+                noDamageRate,
+                halfDamageRate,
+                nativeRate);
+
+            string noDamageRoll = FormatProbabilityRoll(
+                ExplosionDamagePolicy.LastNoDamageRoll);
+            string halfDamageRoll = FormatProbabilityRoll(
+                ExplosionDamagePolicy.LastHalfDamageRoll);
+            InfoPanel(
+                ref y,
+                width,
+                "LAST RESOLUTION  " + ExplosionDamagePolicy.LastDecision,
+                "免伤掷骰=" + noDamageRoll +
+                "   半伤掷骰=" + halfDamageRoll +
+                "   自身爆炸保持原生结果",
+                ExplosionDamagePolicy.LastDecision == "NO DAMAGE"
+                    ? Accent
+                    : ExplosionDamagePolicy.LastDecision == "HALF DAMAGE"
+                        ? Amber
+                        : TextSecondary);
+        }
+
         private static void DrawAutomation(ref float y, float width)
         {
             SectionLabel(ref y, width, "RULE ENGINE", "自动使用规则");
@@ -431,10 +518,16 @@ namespace ASWDEBUG.UI
                 AutoUseManager.Load();
 
             SectionLabel(ref y, width, "FIRE SUPPORT", "辅助执行");
-            ApplyToggle(ref y, width, "自动扳机", "保留主分支自动扳机逻辑。", AutoFire.Enabled,
+            ApplyToggle(ref y, width, "自动扳机", "逐帧检查准星首个有效碰撞体，并兼容按住与半自动开火路径。", AutoFire.Enabled,
                 delegate(bool value) { AutoFire.Enabled = value; });
-            ApplyToggle(ref y, width, "允许自动攻击", "作为自动扳机的独立执行许可。", AutoFire.AutoFireAllowed,
-                delegate(bool value) { AutoFire.AutoFireAllowed = value; });
+            InfoPanel(
+                ref y,
+                width,
+                AutoFire.WantsFire ? "TRIGGER / FIRING" : "TRIGGER / STANDBY",
+                AutoFire.Enabled
+                    ? "准星命中有效敌人时自动触发；地形、队友与无效角色会阻断。"
+                    : "功能未启用。",
+                AutoFire.WantsFire ? Accent : TextMuted);
             ApplyToggle(ref y, width, "AI 接管", "启用现有自动战斗管理器；手动输入仍优先。", Settings.AutoBattleEnabled,
                 delegate(bool value)
                 {
@@ -560,21 +653,28 @@ namespace ASWDEBUG.UI
             string description,
             bool value)
         {
-            Rect row = new Rect(0f, y, width, 54f);
+            Rect row = new Rect(0f, y, width, 64f);
             bool hovered = row.Contains(Event.current.mousePosition);
             DrawRect(row, hovered ? SurfaceHover : Surface);
             DrawBorder(row, hovered ? Border : BorderSoft, 1f);
             if (GUI.Button(row, string.Empty, _invisibleButton)) value = !value;
 
-            Label(new Rect(14f, y + 7f, width - 92f, 20f), title, _bodyStyle, Text);
-            Label(new Rect(14f, y + 29f, width - 92f, 17f), description, _microStyle, TextSecondary);
+            Label(new Rect(14f, y + 8f, width - 106f, 21f), title, _bodyStyle, Text);
+            Label(
+                new Rect(14f, y + 31f, width - 106f, 27f),
+                description,
+                _wrappedMicroStyle,
+                TextSecondary);
 
-            Rect track = new Rect(width - 64f, y + 16f, 44f, 22f);
-            DrawRect(track, value ? AccentSoft : Rgb(37, 49, 55, 1f));
-            DrawBorder(track, value ? Accent : Border, 1f);
-            Rect knob = new Rect(value ? track.x + 25f : track.x + 4f, track.y + 4f, 14f, 14f);
-            DrawRect(knob, value ? Accent : TextMuted);
-            y += 62f;
+            Rect state = new Rect(width - 76f, y + 19f, 56f, 26f);
+            DrawRect(state, value ? AccentSoft : Rgb(34, 46, 52, 1f));
+            DrawBorder(state, value ? Accent : Border, 1f);
+            Label(
+                state,
+                value ? "ON" : "OFF",
+                _badgeStyle,
+                value ? Accent : TextMuted);
+            y += 72f;
             return value;
         }
 
@@ -588,20 +688,24 @@ namespace ASWDEBUG.UI
             float maximum,
             string displayValue)
         {
-            Rect row = new Rect(0f, y, width, 78f);
+            Rect row = new Rect(0f, y, width, 86f);
             DrawRect(row, Surface);
             DrawBorder(row, BorderSoft, 1f);
-            Label(new Rect(14f, y + 7f, width - 100f, 20f), title, _bodyStyle, Text);
-            Label(new Rect(width - 92f, y + 7f, 72f, 20f), displayValue, _smallStyle, Accent);
-            Label(new Rect(14f, y + 29f, width - 28f, 17f), description, _microStyle, TextSecondary);
+            Label(new Rect(14f, y + 8f, width - 116f, 21f), title, _bodyStyle, Text);
+            Label(new Rect(width - 102f, y + 8f, 82f, 21f), displayValue, _smallStyle, Accent);
+            Label(
+                new Rect(14f, y + 32f, width - 28f, 24f),
+                description,
+                _wrappedMicroStyle,
+                TextSecondary);
             value = GUI.HorizontalSlider(
-                new Rect(14f, y + 56f, width - 28f, 14f),
+                new Rect(14f, y + 66f, width - 28f, 14f),
                 value,
                 minimum,
                 maximum,
                 _sliderStyle,
                 _thumbStyle);
-            y += 86f;
+            y += 94f;
             return value;
         }
 
@@ -659,6 +763,58 @@ namespace ASWDEBUG.UI
             return clicked;
         }
 
+        private static void ProbabilityBand(
+            ref float y,
+            float width,
+            float noDamage,
+            float halfDamage,
+            float nativeDamage)
+        {
+            Rect rect = new Rect(0f, y, width, 104f);
+            DrawRect(rect, Surface);
+            DrawBorder(rect, BorderSoft, 1f);
+
+            float column = (width - 28f) / 3f;
+            Label(
+                new Rect(14f, y + 10f, column, 20f),
+                "免伤  " + Mathf.RoundToInt(noDamage * 100f) + "%",
+                _smallStyle,
+                Accent);
+            Label(
+                new Rect(14f + column, y + 10f, column, 20f),
+                "半伤  " + Mathf.RoundToInt(halfDamage * 100f) + "%",
+                _smallStyle,
+                Amber);
+            Label(
+                new Rect(14f + column * 2f, y + 10f, column, 20f),
+                "原生  " + Mathf.RoundToInt(nativeDamage * 100f) + "%",
+                _smallStyle,
+                TextSecondary);
+            Label(
+                new Rect(14f, y + 35f, width - 28f, 20f),
+                "独立概率按优先级折算后的最终分布",
+                _microStyle,
+                TextMuted);
+
+            Rect bar = new Rect(14f, y + 69f, width - 28f, 18f);
+            DrawRect(bar, Rgb(31, 42, 48, 1f));
+            float noWidth = bar.width * Mathf.Clamp01(noDamage);
+            float halfWidth = bar.width * Mathf.Clamp01(halfDamage);
+            if (noWidth > 0f)
+                DrawRect(new Rect(bar.x, bar.y, noWidth, bar.height), Accent);
+            if (halfWidth > 0f)
+                DrawRect(new Rect(bar.x + noWidth, bar.y, halfWidth, bar.height), Amber);
+            DrawBorder(bar, Border, 1f);
+            y += 112f;
+        }
+
+        private static string FormatProbabilityRoll(float value)
+        {
+            return value < 0f
+                ? "--"
+                : (value * 100f).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+        }
+
         private static int CountVisualLayers()
         {
             int count = 0;
@@ -689,12 +845,13 @@ namespace ASWDEBUG.UI
             switch (tab)
             {
                 case ConsoleTab.Overview: return 620f;
-                case ConsoleTab.Visual: return 690f;
-                case ConsoleTab.Ballistics: return 520f;
-                case ConsoleTab.Tracking: return 1030f;
-                case ConsoleTab.Automation: return 790f;
-                case ConsoleTab.Utility: return 700f;
-                case ConsoleTab.Access: return 690f;
+                case ConsoleTab.Visual: return 760f;
+                case ConsoleTab.Ballistics: return 580f;
+                case ConsoleTab.Tracking: return 1120f;
+                case ConsoleTab.Protection: return 820f;
+                case ConsoleTab.Automation: return 860f;
+                case ConsoleTab.Utility: return 760f;
+                case ConsoleTab.Access: return 740f;
                 default: return 620f;
             }
         }
@@ -712,26 +869,27 @@ namespace ASWDEBUG.UI
             _windowStyle.padding = new RectOffset(0, 0, 0, 0);
             _windowStyle.border = new RectOffset(0, 0, 0, 0);
 
-            _titleStyle = LabelStyle(17, FontStyle.Bold, TextAnchor.MiddleLeft);
-            _pageTitleStyle = LabelStyle(20, FontStyle.Bold, TextAnchor.MiddleLeft);
-            _bodyStyle = LabelStyle(14, FontStyle.Normal, TextAnchor.MiddleLeft);
-            _smallStyle = LabelStyle(12, FontStyle.Normal, TextAnchor.MiddleLeft);
-            _microStyle = LabelStyle(11, FontStyle.Normal, TextAnchor.MiddleLeft);
+            _titleStyle = LabelStyle(18, FontStyle.Bold, TextAnchor.MiddleLeft);
+            _pageTitleStyle = LabelStyle(22, FontStyle.Bold, TextAnchor.MiddleLeft);
+            _bodyStyle = LabelStyle(15, FontStyle.Normal, TextAnchor.MiddleLeft);
+            _smallStyle = LabelStyle(13, FontStyle.Normal, TextAnchor.MiddleLeft);
+            _microStyle = LabelStyle(12, FontStyle.Normal, TextAnchor.MiddleLeft);
             _wrappedMicroStyle = new GUIStyle(_microStyle);
             _wrappedMicroStyle.wordWrap = true;
+            _badgeStyle = LabelStyle(12, FontStyle.Bold, TextAnchor.MiddleCenter);
 
             _navStyle = new GUIStyle(GUI.skin.button);
-            ConfigureButton(_navStyle, Color.clear, Color.clear, TextSecondary, 13, TextAnchor.MiddleLeft);
+            ConfigureButton(_navStyle, Color.clear, Color.clear, TextSecondary, 14, TextAnchor.MiddleLeft);
             _navStyle.padding = new RectOffset(16, 8, 0, 0);
             _navActiveStyle = new GUIStyle(_navStyle);
             _navActiveStyle.normal.textColor = Text;
             _navActiveStyle.hover.textColor = Text;
 
             _buttonStyle = new GUIStyle(GUI.skin.button);
-            ConfigureButton(_buttonStyle, AccentSoft, Rgb(40, 139, 131, 0.62f), Text, 13, TextAnchor.MiddleCenter);
+            ConfigureButton(_buttonStyle, AccentSoft, Rgb(40, 139, 131, 0.62f), Text, 14, TextAnchor.MiddleCenter);
             _buttonStyle.border = new RectOffset(0, 0, 0, 0);
             _buttonQuietStyle = new GUIStyle(GUI.skin.button);
-            ConfigureButton(_buttonQuietStyle, SurfaceRaised, SurfaceHover, TextSecondary, 13, TextAnchor.MiddleCenter);
+            ConfigureButton(_buttonQuietStyle, SurfaceRaised, SurfaceHover, TextSecondary, 14, TextAnchor.MiddleCenter);
             _buttonQuietStyle.border = new RectOffset(0, 0, 0, 0);
 
             _invisibleButton = new GUIStyle(GUI.skin.button);
@@ -745,8 +903,8 @@ namespace ASWDEBUG.UI
             _thumbStyle.normal.background = SolidTexture(Accent);
             _thumbStyle.hover.background = SolidTexture(Rgb(92, 232, 218, 1f));
             _thumbStyle.active.background = SolidTexture(Amber);
-            _thumbStyle.fixedWidth = 12f;
-            _thumbStyle.fixedHeight = 18f;
+            _thumbStyle.fixedWidth = 14f;
+            _thumbStyle.fixedHeight = 20f;
         }
 
         private static GUIStyle LabelStyle(int size, FontStyle fontStyle, TextAnchor alignment)

@@ -82,6 +82,8 @@ internal static class ProtectedReleaseVerifier
             VerifyPrecisionTracker(protectedAssembly, "protected", false);
             VerifyUtilityFeatureWiring(raw, "raw", true);
             VerifyUtilityFeatureWiring(protectedAssembly, "protected", false);
+            VerifyExplosionProtection(raw, "raw");
+            VerifyExplosionProtection(protectedAssembly, "protected");
             VerifyCurrentDetectionProtection(raw, "raw");
             VerifyCurrentDetectionProtection(protectedAssembly, "protected");
             VerifyPendingInjectionReset(raw, "raw");
@@ -201,7 +203,55 @@ internal static class ProtectedReleaseVerifier
         TypeDefinition autoFire = FindType(
             assembly.MainModule,
             "ASWDEBUG.Cheats.Player.AutoFire");
+        TypeDefinition cheatMain = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Main.CheatMain");
+        TypeDefinition keyCodeGetKeyPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKey_KeyCode_Prefix");
+        TypeDefinition stringGetKeyPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKey_String_Prefix");
+        TypeDefinition keyCodeGetKeyDownPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKeyDown_KeyCode_Prefix");
+        TypeDefinition stringGetKeyDownPatch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_Input_GetKeyDown_String_Prefix");
+
         Require(autoFire != null, label + " AutoFire type is missing.");
+
+        MethodDefinition tick = autoFire == null
+            ? null
+            : FindMethod(autoFire, "Tick");
+        MethodDefinition reset = autoFire == null
+            ? null
+            : FindMethod(autoFire, "Reset");
+        MethodDefinition wantsFire = autoFire == null
+            ? null
+            : FindMethod(autoFire, "get_WantsFire");
+        MethodDefinition shouldFireKeyDown = autoFire == null
+            ? null
+            : FindMethod(autoFire, "ShouldFireKeyDown");
+        MethodDefinition update = cheatMain == null
+            ? null
+            : FindMethod(cheatMain, "Update");
+        MethodDefinition keyCodeGetKeyPrefix = keyCodeGetKeyPatch == null
+            ? null
+            : FindMethod(keyCodeGetKeyPatch, "Prefix");
+        MethodDefinition stringGetKeyPrefix = stringGetKeyPatch == null
+            ? null
+            : FindMethod(stringGetKeyPatch, "Prefix");
+        MethodDefinition keyCodeGetKeyDownPrefix = keyCodeGetKeyDownPatch == null
+            ? null
+            : FindMethod(keyCodeGetKeyDownPatch, "Prefix");
+        MethodDefinition stringGetKeyDownPrefix = stringGetKeyDownPatch == null
+            ? null
+            : FindMethod(stringGetKeyDownPatch, "Prefix");
+        FieldDefinition keyDownRepeat = autoFire == null
+            ? null
+            : FindField(autoFire, "KeyDownRepeatSeconds");
+
         Require(
             FindMethod(autoFire, "Toggle") != null,
             label + " automatic-trigger toggle is missing.");
@@ -210,9 +260,40 @@ internal static class ProtectedReleaseVerifier
             FindMethod(autoFire, "Fire") != null &&
             FindMethod(autoFire, "IsCrosshairOnEnemyExact") != null &&
             FindMethod(autoFire, "ToggleAutoFireAllowed") != null &&
+            tick != null &&
+            reset != null &&
+            wantsFire != null &&
+            shouldFireKeyDown != null &&
             FindField(autoFire, "Enabled") != null &&
             FindField(autoFire, "AutoFireAllowed") != null,
             label + " automatic-trigger runtime contract is incomplete.");
+        Require(
+            update != null &&
+            CallsMethod(update, tick) &&
+            CallsMethod(update, reset),
+            label + " CheatMain does not tick and reset AutoFire.");
+        Require(
+            keyCodeGetKeyPrefix != null &&
+            stringGetKeyPrefix != null &&
+            CallsMethod(keyCodeGetKeyPrefix, wantsFire) &&
+            CallsMethod(stringGetKeyPrefix, wantsFire) &&
+            !MethodReferencesField(keyCodeGetKeyPrefix, "AutoFireAllowed") &&
+            !MethodReferencesField(stringGetKeyPrefix, "AutoFireAllowed"),
+            label + " held-fire patches are not wired to AutoFire.WantsFire.");
+        Require(
+            keyCodeGetKeyDownPrefix != null &&
+            stringGetKeyDownPrefix != null &&
+            CallsMethod(keyCodeGetKeyDownPrefix, shouldFireKeyDown) &&
+            CallsMethod(stringGetKeyDownPrefix, shouldFireKeyDown),
+            label + " semi-auto fire patches are not wired to AutoFire key-down pulses.");
+        Require(
+            FindReachableMethodCalling(tick, "SphereCastAll", 3) != null,
+            label + " AutoFire crosshair collider scan is missing.");
+        Require(
+            keyDownRepeat != null &&
+            keyDownRepeat.HasConstant &&
+            Math.Abs(Convert.ToSingle(keyDownRepeat.Constant) - 0.06f) < 0.0001f,
+            label + " AutoFire key-down repeat interval is invalid.");
     }
 
     private static void VerifyRemoteCSharpIsolation(
@@ -1335,6 +1416,94 @@ internal static class ProtectedReleaseVerifier
             CallsMethod(cardOverlay, updateWidget) &&
             CallsMethod(cardOverlay, layoutWidgets),
             label + " tactical card-reveal overlay is not wired to the captured rewards.");
+    }
+
+    private static void VerifyExplosionProtection(
+        AssemblyDefinition assembly,
+        string label)
+    {
+        TypeDefinition noDamage = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Cheats.Player.GrenadeNotHurt");
+        TypeDefinition halfDamage = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Cheats.Player.GrenadeHalfHurt");
+        TypeDefinition policy = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Cheats.Player.ExplosionDamagePolicy");
+        TypeDefinition patch = FindType(
+            assembly.MainModule,
+            "ASWDEBUG.Patch_ChannelConnection_GrenadeHurt_Prefix");
+
+        Require(
+            noDamage != null &&
+            halfDamage != null &&
+            policy != null &&
+            patch != null,
+            label + " explosion protection types are incomplete.");
+
+        MethodDefinition noDamageSet = FindMethod(noDamage, "SetProbability");
+        MethodDefinition noDamageShouldApply = FindMethod(noDamage, "ShouldApply");
+        MethodDefinition halfDamageSet = FindMethod(halfDamage, "SetProbability");
+        MethodDefinition halfDamageShouldApply = FindMethod(halfDamage, "ShouldApply");
+        MethodDefinition resolve = FindMethod(policy, "Resolve");
+        MethodDefinition resolveWithSamples = FindMethod(policy, "ResolveWithSamples");
+        MethodDefinition prefix = FindMethod(patch, "Prefix");
+
+        Require(
+            FindField(noDamage, "Enabled") != null &&
+            FindField(noDamage, "Probability") != null &&
+            noDamageSet != null &&
+            noDamageShouldApply != null &&
+            FindField(halfDamage, "Enabled") != null &&
+            FindField(halfDamage, "Probability") != null &&
+            halfDamageSet != null &&
+            halfDamageShouldApply != null,
+            label + " explosion probability controls are incomplete.");
+        Require(
+            resolve != null &&
+            resolveWithSamples != null &&
+            FindField(policy, "LastNoDamageRoll") != null &&
+            FindField(policy, "LastHalfDamageRoll") != null &&
+            FindField(policy, "LastDecision") != null &&
+            CallsMethod(resolve, resolveWithSamples) &&
+            CallsMethod(resolveWithSamples, noDamageShouldApply) &&
+            CallsMethod(resolveWithSamples, halfDamageShouldApply),
+            label + " explosion probability resolution pipeline is incomplete.");
+        Require(
+            prefix != null && CallsMethod(prefix, resolve),
+            label + " GrenadeHurt patch does not use ExplosionDamagePolicy.");
+
+        bool usesCSPRNG = false;
+        foreach (MethodDefinition method in policy.Methods)
+        {
+            if (MethodCallsNamed(
+                method,
+                "System.Security.Cryptography.RandomNumberGenerator",
+                "GetBytes"))
+            {
+                usesCSPRNG = true;
+                break;
+            }
+        }
+        Require(
+            usesCSPRNG,
+            label + " explosion probability policy does not use the CSPRNG source.");
+        Require(
+            HasStringLiteral(assembly, "protection.explosion_no_damage") &&
+            HasStringLiteral(
+                assembly,
+                "protection.explosion_no_damage_probability") &&
+            HasStringLiteral(assembly, "protection.explosion_half_damage") &&
+            HasStringLiteral(
+                assembly,
+                "protection.explosion_half_damage_probability"),
+            label + " explosion probability profile persistence is incomplete.");
+        Require(
+            HasStringLiteral(assembly, "EXPLOSION POLICY") &&
+            HasStringLiteral(assembly, "OUTCOME MODEL") &&
+            HasStringLiteral(assembly, "LAST RESOLUTION"),
+            label + " explosion probability menu controls are incomplete.");
     }
 
     private static void VerifyCurrentAutoAim(
