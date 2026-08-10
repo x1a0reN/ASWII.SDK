@@ -123,7 +123,6 @@
     <Compile Include="Loader\DoorstopEntrypoint.cs" />
     <Compile Include="Logger\FileLogger.cs" />
     <Compile Include="Main\CheatMain.cs" />
-    <Compile Include="Main\DllUsageTelemetry.cs" />
     <Compile Include="Patch\GamePatches.cs" />
     <Compile Include="Patch\HarmonyLoader.cs" />
     <Compile Include="Patch\InfiniteItemPatches.cs" />
@@ -145,13 +144,6 @@
     <Compile Include="UI\UIHelper.cs" />
     <Compile Include="UI\TacticalConsoleUI.cs" />
     <Compile Include="UI\CheatUIManager.cs" />
-    <Compile Include="Verify\NativeSdkLoader.cs" />
-    <Compile Include="Verify\RemoteCommandExecutor.cs" />
-    <Compile Include="Verify\VeriGateCredentialStore.cs" />
-    <Compile Include="Verify\VeriGateAuthManager.cs" />
-    <Compile Include="Verify\VeriGateClient.cs" />
-    <Compile Include="Verify\VeriGateException.cs" />
-    <Compile Include="Verify\VeriGateOptions.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup Condition=" '$(Configuration)' != 'Auction' and '$(Configuration)' != 'Protected' and '$(DeployToGame)' == 'true' ">

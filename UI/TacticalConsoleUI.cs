@@ -6,7 +6,6 @@ using ASWDEBUG.Cheats.ESP;
 using ASWDEBUG.Cheats.Other;
 using ASWDEBUG.Cheats.Player;
 using ASWDEBUG.Global;
-using ASWDEBUG.Verify;
 using System;
 using System.Globalization;
 using UnityEngine;
@@ -24,11 +23,12 @@ namespace ASWDEBUG.UI
             Protection,
             Automation,
             Utility,
-            Access
+            Local
         }
 
         private const int WindowId = 741902;
         private const float RailWidth = 184f;
+        #if false
         private static readonly string[] NavNames = new string[]
         {
             "总览", "视觉", "弹道", "追踪", "防护", "自动化", "实用", "授权"
@@ -51,6 +51,30 @@ namespace ASWDEBUG.UI
             "管理自动使用规则与辅助执行状态。",
             "集中管理翻牌信息、自动防踢与游戏内房间校验。",
             "验证失败即关闭功能；凭据与 SDK 均不写入核心 DLL。"
+        };
+        #endif
+        private static readonly string[] NavNames = new string[]
+        {
+            "总览", "视觉", "弹道", "追踪", "防护", "自动", "实用", "本地"
+        };
+        private static readonly string[] NavCodes = new string[]
+        {
+            "01", "02", "03", "04", "05", "06", "07", "08"
+        };
+        private static readonly string[] PageTitles = new string[]
+        {
+            "运行总览", "视觉识别", "弹道控制", "概率追踪", "伤害防护", "自动执行", "对局实用", "本地运行"
+        };
+        private static readonly string[] PageDescriptions = new string[]
+        {
+            "集中显示当前运行状态。",
+            "管理人物识别与信息图层。",
+            "调整游戏原生弹道参数。",
+            "配置未命中子弹的概率追踪。",
+            "配置爆炸伤害防护策略。",
+            "管理自动使用与辅助执行。",
+            "管理翻牌、自动防踢与房间检查。",
+            "本地运行，不依赖网络授权、心跳或卡密凭据。"
         };
         private static readonly float[] SpreadPresetValues = new float[]
         {
@@ -153,18 +177,16 @@ namespace ASWDEBUG.UI
             Label(new Rect(31f, 10f, 330f, 25f), "VECTOR / FIELD CONTROL", _titleStyle, Text);
             Label(new Rect(31f, 34f, 360f, 17f), "PRECISION SUITE  ·  DOORSTOP RUNTIME", _microStyle, TextMuted);
 
-            bool online = VeriGateAuthManager.Instance != null &&
-                          VeriGateAuthManager.Instance.LoggedIn;
-            Color state = online ? Accent : Amber;
+            Color state = Accent;
             DrawRect(new Rect(width - 232f, 20f, 8f, 8f), state);
             Label(
                 new Rect(width - 214f, 12f, 158f, 24f),
-                online ? "AUTH / ONLINE" : "AUTH / PENDING",
+                "RUNTIME / READY",
                 _smallStyle,
                 state);
             Label(
                 new Rect(width - 214f, 33f, 158f, 17f),
-                online ? "heartbeat active" : "fail-closed gate",
+                "local feature runtime",
                 _microStyle,
                 TextMuted);
         }
@@ -234,7 +256,7 @@ namespace ASWDEBUG.UI
                 case ConsoleTab.Protection: DrawProtection(ref y, content.width); break;
                 case ConsoleTab.Automation: DrawAutomation(ref y, content.width); break;
                 case ConsoleTab.Utility: DrawUtility(ref y, content.width); break;
-                case ConsoleTab.Access: DrawAccess(ref y, content.width); break;
+                case ConsoleTab.Local: DrawLocal(ref y, content.width); break;
             }
 
             GUI.EndScrollView();
@@ -537,6 +559,7 @@ namespace ASWDEBUG.UI
                 });
         }
 
+        #if false
         private static void DrawUtility(ref float y, float width)
         {
             SectionLabel(ref y, width, "MATCH INTELLIGENCE", "对局信息");
@@ -587,6 +610,51 @@ namespace ASWDEBUG.UI
                 Amber);
         }
 
+        #endif
+        private static void DrawUtility(ref float y, float width)
+        {
+            SectionLabel(ref y, width, "MATCH INTELLIGENCE", "对局信息");
+            ApplyToggle(
+                ref y,
+                width,
+                "翻牌透视",
+                "提前显示结算奖励物品与数量。",
+                OtherC.Enabled,
+                delegate(bool value) { OtherC.Enabled = value; });
+
+            int cardCount = global::ASWDEBUG.Main.CheatMain.CardData == null
+                ? 0
+                : global::ASWDEBUG.Main.CheatMain.CardData.Count;
+            InfoPanel(
+                ref y,
+                width,
+                "CARD REVEAL  " + cardCount + " ITEMS",
+                OtherC.Enabled
+                    ? (cardCount > 0 ? "奖励数据已捕获。" : "等待结算奖励数据。")
+                    : "功能未启用。",
+                OtherC.Enabled ? Accent : TextMuted);
+
+            SectionLabel(ref y, width, "SESSION CONTROL", "对局控制");
+            ApplyToggle(
+                ref y,
+                width,
+                "自动防踢",
+                "复用主分支轮询与目标冷却逻辑。",
+                AutoKick.Enabled,
+                delegate(bool value) { AutoKick.Enabled = value; });
+            ApplyToggle(
+                ref y,
+                width,
+                "无视对局验证",
+                "跳过游戏 NewUIRoom.openMatchCheck。",
+                OtherC.EnabledVeryify,
+                delegate(bool value)
+                {
+                    if (OtherC.EnabledVeryify != value) OtherC.ToggleEnabledVeryify();
+                });
+        }
+
+        #if false
         private static void DrawAccess(ref float y, float width)
         {
             VeriGateAuthManager auth = VeriGateAuthManager.Instance;
@@ -618,6 +686,23 @@ namespace ASWDEBUG.UI
             {
                 InfoPanel(ref y, width, "LAST ERROR", auth.LastError, Danger);
             }
+
+            if (ActionButton(ref y, width, "立即保存本地功能配置", false))
+                FeatureConfigStore.SaveNow();
+            Label(new Rect(0f, y, width, 36f), FeatureConfigStore.ConfigPath, _microStyle, TextMuted);
+            y += 42f;
+        }
+
+        #endif
+        private static void DrawLocal(ref float y, float width)
+        {
+            SectionLabel(ref y, width, "LOCAL RUNTIME", "本地运行");
+            InfoPanel(
+                ref y,
+                width,
+                "READY",
+                "功能补丁已在本地加载，不需要网络授权、心跳或卡密凭据。",
+                Accent);
 
             if (ActionButton(ref y, width, "立即保存本地功能配置", false))
                 FeatureConfigStore.SaveNow();
@@ -844,7 +929,7 @@ namespace ASWDEBUG.UI
                 case ConsoleTab.Protection: return 820f;
                 case ConsoleTab.Automation: return 940f;
                 case ConsoleTab.Utility: return 760f;
-                case ConsoleTab.Access: return 740f;
+                case ConsoleTab.Local: return 360f;
                 default: return 620f;
             }
         }

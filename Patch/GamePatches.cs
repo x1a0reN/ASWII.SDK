@@ -22,7 +22,6 @@ using System.Runtime.Remoting.Messaging;
 using ASWDEBUG.Cheats.Other;
 using System.Linq;
 using ASWDEBUG.UI;
-using ASWDEBUG.Verify;
 using System.Collections.Specialized;
 using UniLua;
 using ASWDEBUG.Main;

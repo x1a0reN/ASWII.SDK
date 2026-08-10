@@ -66,36 +66,6 @@ foreach ($pattern in @(
     }
 }
 
-# The core consumes Launcher-managed validation assets. It never packages the
-# revocable credential or the native SDK into the deployable DLL.
-$launcherRoot = Join-Path $env:LOCALAPPDATA 'x1a0reN.Launcher'
-$sdkMarker = Join-Path $launcherRoot 'Native\current.sha256'
-$credentialPath = Join-Path $launcherRoot 'VeriGate\direct-card.dpapi'
-foreach ($required in @($sdkMarker, $credentialPath)) {
-    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-        throw "Launcher-managed validation asset is missing: $required"
-    }
-}
-
-$sdkDigest = (Get-Content -LiteralPath $sdkMarker -Raw).Trim().ToLowerInvariant()
-if ($sdkDigest -notmatch '^[0-9a-f]{64}$') {
-    throw "Launcher SDK marker is not a SHA-256 digest: $sdkMarker"
-}
-$sdkPath = Join-Path $launcherRoot ("Native\$sdkDigest\verigate_sdk.dll")
-if (-not (Test-Path -LiteralPath $sdkPath -PathType Leaf)) {
-    throw "Hash-pinned Launcher SDK is missing: $sdkPath"
-}
-$sdkActualDigest = (
-    Get-FileHash -LiteralPath $sdkPath -Algorithm SHA256
-).Hash.ToLowerInvariant()
-if ($sdkActualDigest -ne $sdkDigest) {
-    throw "Launcher SDK hash mismatch: expected=$sdkDigest actual=$sdkActualDigest"
-}
-$credentialItem = Get-Item -LiteralPath $credentialPath -Force
-if ($credentialItem.Length -le 0) {
-    throw "Launcher credential envelope is empty: $credentialPath"
-}
-
 $files = @(
     [pscustomobject]@{
         Name = 'ASWDEBUG.dll'
@@ -250,12 +220,8 @@ $manifest = [ordered]@{
     DeployToGame = [bool]$DeployToGame
     GameRoot = $resolvedGameRoot
     BackupRoot = $backupRoot
-    Validation = [ordered]@{
-        Mode = 'launcher-hash-pinned-sdk-and-dpapi-credential'
-        SdkSHA256 = $sdkDigest.ToUpperInvariant()
-        SdkBytes = (Get-Item -LiteralPath $sdkPath).Length
-        CredentialEnvelopePresent = $true
-        CredentialEnvelopeBytes = $credentialItem.Length
+    NetworkValidation = [ordered]@{
+        Mode = 'none'
         SecretMaterialPackaged = $false
     }
     Files = $verification

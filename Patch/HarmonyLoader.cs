@@ -13,7 +13,6 @@ using Harmony;
 using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
 using ASWDEBUG.UI;
-using ASWDEBUG.Verify;
 using UnityEngine;
 
 namespace ASWDEBUG.Patch

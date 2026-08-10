@@ -20,7 +20,6 @@ namespace Doorstop
         private static bool _bootstrapping;
         private static bool _bootstrapped;
         private static bool _injectedLoad;
-        private static EventWaitHandle _authorizationHandoff;
 
         internal static bool IsInjectedLoad
         {
@@ -57,11 +56,6 @@ namespace Doorstop
             {
                 LogInfo("Doorstop.Entrypoint.StartInjected() called");
                 _injectedLoad = true;
-                string eventName =
-                    "Local\\x1a0reN.Launcher.VeriGate.Handoff." +
-                    Process.GetCurrentProcess().Id;
-                _authorizationHandoff = EventWaitHandle.OpenExisting(eventName);
-                LogInfo("Authorization handoff event opened");
                 Assembly assemblyCSharp = WaitForAssembly("Assembly-CSharp", 30000);
                 if (assemblyCSharp == null)
                 {
@@ -78,47 +72,9 @@ namespace Doorstop
             }
             catch (Exception ex)
             {
-                if (_authorizationHandoff != null)
-                {
-                    _authorizationHandoff.Close();
-                    _authorizationHandoff = null;
-                }
                 LogInfo("StartInjected error: " + ex);
                 throw;
             }
-        }
-
-        internal static bool WaitForAuthorizationHandoff(int timeoutMilliseconds)
-        {
-            if (!_injectedLoad)
-            {
-                return true;
-            }
-
-            EventWaitHandle handoff;
-            lock (PatchSync)
-            {
-                handoff = _authorizationHandoff;
-            }
-            if (handoff == null)
-            {
-                return false;
-            }
-
-            bool signaled = handoff.WaitOne(timeoutMilliseconds, false);
-            if (signaled)
-            {
-                lock (PatchSync)
-                {
-                    if (ReferenceEquals(_authorizationHandoff, handoff))
-                    {
-                        _authorizationHandoff = null;
-                    }
-                }
-                handoff.Close();
-                LogInfo("Authorization handoff received");
-            }
-            return signaled;
         }
 
         private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)

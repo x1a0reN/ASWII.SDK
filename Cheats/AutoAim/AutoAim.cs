@@ -3,7 +3,6 @@ using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Main;
 using ASWDEBUG.UI;
-using ASWDEBUG.Verify;
 using Harmony;
 using System;
 using System.Collections.Generic;

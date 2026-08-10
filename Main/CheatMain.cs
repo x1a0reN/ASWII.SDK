@@ -10,7 +10,6 @@ using ASWDEBUG.Global;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Patch;
 using ASWDEBUG.UI;
-using ASWDEBUG.Verify;
 using Harmony;
 using PDE.Animation;
 using PluginTool;
@@ -60,7 +59,6 @@ namespace ASWDEBUG.Main
             RpcLabUI.Visible = false;
             LuaDoStringLabUI.Visible = EnableDebugUi;
             FileLogger.Log("CHEAT", EnableDebugUi ? "Audit UI enabled." : "Audit UI hidden.");
-            DllUsageTelemetry.Start();
         }
 
         private void OnGUI()
@@ -166,8 +164,6 @@ namespace ASWDEBUG.Main
 
             if (CameraMain != null && level != null && player != null)
             {
-                DllUsageTelemetry.Tick(player);
-
                 try
                 {
                     InfiniteItemUse.Tick(player);
@@ -252,7 +248,6 @@ namespace ASWDEBUG.Main
             }
             else
             {
-                DllUsageTelemetry.Tick(null);
                 AutoBattleManager.Tick(null, null, null);
                 AutoAim.AimLocking = false;
                 AutoAim.bestTarget = null;
@@ -280,14 +275,6 @@ namespace ASWDEBUG.Main
             try { LocalBotManager.RemoveAll("shutdown"); } catch { }
             try { FlightMode.Shutdown(); } catch { }
             try { AutoFire.Reset(); } catch { }
-            try
-            {
-                DllUsageTelemetry.Stop();
-            }
-            catch (Exception e)
-            {
-                FileLogger.Log("CHEAT", "OnDestroy telemetry stop failed: " + e.Message);
-            }
             //FileLogger.Log("CHEAT", "OnDestroy");
         }
     }

@@ -9,7 +9,6 @@ using ASWDEBUG.UI;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Global;
 using ASWDEBUG.Main;
-using ASWDEBUG.Verify;
 
 
 public class ConsoleManager : MonoBehaviour
@@ -76,9 +75,8 @@ public class ConsoleManager : MonoBehaviour
         Application.RegisterLogCallback(new Application.LogCallback(this.HandleLog));
 
         // 注入时游戏已经联网，只预装本地保护和只读断线诊断。
-        // 功能补丁在授权成功后安装，协议报文 Hook 保持禁用。
         HarmonyLoader.InstallProtection();
-        FileLogger.Log("MARK", "Runtime protection installed before auth.");
+        FileLogger.Log("MARK", "Runtime protection installed.");
 
         if (AutoDumpProtectedAssemblies)
         {
@@ -92,44 +90,9 @@ public class ConsoleManager : MonoBehaviour
             FileLogger.Log("MARK", "Auto game assembly dump armed.");
         }
 
-        // 网络验证通过后，再启用具体功能和菜单。
-        if (VeriGateAuthManager.Instance == null)
-        {
-            var go = new GameObject("VeriGateAuthManager");
-            go.hideFlags = HideFlags.HideAndDontSave;
-            DontDestroyOnLoad(go);
-            go.AddComponent<VeriGateAuthManager>();
-        }
-
-        var mgr = VeriGateAuthManager.Instance;
-        if (mgr == null)
-        {
-            FileLogger.Log("AUTH", "VeriGateAuthManager 初始化失败。");
-            return;
-        }
-
-        mgr.RunAutoLogin((ok, err) =>
-        {
-            if (!ok)
-            {
-                FileLogger.Log("AUTH", "自动登录失败：" + (string.IsNullOrEmpty(err) ? "未知错误" : err));
-                return;
-            }
-
-            FileLogger.Log("AUTH", "VeriGate 登录成功：SessionID=" + mgr.SessionID + " DeviceID=" + mgr.DeviceID);
-            if (!string.IsNullOrEmpty(mgr.StaticExpiredText))
-            {
-                FileLogger.Log("AUTH", "卡密到期时间：" + mgr.StaticExpiredText);
-            }
-            else
-            {
-                FileLogger.Log("AUTH", "卡密到期时间：未获取");
-            }
-
-            HarmonyLoader.InstallAuthorized(TelemetryOnlyMode);
-            BootCheatMain();
-            FileLogger.Log("MARK", "Auth passed. Authorized feature patches and CheatMain started.");
-        });
+        HarmonyLoader.InstallAuthorized(TelemetryOnlyMode);
+        BootCheatMain();
+        FileLogger.Log("MARK", "Local runtime patches and CheatMain started.");
     }
 
     private IEnumerator DeobfRepackRoutine()

@@ -60,18 +60,10 @@ internal static class ProtectedReleaseVerifier
             VerifyAssembly(protectedAssembly, "protected", args[3]);
             VerifyCompilerReferencesExternal(raw, "raw");
             VerifyCompilerReferencesExternal(protectedAssembly, "protected");
-            VerifyLauncherNativeSdkBridge(raw, "raw");
-            VerifyLauncherNativeSdkBridge(protectedAssembly, "protected");
-            VerifyVeriGateEndpoints(raw, "raw");
-            VerifyVeriGateEndpoints(protectedAssembly, "protected");
-            VerifyHeartbeatCadence(raw, "raw");
-            VerifyHeartbeatCadence(protectedAssembly, "protected");
-            VerifyAuthorizationGate(raw, "raw");
-            VerifyAuthorizationGate(protectedAssembly, "protected");
+            VerifyNetworkValidationAbsent(raw, "raw");
+            VerifyNetworkValidationAbsent(protectedAssembly, "protected");
             VerifyAutoFireModes(raw, "raw");
             VerifyAutoFireModes(protectedAssembly, "protected");
-            VerifyRemoteCSharpIsolation(raw, "raw");
-            VerifyRemoteCSharpIsolation(protectedAssembly, "protected");
             VerifyCurrentAutoAim(raw, "raw", true);
             VerifyCurrentAutoAim(protectedAssembly, "protected", false);
             VerifyAimReportV9Protection(raw, "raw");
@@ -1361,7 +1353,7 @@ internal static class ProtectedReleaseVerifier
             display != null &&
             HasStringLiteral(assembly, "NATIVE SPREAD PIPELINE") &&
             HasStringLiteral(assembly, "MISS-ONLY REDIRECTION") &&
-            HasStringLiteral(assembly, "FAIL-CLOSED ACCESS"),
+            HasStringLiteral(assembly, "LOCAL RUNTIME"),
             label + " tactical precision UI is incomplete.");
     }
 
@@ -1442,7 +1434,7 @@ internal static class ProtectedReleaseVerifier
         Require(
             HasStringLiteral(assembly, "CARD REVEAL") &&
             HasStringLiteral(assembly, "MATCH INTELLIGENCE") &&
-            HasStringLiteral(assembly, "AUTH BOUNDARY"),
+            HasStringLiteral(assembly, "LOCAL RUNTIME"),
             label + " utility controls are incomplete.");
 
         if (!inspectPrivate)
@@ -2579,6 +2571,64 @@ internal static class ProtectedReleaseVerifier
                 }
             }
         }
+    }
+
+    private static void VerifyNetworkValidationAbsent(
+        AssemblyDefinition assembly,
+        string label)
+    {
+        string[] removedTypes =
+        {
+            "ASWDEBUG.Verify.NativeSdkLoader",
+            "ASWDEBUG.Verify.RemoteCommandExecutor",
+            "ASWDEBUG.Verify.VeriGateCredentialStore",
+            "ASWDEBUG.Verify.VeriGateAuthManager",
+            "ASWDEBUG.Verify.VeriGateClient",
+            "ASWDEBUG.Verify.VeriGateException",
+            "ASWDEBUG.Verify.VeriGateOptions",
+            "ASWDEBUG.Main.DllUsageTelemetry"
+        };
+        foreach (string typeName in removedTypes)
+        {
+            Require(
+                FindType(assembly.MainModule, typeName) == null,
+                label + " still contains removed network validation type " + typeName + ".");
+        }
+
+        Require(
+            !HasStringLiteral(assembly, "https://verigate.x1a0ren.com") &&
+            !HasStringLiteral(assembly, "transport_fallback_origin") &&
+            !HasStringLiteral(assembly, "verigate_sdk.dll") &&
+            !HasStringLiteral(assembly, "direct-card.dpapi") &&
+            !HasStringLiteral(assembly, "current.sha256") &&
+            !HasStringLiteral(assembly, "VeriGate") &&
+            !HasStringLiteral(assembly, "heartbeat"),
+            label + " still contains network validation endpoints, credentials, SDK loading, or heartbeat text.");
+
+        TypeDefinition consoleManager = FindType(assembly.MainModule, "ConsoleManager");
+        MethodDefinition start = consoleManager == null
+            ? null
+            : FindMethod(consoleManager, "Start");
+        Require(start != null && start.HasBody, label + " ConsoleManager.Start is missing.");
+        bool installsRuntime = false;
+        bool bootsCheat = false;
+        foreach (Instruction instruction in start.Body.Instructions)
+        {
+            MethodReference called = instruction.Operand as MethodReference;
+            if (called == null) continue;
+            if (string.Equals(called.Name, "InstallAuthorized", StringComparison.Ordinal))
+                installsRuntime = true;
+            if (string.Equals(called.Name, "BootCheatMain", StringComparison.Ordinal))
+                bootsCheat = true;
+        }
+        Require(
+            installsRuntime && bootsCheat,
+            label + " ConsoleManager.Start no longer boots local runtime patches directly.");
+
+        TypeDefinition entrypoint = FindType(assembly.MainModule, "Doorstop.Entrypoint");
+        Require(
+            entrypoint == null || FindMethod(entrypoint, "WaitForAuthorizationHandoff") == null,
+            label + " still contains the Launcher authorization handoff wait.");
     }
 
     private static void VerifyAuthorizationGate(

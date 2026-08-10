@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $projectPath = Join-Path $projectRoot 'ASWDEBUG.csproj'
 $toolManifest = Join-Path $projectRoot '.config\dotnet-tools.json'
-$expectedVersion = '1.0.51.0'
+$expectedVersion = '1.0.52.0'
 $obfuscarVersion = '2.2.50'
 $gameAssemblyPath =
     'C:\Users\x1a0reN\AppData\LocalLow\____________II\Managed_Dump\' +
@@ -151,9 +151,7 @@ try {
         'ConsoleManager',
         'PlayerAutoNavRAIN',
         'ASWDEBUG.Main.CheatMain',
-        'ASWDEBUG.Patch.HarmonyLoader',
-        'ASWDEBUG.Verify.VeriGateAuthManager',
-        'ASWDEBUG.Verify.RemoteNoticeCenter'
+        'ASWDEBUG.Patch.HarmonyLoader'
     )) {
         $writer.WriteStartElement('SkipType')
         $writer.WriteAttributeString('name', $typeName)
@@ -247,8 +245,7 @@ $manifest = [ordered]@{
         mapping = 'artifacts/ProtectedRelease/' + $runId +
             '/obfuscation-map.xml'
     }
-    next_step =
-        'Upload ASWDEBUG.dll to VeriGate Admin, then export the server-generated VGCH ciphertext for Lanzou.'
+    next_step = 'Package the protected DLL with the x86 Doorstop runtime files.'
 }
 $manifestPath = Join-Path $stableRoot 'ASWDEBUG.release.json'
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8

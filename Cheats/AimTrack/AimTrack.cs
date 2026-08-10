@@ -1,7 +1,6 @@
 ﻿using ASWDEBUG.Cheats.Player;
 using ASWDEBUG.Global;
 using ASWDEBUG.Main;
-using ASWDEBUG.Verify;
 using System;
 using System.Collections.Generic;
 using System.Linq;
