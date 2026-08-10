@@ -31,17 +31,22 @@ namespace ASWDEBUG.UI
         public static GUIStyle SpawnerButtonStyle;
         public static GUIStyle PanelStyle;
 
-        // Shared graphite/teal theme used by legacy editors opened from the console.
-        static readonly Color ThemeBg = new Color(14f / 255f, 21f / 255f, 27f / 255f);
-        static readonly Color ThemeBgHover = new Color(22f / 255f, 34f / 255f, 41f / 255f);
-        static readonly Color ThemeBgActive = new Color(27f / 255f, 48f / 255f, 53f / 255f);
+        // Read the original foreground color without mutating the global skin.
+        private static Color UiTextColor =>
+            (UIHelper.StringStyle != null && UIHelper.StringStyle.normal != null)
+                ? UIHelper.StringStyle.normal.textColor
+                : GUI.skin.label.normal.textColor;
 
-        static Color onColor = new Color(55f / 255f, 207f / 255f, 194f / 255f);
-        static Color offColor = new Color(148f / 255f, 166f / 255f, 174f / 255f);
+        // Original compact black/red menu palette.
+        static readonly Color ThemeBg = new Color(42f / 255f, 42f / 255f, 42f / 255f);
+        static readonly Color ThemeBgHover = new Color(50f / 255f, 50f / 255f, 50f / 255f);
+        static readonly Color ThemeBgActive = new Color(60f / 255f, 60f / 255f, 60f / 255f);
+
+        static Color onColor = new Color(231f / 255f, 18f / 255f, 0f / 255f);
+        static Color offColor = Color.white;
 
         // ===== 零污染绘制：彩色 1×1 纹理缓存 =====
         private static readonly Dictionary<Color32, Texture2D> _solidTexCache = new Dictionary<Color32, Texture2D>(64);
-        private static readonly Dictionary<int, GUIStyle> _autoLabelStyles = new Dictionary<int, GUIStyle>(16);
         private static Texture2D SolidTex(Color c)
         {
             var k = (Color32)c;
@@ -65,10 +70,10 @@ namespace ASWDEBUG.UI
             var texTransparent = MakeTex(1, 1, new Color(0f, 0f, 0f, 0f)); // A=0
 
             // 纹理全部走自建，避免直接改动内置 blackTexture 的 hideFlags（可能产生警告）
-            _panelOff = MakeTex(1, 1, new Color(18f / 255f, 27f / 255f, 34f / 255f));
+            _panelOff = MakeTex(1, 1, new Color(82f / 255f, 82f / 255f, 82f / 255f));
             _panelOff.hideFlags = HideFlags.HideAndDontSave;
 
-            _panelOn = MakeTex(1, 1, new Color(35f / 255f, 116f / 255f, 111f / 255f));
+            _panelOn = MakeTex(1, 1, new Color(231f / 255f, 18f / 255f, 0f / 255f));
             _panelOn.hideFlags = HideFlags.HideAndDontSave;
 
             PanelStyle = new GUIStyle(GUI.skin.label);
@@ -80,41 +85,29 @@ namespace ASWDEBUG.UI
             _boxStyle.border = new RectOffset(0, 0, 0, 0); // 防止九宫格边框留痕
 
             _titlebarStyle = new GUIStyle(GUI.skin.box);
-            _titlebarStyle.normal.background = MakeTex(1, 1, new Color(12f / 255f, 42f / 255f, 44f / 255f));
+            _titlebarStyle.normal.background = MakeTex(1, 1, new Color(231f / 255f, 18f / 255f, 0f / 255f));
             _titlebarStyle.normal.background.hideFlags = HideFlags.HideAndDontSave;
 
             _centeredLabelStyle = new GUIStyle(GUI.skin.label);
             _centeredLabelStyle.alignment = TextAnchor.MiddleCenter;
-            _centeredLabelStyle.fontSize = 13;
-            _centeredLabelStyle.fontStyle = FontStyle.Bold;
-            _centeredLabelStyle.richText = true;
-            _centeredLabelStyle.normal.textColor = new Color(232f / 255f, 241f / 255f, 244f / 255f);
 
             SpawnerButtonStyle = new GUIStyle(GUI.skin.button);
             // 用我们自己的深色背景，而不是直接修改 blackTexture 的 hideFlags
-            SpawnerButtonStyle.normal.background = MakeTex(1, 1, ThemeBg);
-            SpawnerButtonStyle.hover.background = MakeTex(1, 1, ThemeBgHover);
-            SpawnerButtonStyle.active.background = MakeTex(1, 1, ThemeBgActive);
-            SpawnerButtonStyle.normal.textColor = offColor;
-            SpawnerButtonStyle.hover.textColor = Color.white;
-            SpawnerButtonStyle.active.textColor = Color.white;
+            SpawnerButtonStyle.normal.background = MakeTex(1, 1, Color.black);
+            SpawnerButtonStyle.hover.background = MakeTex(1, 1, new Color(18f / 255f, 18f / 255f, 18f / 255f));
+            SpawnerButtonStyle.active.background = MakeTex(1, 1, new Color(18f / 255f, 18f / 255f, 18f / 255f));
 
             ButtonStyle = new GUIStyle(GUI.skin.button);
             ButtonStyle.alignment = TextAnchor.MiddleLeft;
             ButtonStyle.padding = new RectOffset(4, 0, 0, 0);
-            ButtonStyle.richText = true;
             ButtonStyle.normal.background = texBg;
             ButtonStyle.hover.background = texBgHover;
             ButtonStyle.active.background = texBgActive;
-            ButtonStyle.normal.textColor = offColor;
-            ButtonStyle.hover.textColor = Color.white;
-            ButtonStyle.active.textColor = Color.white;
-            ButtonStyle.focused.textColor = offColor;
 
             TextFieldStyle = new GUIStyle(GUI.skin.textField);
-            TextFieldStyle.normal.background = MakeTex(2, 2, new Color(10f / 255f, 16f / 255f, 21f / 255f));
-            TextFieldStyle.hover.background = MakeTex(2, 2, ThemeBg);
-            TextFieldStyle.focused.background = MakeTex(2, 2, new Color(16f / 255f, 31f / 255f, 35f / 255f));
+            TextFieldStyle.normal.background = MakeTex(2, 2, new Color(28f / 255f, 28f / 255f, 28f / 255f));
+            TextFieldStyle.hover.background = MakeTex(2, 2, new Color(18f / 255f, 18f / 255f, 18f / 255f));
+            TextFieldStyle.focused.background = MakeTex(2, 2, new Color(28f / 255f, 28f / 255f, 28f / 255f));
             TextFieldStyle.normal.textColor = Color.white;
             TextFieldStyle.hover.textColor = Color.white;
             TextFieldStyle.focused.textColor = Color.white;
@@ -143,7 +136,6 @@ namespace ASWDEBUG.UI
 
             if (StringStyle == null)
                 StringStyle = new GUIStyle(GUI.skin.label);
-            StringStyle.normal.textColor = new Color(232f / 255f, 241f / 255f, 244f / 255f);
         }
 
         public static void Begin(string text, float _x, float _y, float _width, float _height, float _margin, float _controlHeight, float _controlDist)
@@ -156,6 +148,11 @@ namespace ASWDEBUG.UI
             controlHeight = _controlHeight;
             controlDist = _controlDist;
             nextControlY = 20f;
+
+            var s = new GUIStyle(UIHelper.StringStyle ?? GUI.skin.label);
+            s.alignment = TextAnchor.MiddleLeft;
+            s.fontSize = 13;
+            s.normal.textColor = UiTextColor;
 
             GUI.Box(new Rect(x, y, width, height), string.Empty, _boxStyle);
             GUI.Box(new Rect(x, y, width, 20f), string.Empty, _titlebarStyle);
@@ -243,20 +240,14 @@ namespace ASWDEBUG.UI
 
         public static void LabelAuto(string text, int fontSize = 13, TextAnchor align = TextAnchor.MiddleLeft, bool richText = true)
         {
-            int styleKey = fontSize * 100 + (int)align * 2 + (richText ? 1 : 0);
-            GUIStyle style;
-            if (!_autoLabelStyles.TryGetValue(styleKey, out style))
+            var style = new GUIStyle(_centeredLabelStyle ?? GUI.skin.label)
             {
-                style = new GUIStyle(_centeredLabelStyle ?? GUI.skin.label)
-                {
-                    alignment = align,
-                    fontSize = fontSize,
-                    wordWrap = true,
-                    richText = richText,
-                    clipping = TextClipping.Overflow
-                };
-                _autoLabelStyles[styleKey] = style;
-            }
+                alignment = align,
+                fontSize = fontSize,
+                wordWrap = true,
+                richText = richText,
+                clipping = TextClipping.Overflow
+            };
 
             // 先占位一个超小高度，算出真实高度
             Rect r = new Rect(x + margin, y + nextControlY, width - margin * 2f, 10f);

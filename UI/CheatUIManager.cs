@@ -31,7 +31,8 @@ namespace ASWDEBUG.UI
         private static readonly bool ShowAuctionUi = false;
         private static readonly bool ShowLocalBotUi = false;
         private static readonly bool ShowMultiOpenUi = false;
-        private static readonly bool UseTacticalUi = true;
+        // Keep the original compact black/red panel layout as the runtime menu.
+        private static readonly bool UseTacticalUi = false;
         private static string _autoBattleDropdownId = string.Empty;
         private static Vector2 _autoBattleDropdownScroll;
 
@@ -383,12 +384,42 @@ namespace ASWDEBUG.UI
             }
 
             // AimTrack
-            UIHelper.Begin("子弹追踪", 165, 170, 165, 136, 0, 20, 0);
+            UIHelper.Begin("子弹追踪", 165, 170, 165, 222, 0, 20, 0);
             UIHelper.Button("开启", AimTrack.Enabled, AimTrack.ToggleEnabled);
             UIHelper.Button("是否判断墙体", AimTrack.Wall, AimTrack.ToggleWall);
             UIHelper.Button("是否判断隐身", AimTrack.Hidden, AimTrack.ToggleHidden);
             UIHelper.Button("是否判断盾牌朝向", AimTrack.Shield, AimTrack.ToggleShield);
-            ESP.CircleRadius = UIHelper.SliderRow("范围半径", ESP.CircleRadius, 0f, 800f, 0);
+            UIHelper.Button(
+                "显示范围圆",
+                AimTrack.DrawFovCircle,
+                delegate
+                {
+                    AimTrack.DrawFovCircle = !AimTrack.DrawFovCircle;
+                    FeatureConfigStore.MarkDirty();
+                });
+            float trackingRadius = UIHelper.SliderRow(
+                "范围半径",
+                AimTrack.RadiusPixels,
+                24f,
+                800f,
+                0);
+            if (Mathf.Abs(trackingRadius - AimTrack.RadiusPixels) > 0.01f)
+            {
+                AimTrack.RadiusPixels = trackingRadius;
+                ESP.CircleRadius = trackingRadius;
+                FeatureConfigStore.MarkDirty();
+            }
+            float trackingProbability = UIHelper.SliderRow(
+                "追踪概率%",
+                AimTrack.TrackingProbability * 100f,
+                0f,
+                100f,
+                0) / 100f;
+            if (Mathf.Abs(trackingProbability - AimTrack.TrackingProbability) > 0.0001f)
+            {
+                AimTrack.TrackingProbability = trackingProbability;
+                FeatureConfigStore.MarkDirty();
+            }
 
             // ESP
             UIHelper.Begin("ESP", 335, 10, 165, 176, 0, 22, 0);
@@ -399,6 +430,9 @@ namespace ASWDEBUG.UI
             UIHelper.Button("绘制十字", ESP.CrossEsp, ESP.ToggleCrossEsp);
             UIHelper.Button("绘制圆心", ESP.CircleEsp, ESP.ToggleCircleEsp);
             UIHelper.Button("绘制射线", ESP.LineEsp, ESP.ToggleLineEsp);
+
+            DrawBallisticsPanel();
+            DrawExplosionProbabilityPanel();
 
             // Other
             UIHelper.Begin("其他", 505, 10, 165, 350, 0, 22, 0);
@@ -505,6 +539,51 @@ namespace ASWDEBUG.UI
             UIHelper.LabelAuto("目标: " + AutoBattleManager.LastTarget, 11);
             UIHelper.LabelAuto("路径: " + AutoBattleManager.LastPath + " [" + AutoBattleManager.LastPathProvider + "]", 11);
             UIHelper.LabelAuto("动作: " + AutoBattleManager.LastAction, 11);
+        }
+
+        private static void DrawBallisticsPanel()
+        {
+            UIHelper.Begin("弹道控制", 335, 195, 165, 102, 0, 18, 0);
+            UIHelper.Button("扩散控制", BulletNoRecoil.Enabled, BulletNoRecoil.Toggle);
+            float spreadScale = UIHelper.SliderRow(
+                "扩散倍数",
+                BulletNoRecoil.SpreadScale,
+                0f,
+                3f,
+                2);
+            if (Mathf.Abs(spreadScale - BulletNoRecoil.SpreadScale) > 0.0001f)
+            {
+                BulletNoRecoil.SpreadScale = spreadScale;
+                FeatureConfigStore.MarkDirty();
+            }
+        }
+
+        private static void DrawExplosionProbabilityPanel()
+        {
+            UIHelper.Begin("爆炸概率", 335, 306, 165, 92, 0, 18, 0);
+            float noDamageProbability = UIHelper.SliderRow(
+                "免伤概率%",
+                GrenadeNotHurt.Probability * 100f,
+                0f,
+                100f,
+                0) / 100f;
+            if (Mathf.Abs(noDamageProbability - GrenadeNotHurt.Probability) > 0.0001f)
+            {
+                GrenadeNotHurt.SetProbability(noDamageProbability);
+                FeatureConfigStore.MarkDirty();
+            }
+
+            float halfDamageProbability = UIHelper.SliderRow(
+                "半伤概率%",
+                GrenadeHalfHurt.Probability * 100f,
+                0f,
+                100f,
+                0) / 100f;
+            if (Mathf.Abs(halfDamageProbability - GrenadeHalfHurt.Probability) > 0.0001f)
+            {
+                GrenadeHalfHurt.SetProbability(halfDamageProbability);
+                FeatureConfigStore.MarkDirty();
+            }
         }
 
         private static int DropdownRow(string label, string[] options, int selected, string id, Action<int> onSelect)

@@ -17,8 +17,6 @@ namespace ASWDEBUG.UI
         private static string _openDropdownId = string.Empty;
         private static bool _showHelp;
         private static int _textInputSeq;
-        private static GUIStyle _ruleRowStyle;
-        private static GUIStyle _rowLabelStyle;
 
         private static readonly int[] PercentValues = new int[] { 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100 };
         private static readonly int[] DistanceValues = new int[] { 3, 5, 8, 10, 15, 20, 30, 50, 80, 100 };
@@ -52,11 +50,7 @@ namespace ASWDEBUG.UI
             float x = Mathf.Min(675f, Mathf.Max(10f, Screen.width - width - 10f));
             float y = 10f;
 
-            UIHelper.DrawPanel(
-                new Rect(x, y, width, height),
-                new Color(7f / 255f, 11f / 255f, 15f / 255f, 0.985f),
-                new Color(42f / 255f, 59f / 255f, 68f / 255f, 0.92f),
-                1f);
+            UIHelper.DrawPanel(new Rect(x, y, width, height), new Color(0f, 0f, 0f, 0.78f), new Color(0.9f, 0.1f, 0.05f, 0.75f), 1f);
             UIHelper.Begin("自动使用配置", x, y, width, height, 6f, 21f, 3f);
             UIHelper.LabelAuto("状态: " + AutoUseManager.LastStatus);
 
@@ -139,13 +133,13 @@ namespace ASWDEBUG.UI
         private static void DrawRuleRow(Rect row, int index, AutoUseRule rule, bool selected)
         {
             if (rule == null) return;
-            EnsureEditorStyles();
-            string state = rule.Enabled ? "<color=#37CFC2>ON</color>" : "<color=#5B7079>OFF</color>";
-            string text = state + "  " + rule.Name + "  <color=#94A6AE>" + AutoUseManager.GetActionName(rule.ActionKind) + "</color>";
-            GUI.Label(
-                new Rect(row.x + 8f, row.y, row.width - 16f, row.height),
-                text,
-                _ruleRowStyle);
+            GUIStyle style = new GUIStyle(UIHelper.StringStyle ?? GUI.skin.label);
+            style.alignment = TextAnchor.MiddleLeft;
+            style.fontSize = 12;
+            style.richText = true;
+            string state = rule.Enabled ? "<color=#E71200>ON</color>" : "<color=#AAAAAA>OFF</color>";
+            string text = state + "  " + rule.Name + "  <color=#BBBBBB>" + AutoUseManager.GetActionName(rule.ActionKind) + "</color>";
+            GUI.Label(new Rect(row.x + 8f, row.y, row.width - 16f, row.height), text, style);
         }
 
         private static void DrawSelectedRuleEditor()
@@ -733,31 +727,10 @@ namespace ASWDEBUG.UI
 
         private static void DrawRowLabel(Rect r, string label)
         {
-            EnsureEditorStyles();
-            GUI.Label(
-                new Rect(r.x + 4f, r.y, 124f, Mathf.Min(24f, r.height)),
-                label,
-                _rowLabelStyle);
-        }
-
-        private static void EnsureEditorStyles()
-        {
-            if (_ruleRowStyle != null) return;
-            _ruleRowStyle = new GUIStyle(UIHelper.StringStyle ?? GUI.skin.label);
-            _ruleRowStyle.alignment = TextAnchor.MiddleLeft;
-            _ruleRowStyle.fontSize = 12;
-            _ruleRowStyle.richText = true;
-            _ruleRowStyle.normal.textColor = new Color(
-                232f / 255f,
-                241f / 255f,
-                244f / 255f);
-
-            _rowLabelStyle = new GUIStyle(_ruleRowStyle);
-            _rowLabelStyle.richText = false;
-            _rowLabelStyle.normal.textColor = new Color(
-                148f / 255f,
-                166f / 255f,
-                174f / 255f);
+            GUIStyle style = new GUIStyle(UIHelper.StringStyle ?? GUI.skin.label);
+            style.alignment = TextAnchor.MiddleLeft;
+            style.fontSize = 12;
+            GUI.Label(new Rect(r.x + 4f, r.y, 124f, Mathf.Min(24f, r.height)), label, style);
         }
 
         private static bool SmallButton(Rect r, string text)
