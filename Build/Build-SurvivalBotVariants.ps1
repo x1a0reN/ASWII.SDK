@@ -33,6 +33,9 @@ $converterBuild = Join-Path $runRoot 'build\CompactNavConverter'
 $converterIntermediate = Join-Path $runRoot 'obj\CompactNavConverter'
 $privatePackage = Join-Path $runRoot 'Private\Game'
 $releasePackage = Join-Path $runRoot 'ReleaseA\Game'
+$normalBuild = Join-Path $runRoot 'build\Normal'
+$normalIntermediate = Join-Path $runRoot 'obj\Normal'
+$normalPackage = Join-Path $runRoot 'Normal\Game'
 
 function New-ArtifactDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -116,7 +119,7 @@ function ConvertFrom-Utf8Base64 {
 function Test-VariantAssembly {
     param(
         [Parameter(Mandatory = $true)][string]$AssemblyPath,
-        [Parameter(Mandatory = $true)][ValidateSet('Private', 'ReleaseA')][string]$Edition
+        [Parameter(Mandatory = $true)][ValidateSet('Private', 'ReleaseA', 'Normal')][string]$Edition
     )
 
     $assembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly($AssemblyPath)
@@ -421,25 +424,31 @@ Write-Host "[1/6] Building Private edition..."
 Invoke-ProjectBuild $projectPath 'Debug' $privateBuild $privateIntermediate 'Private'
 Write-Host "[2/6] Building ReleaseA edition..."
 Invoke-ProjectBuild $projectPath 'Release' $releaseBuild $releaseIntermediate 'ReleaseA'
+Write-Host "[2b/6] Building Normal edition..."
+Invoke-ProjectBuild $projectPath 'Release' $normalBuild $normalIntermediate 'Normal'
 Write-Host "[3/6] Building Private-only CompactNavConverter..."
 Invoke-ProjectBuild $converterProject 'Release' $converterBuild $converterIntermediate ''
 
 $privateAssembly = Join-Path $privateBuild 'ASWDEBUG.dll'
 $releaseAssembly = Join-Path $releaseBuild 'ASWDEBUG.dll'
+$normalAssembly = Join-Path $normalBuild 'ASWDEBUG.dll'
 $converterAssembly = Join-Path $converterBuild 'CompactNavConverter.exe'
 
 Add-Type -Path $cecilPath
 Write-Host "[4/6] Auditing compiled feature boundaries..."
 $privateAudit = Test-VariantAssembly $privateAssembly 'Private'
 $releaseAudit = Test-VariantAssembly $releaseAssembly 'ReleaseA'
+$normalAudit = Test-VariantAssembly $normalAssembly 'Normal'
 
 Write-Host "[5/6] Creating deployable packages..."
 Copy-GamePackage $privateAssembly $privatePackage $converterAssembly -FullSupportFiles
 Copy-GamePackage $releaseAssembly $releasePackage
+Copy-GamePackage $normalAssembly $normalPackage
 
 $packageFiles = @(
     Get-ChildItem -LiteralPath (Join-Path $runRoot 'Private') -File -Recurse
     Get-ChildItem -LiteralPath (Join-Path $runRoot 'ReleaseA') -File -Recurse
+    Get-ChildItem -LiteralPath (Join-Path $runRoot 'Normal') -File -Recurse
 )
 $hashes = @($packageFiles | Sort-Object FullName | ForEach-Object { Get-HashRecord $_.FullName })
 $gitCommit = (& git -C $repositoryRoot rev-parse HEAD 2>$null)
@@ -508,7 +517,7 @@ $manifest = [ordered]@{
             lethalCliffValidation = $true
         }
     }
-    audits = @($privateAudit, $releaseAudit)
+    audits = @($privateAudit, $releaseAudit, $normalAudit)
     files = $hashes
 }
 $manifestPath = Join-Path $runRoot 'manifest.json'
