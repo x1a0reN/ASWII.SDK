@@ -75,6 +75,7 @@
     <Reference Include="System.Core">
       <HintPath>C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\System.Core.dll</HintPath>
     </Reference>
+    <Reference Include="System.Security" />
     <Reference Include="UnityEngine">
       <HintPath>C:\Users\x1a0reN\AppData\LocalLow\____________II\UnityEngine.dll</HintPath>
     </Reference>
@@ -122,6 +123,7 @@
     <Compile Include="UI\EnemyEspUI.cs" />
     <Compile Include="UI\NavigationPathVisualizer.cs" />
     <Compile Include="UI\SurvivalBotUI.cs" />
+    <Compile Include="Verify\SurvivalHandoff.cs" />
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
