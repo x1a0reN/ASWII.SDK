@@ -47,6 +47,9 @@
   <PropertyGroup Condition=" '$(SurvivalEdition)' == 'ReleaseA' ">
     <DefineConstants>$(DefineConstants);SURVIVAL_RELEASE_A</DefineConstants>
   </PropertyGroup>
+  <PropertyGroup Condition=" '$(SurvivalEdition)' == 'Normal' ">
+    <DefineConstants>$(DefineConstants);SURVIVAL_NORMAL</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
       <HintPath>Lib\0Harmony.dll</HintPath>
@@ -123,8 +126,8 @@
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Target Name="ValidateSurvivalEdition" BeforeTargets="BeforeBuild">
-    <Error Condition=" '$(SurvivalEdition)' != 'Private' and '$(SurvivalEdition)' != 'ReleaseA' "
-      Text="Unsupported SurvivalEdition '$(SurvivalEdition)'. Expected Private or ReleaseA." />
+    <Error Condition=" '$(SurvivalEdition)' != 'Private' and '$(SurvivalEdition)' != 'ReleaseA' and '$(SurvivalEdition)' != 'Normal' "
+      Text="Unsupported SurvivalEdition '$(SurvivalEdition)'. Expected Private, ReleaseA or Normal." />
   </Target>
   <PropertyGroup Condition=" '$(Configuration)' != 'Auction' and '$(DeployToGame)' == 'true' ">
     <PostBuildEvent>copy /Y "$(TargetPath)" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\0Harmony.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\Mono.Cecil.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Lib\BouncyCastle.Crypto.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\ASWII_Data\Managed\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\winhttp.dll" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\" &amp; copy /Y "$(ProjectDir)Doorstop\x86\doorstop_config.ini" "C:\Users\x1a0reN\AppData\Local\ASWII\Data\"</PostBuildEvent>

@@ -74,6 +74,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
         private static readonly HashSet<int> ParticipantIds = new HashSet<int>();
         private static readonly HashSet<int> ConfirmedDeadParticipantIds = new HashSet<int>();
         private static readonly HashSet<int> CountedParticipantIds = new HashSet<int>();
+        private static readonly HashSet<ulong> ProtectedCharacterIds = new HashSet<ulong>();
         private static readonly Dictionary<int, EnemyTrack> EnemyTracks = new Dictionary<int, EnemyTrack>(16);
         private static readonly List<Vector3> RouteExposurePoints = new List<Vector3>(48);
         private static readonly float[] SafeRadii = { 5f, 9f, 13f };
@@ -1052,6 +1053,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             }
 
             CaptureParticipants(app, level, player);
+#if !SURVIVAL_NORMAL
             if (!_taskCompleted && _controlStarted && player != null &&
                 player.num_killed > _baselineKills)
             {
@@ -1063,6 +1065,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 FileLogger.Log("SURVIVAL", "kill objective complete kills=" + player.num_killed +
                     " assists=" + player.holding_attack_count);
             }
+#endif
             if (player != null && player.IsDied)
             {
                 _emergencyTarget = null;
@@ -1110,6 +1113,13 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             bool avoidancePhase = !_taskCompleted &&
                 (!_participantLocked || RemainingPlayers > threshold + 1);
 
+#if SURVIVAL_NORMAL
+            // 普通版：不躲避、不放技能、不跳崖自杀，只持续攻击，
+            // 直到死亡 / 第一名 / 只剩定制版敌人（RefreshEnemies 已过滤受保护角色）。
+            ClearEmergencyTarget("normal_hunt");
+            TickAttack(player, camera, false);
+            return;
+#else
             if (_taskCompleted && rankSecured)
             {
                 TickRoleDirector(player, camera, true, false);
@@ -1143,6 +1153,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 ClearEmergencyTarget("attack_phase");
                 TickAttack(player, camera, false);
             }
+#endif
         }
 
         private static bool TickRoleDirector(Character player, Camera camera, bool objectiveComplete,
@@ -2868,6 +2879,28 @@ namespace ASWDEBUG.Cheats.SurvivalBot
             InitialPlayers = Math.Max(InitialPlayers, Math.Max(ParticipantIds.Count, rosterCount));
         }
 
+        public static void SetProtectedCharacterIds(IEnumerable<ulong> characterIds)
+        {
+            ProtectedCharacterIds.Clear();
+            if (characterIds == null) return;
+            foreach (ulong id in characterIds) ProtectedCharacterIds.Add(id);
+            FileLogger.Log("SURVIVAL", "protected character ids loaded count=" + ProtectedCharacterIds.Count);
+        }
+
+        private static bool IsProtectedCharacter(Character ch)
+        {
+            if (ProtectedCharacterIds.Count == 0 || ch == null) return false;
+            try
+            {
+                CharacterInfoData info = ch.character_info;
+                return info != null && info.character_id != 0UL && ProtectedCharacterIds.Contains(info.character_id);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static void RefreshEnemies(Level level, Character player)
         {
             Enemies.Clear();
@@ -2880,6 +2913,7 @@ namespace ASWDEBUG.Cheats.SurvivalBot
                 {
                     Character ch = list[i];
                     if (ch == null || ch == player || ch.Is_Viewer) continue;
+                    if (IsProtectedCharacter(ch)) continue;
                     if (!IsOpponentForCurrentMode(level, player, ch)) continue;
                     if (!Enemies.Contains(ch)) Enemies.Add(ch);
                 }

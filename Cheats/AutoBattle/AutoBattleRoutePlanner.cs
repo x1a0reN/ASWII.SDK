@@ -236,8 +236,8 @@ namespace ASWDEBUG.Cheats.AutoBattle
             else if (declared && !loadNavmesh)
                 loadNavmesh = true;
 
-#if SURVIVAL_RELEASE_A
-            // ReleaseA consumes prebuilt compact/native navigation only; it must never start MapBake.
+#if SURVIVAL_RELEASE_A || SURVIVAL_NORMAL
+            // ReleaseA/Normal consume prebuilt compact/native navigation only; they must never start MapBake.
             bool runtimeRainRequired = false;
             bool highDetailRain = false;
 #else
