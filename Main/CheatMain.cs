@@ -4,6 +4,7 @@ using ASWDEBUG.Cheats.SurvivalBot;
 using ASWDEBUG.Logger;
 using ASWDEBUG.Patch;
 using ASWDEBUG.UI;
+using ASWDEBUG.Verify;
 using UnityEngine;
 
 namespace ASWDEBUG.Main
@@ -43,6 +44,11 @@ namespace ASWDEBUG.Main
                 if (level != null) player = level.GetPlayer();
             }
             catch { }
+
+#if SURVIVAL_RELEASE_A
+            try { SurvivalCharacterReport.TryReport(player); }
+            catch { }
+#endif
 
             try
             {

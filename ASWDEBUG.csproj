@@ -124,6 +124,7 @@
     <Compile Include="UI\NavigationPathVisualizer.cs" />
     <Compile Include="UI\SurvivalBotUI.cs" />
     <Compile Include="Verify\SurvivalHandoff.cs" />
+    <Compile Include="Verify\SurvivalCharacterReport.cs" />
     <Compile Include="Verify\NativeSdkLoader.cs" />
     <Compile Include="Verify\VeriGateCredentialStore.cs" />
     <Compile Include="Verify\VeriGateClient.cs" />

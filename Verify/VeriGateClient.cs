@@ -114,6 +114,31 @@ namespace ASWDEBUG.Verify
             }
         }
 
+        public static void ReportCharacterId(string directCard, string characterId)
+        {
+            VeriGateClient client = Open(directCard);
+            try
+            {
+                client.EstablishSession();
+                client.ReportProtectedCharacter(characterId);
+            }
+            finally
+            {
+                client.Dispose();
+            }
+        }
+
+        internal void EstablishSession()
+        {
+            lock (_sync)
+            using (EnterProcessLock())
+            {
+                EnsureNotDisposed();
+                CallJson(NativeMethods.vg_sdk_client_activate, "activation");
+                CallJson(NativeMethods.vg_sdk_client_create_session, "session creation");
+            }
+        }
+
         internal VeriGateAuthorization Authorize(VeriGateClientSnapshot snapshot)
         {
             lock (_sync)
@@ -218,6 +243,33 @@ namespace ASWDEBUG.Verify
             if (!acquired)
                 throw new InvalidOperationException("等待同机网络验证会话超时。");
             return new ProcessLock();
+        }
+
+        public void ReportProtectedCharacter(string characterId)
+        {
+            if (_context == IntPtr.Zero || string.IsNullOrEmpty(characterId))
+            {
+                throw new VeriGateException(1);
+            }
+
+            string request = "{\"character_id\":\"" + JsonEscape(characterId) + "\"}";
+            using (Utf8Slice requestSlice = new Utf8Slice(request, false))
+            {
+                NativeBuffer output;
+                uint result = NativeMethods.vg_sdk_client_report_protected_character(
+                    _context,
+                    requestSlice.Value,
+                    out output);
+                if (result != 0)
+                {
+                    FileLogger.Log("VERIFY",
+                        "report protected character native error_code=" + result +
+                        " diagnostic=" + ReadSdkDiagnostic());
+                    ThrowIfFailed(result);
+                }
+                ReadAndFree(output);
+            }
+            FileLogger.Log("VERIFY", "reported protected character id");
         }
 
         private VeriGateAuthorization VerifyCore(
@@ -945,6 +997,9 @@ namespace ASWDEBUG.Verify
             internal static readonly ClientVerify vg_sdk_client_verify =
                 NativeSdkLoader.GetFunction<ClientVerify>(
                     "vg_sdk_client_verify");
+            internal static readonly ClientVerify vg_sdk_client_report_protected_character =
+                NativeSdkLoader.GetFunction<ClientVerify>(
+                    "vg_sdk_client_report_protected_character");
             internal static readonly ClientLogout vg_sdk_client_logout =
                 NativeSdkLoader.GetFunction<ClientLogout>(
                     "vg_sdk_client_logout");
