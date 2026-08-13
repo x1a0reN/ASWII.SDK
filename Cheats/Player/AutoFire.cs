@@ -10,18 +10,24 @@ namespace ASWDEBUG.Cheats.Player
         private const float MaxCastDistance = 300f;
         private const float KeyDownRepeatSeconds = 0.06f;
 
-        private static bool _wasAllowed;
+        private static bool _crosshairOnEnemy;
+        private static bool _playerValid;
         private static float _nextKeyDownAt;
         private static int _keyDownPulseFrame = -1;
         private static bool _castMaskInitialized;
         private static int _castMask;
 
+        // 自动扳机：准星瞄到敌人就自动开枪（触发器）。
         public static bool Enabled;
+
+        // 自动开枪：无条件自动开枪，优先级高于自动扳机。
         public static bool AutoFireAllowed;
 
+        // 玩家存活且非观战时才允许开火；
+        // 自动开枪（无条件）优先，其次才是自动扳机（准星命中）。
         public static bool WantsFire
         {
-            get { return Enabled && AutoFireAllowed; }
+            get { return _playerValid && (AutoFireAllowed || (Enabled && _crosshairOnEnemy)); }
         }
 
         public static void Enable()
@@ -44,32 +50,35 @@ namespace ASWDEBUG.Cheats.Player
 
         public static void Tick(Level level, Character player, Camera camera)
         {
-            if (!Enabled || level == null || player == null || camera == null ||
-                player.IsDied || (player.Is_Viewer && !player.Is_GP))
+            bool valid = player != null && !player.IsDied && !(player.Is_Viewer && !player.Is_GP);
+            _playerValid = valid;
+
+            if (!Enabled || !valid || level == null || camera == null)
             {
-                SetAllowed(false);
+                SetCrosshair(false);
                 return;
             }
 
             Character target;
-            bool allowed = TryGetCrosshairTarget(level, player, camera, out target);
-            SetAllowed(allowed);
+            bool onEnemy = TryGetCrosshairTarget(level, player, camera, out target);
+            SetCrosshair(onEnemy);
         }
 
         public static void Toggle()
         {
             Enabled = !Enabled;
-            if (!Enabled) SetAllowed(false);
+            if (!Enabled) SetCrosshair(false);
         }
 
         public static void Reset()
         {
-            SetAllowed(false);
+            _playerValid = false;
+            SetCrosshair(false);
         }
 
         public static void ToggleAutoFireAllowed()
         {
-            SetAllowed(!AutoFireAllowed);
+            AutoFireAllowed = !AutoFireAllowed;
         }
 
         public static bool ShouldFireKeyDown()
@@ -259,21 +268,15 @@ namespace ASWDEBUG.Cheats.Player
             return _castMask;
         }
 
-        private static void SetAllowed(bool allowed)
+        private static void SetCrosshair(bool onEnemy)
         {
-            if (allowed && !_wasAllowed)
-            {
-                _nextKeyDownAt = 0f;
-                _keyDownPulseFrame = -1;
-            }
-            else if (!allowed)
+            if (onEnemy != _crosshairOnEnemy)
             {
                 _nextKeyDownAt = 0f;
                 _keyDownPulseFrame = -1;
             }
 
-            AutoFireAllowed = allowed;
-            _wasAllowed = allowed;
+            _crosshairOnEnemy = onEnemy;
         }
     }
 }

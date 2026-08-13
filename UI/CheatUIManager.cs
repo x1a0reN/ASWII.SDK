@@ -114,7 +114,7 @@ namespace ASWDEBUG.UI
             UIHelper.Button("红名透视", HealthBarDisplay.Enabled, HealthBarDisplay.Toggle);
             UIHelper.Button("爆炸免伤", GrenadeNotHurt.Enabled, GrenadeNotHurt.Toggle);
             UIHelper.Button("自动扳机", AutoFire.Enabled, AutoFire.Toggle);
-            UIHelper.Button("自动攻击", AutoFire.AutoFireAllowed, AutoFire.ToggleAutoFireAllowed);
+            UIHelper.Button("自动开枪", AutoFire.AutoFireAllowed, AutoFire.ToggleAutoFireAllowed);
             UIHelper.Button("无视挂机", NotKick.Enabled, NotKick.Toggle);
             UIHelper.Button("爆炸半伤", GrenadeHalfHurt.Enabled, GrenadeHalfHurt.Toggle);
             UIHelper.Button("子弹直线", BulletNoRecoil.Enabled, BulletNoRecoil.Toggle);

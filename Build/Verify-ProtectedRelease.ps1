@@ -9,7 +9,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$MappingFile,
 
-    [string]$ExpectedVersion = '1.0.47.0',
+    [string]$ExpectedVersion = '1.0.53.0',
 
     [string]$WorkRoot
 )
