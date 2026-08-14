@@ -72,7 +72,10 @@ public sealed class SurvivalBotBootstrap : MonoBehaviour
             // 普通版：把登录器下发的定制版 character_id 名单载入，选敌时避让。
             ASWDEBUG.Cheats.SurvivalBot.SurvivalBotManager.SetProtectedCharacterIds(handoff.ProtectedCharacterIds);
 #endif
-            // 定制版(ReleaseA)：待 M2 服务器接口就绪后，在游戏内角色就绪时上报本地 character_id。
+#if SURVIVAL_RELEASE_A
+            // 定制版：handoff 文件读取后即删除，必须在此转交卡密供游戏内角色就绪后上报。
+            ASWDEBUG.Verify.SurvivalCharacterReport.SetDirectCard(handoff.DirectCard);
+#endif
         }
         catch (Exception ex)
         {
